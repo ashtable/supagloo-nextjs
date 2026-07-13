@@ -11,6 +11,10 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+ARG YV_APP_KEY
+ENV YV_APP_KEY=$YV_APP_KEY
+ARG NEXT_PUBLIC_YV_AUTH_REDIRECT_URL
+ENV NEXT_PUBLIC_YV_AUTH_REDIRECT_URL=$NEXT_PUBLIC_YV_AUTH_REDIRECT_URL
 RUN npm run build
 
 # ---- Runtime ----
