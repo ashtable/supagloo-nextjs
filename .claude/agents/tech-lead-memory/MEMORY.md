@@ -10,8 +10,5 @@ individual files, never here.
 
 ## Memories
 
-<!-- Add entries as you learn durable technical facts. Example:
-- [Non-UI e2e run via node test runner](non-ui-e2e-runner.md) — how integration tests are invoked
--->
-
-_(none yet)_
+- [Test harness](test-harness.md) — no runner shipped; Vitest (unit) + Stagehand/Gloo (E2E), transitive-dep gotchas, DOM-text assertion tactic
+- [Auth integration](auth-integration.md) — useYVAuth surface (userId not id, avatarUrl getter), mount-gate, global-header-removed decision

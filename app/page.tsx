@@ -1,29 +1,37 @@
-import { ApiClient, BibleClient } from "@youversion/platform-core";
+import type { Metadata } from "next";
+import Nav from "./_components/landing/nav";
+import Hero from "./_components/landing/hero";
+import FeaturedDemo from "./_components/landing/featured-demo";
+import StartCards from "./_components/landing/start-cards";
+import Footer from "./_components/landing/footer";
 
-const appKey = process.env.YV_APP_KEY;
-if (!appKey) throw new Error("YV_APP_KEY is not set");
+export const metadata: Metadata = {
+  title: "Supagloo — Turn Scripture into cinematic video",
+  description:
+    "Pick a verse — Supagloo storyboards it, narrates it in the voice you describe, and scores it into a share-ready short. Built on the YouVersion Platform.",
+};
 
-const apiClient = new ApiClient({ appKey });
-const bibleClient = new BibleClient(apiClient);
-const passage = await bibleClient.getPassage(3034, "JHN.3.16", "text");
-const version = await bibleClient.getVersion(3034);
-const [book, chapter, verse] = passage.id.split(".");
-
+/**
+ * Figure 7a landing page. Static Server Component composing the marketing
+ * sections; the only client leaves are the auth controls (`NavAuth`,
+ * `SignInButton`). No module-scope data fetch — the landing needs no live verse.
+ */
 export default function Home() {
   return (
-    <div className="flex flex-1 items-center justify-center bg-zinc-50 dark:bg-black">
-      <div className="mx-auto max-w-prose space-y-4 px-6">
-        <p className="text-lg leading-relaxed text-zinc-900 dark:text-zinc-100">
-          {passage.content}
-        </p>
-        <p className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
-          {book} {chapter}:{verse} ({version.abbreviation})
-        </p>
-        {version.copyright && (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            {version.copyright}
-          </p>
-        )}
+    <div
+      className="min-h-screen w-full flex-1"
+      style={{
+        background: "var(--sg-bg)",
+        color: "var(--sg-fg)",
+        fontFamily: "var(--font-barlow)",
+      }}
+    >
+      <div className="mx-auto w-full max-w-[1320px]">
+        <Nav />
+        <Hero />
+        <FeaturedDemo />
+        <StartCards />
+        <Footer />
       </div>
     </div>
   );
