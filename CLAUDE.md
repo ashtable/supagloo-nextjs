@@ -20,7 +20,12 @@ import { Stagehand } from "@browserbasehq/stagehand";
 const stagehand = new Stagehand({
   env: "LOCAL", // or "BROWSERBASE"
   verbose: 2, // 0, 1, or 2
-  model: "openai/gpt-4.1-mini", // or any supported model
+  // All LLM calls route through Gloo AI Studio — see "LLM Provider: Gloo AI Studio"
+  // below. Gloo is wired in via a custom `llmClient` (NOT the `model` field):
+  // Stagehand's `openai/...` path uses the Responses API, which Gloo does not honor
+  // for structured output, so we use its chat-completions endpoint instead.
+  // glooLlmClient() defaults to the GLOO_STAGEHAND_MODEL env var (gloo-openai-gpt-5-mini).
+  llmClient: await glooLlmClient(),
 });
 
 await stagehand.init();
@@ -32,6 +37,92 @@ const context = stagehand.context;
 // Create new pages if needed
 const page2 = await stagehand.context.newPage();
 ```
+
+## LLM Provider: Gloo AI Studio
+
+**Until OpenRouter support is added, ALL LLM calls (`act`, `extract`, `observe`) route through Gloo AI Studio via a custom `llmClient`.** Do not configure direct OpenAI/Anthropic/Google keys, and do **not** use the `model: "openai/…"` field — see "Why a custom `llmClient`" below.
+
+Gloo authenticates via **OAuth2 client credentials** (exchange client id/secret → ~1h bearer token) and exposes an OpenAI-compatible **chat-completions** endpoint at `https://platform.ai.gloo.com/ai/v2`. We point the AI SDK OpenAI client's `.chat()` model at it and hand the result to Stagehand as `llmClient`.
+
+### 1. Credentials (`.env.local`, already set — never commit)
+
+```bash
+GLOO_CLIENT_ID=...            # from Gloo AI Studio → Manage API Credentials
+GLOO_CLIENT_SECRET=...
+GLOO_STAGEHAND_MODEL=gloo-openai-gpt-5-mini   # Gloo model id
+```
+
+Full model catalog: `GET https://platform.ai.gloo.com/platform/v2/models` (or the Studio Model Explorer). Ids are namespaced, e.g. `gloo-openai-gpt-5-mini`, `gloo-anthropic-claude-sonnet-4.5`.
+
+### 2. Fetch an OAuth access token (valid ~1 hour)
+
+```typescript
+export async function getGlooAccessToken(): Promise<string> {
+  const basic = Buffer.from(
+    `${process.env.GLOO_CLIENT_ID}:${process.env.GLOO_CLIENT_SECRET}`,
+  ).toString("base64");
+
+  const res = await fetch("https://platform.ai.gloo.com/oauth2/token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      grant_type: "client_credentials",
+      scope: "api/access",
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Gloo token request failed: ${res.status} ${await res.text()}`);
+  }
+  const { access_token } = (await res.json()) as { access_token: string };
+  return access_token; // Bearer token, ~1 hour TTL
+}
+```
+
+### 3. Build the Gloo `llmClient`
+
+`createOpenAI(...).chat(id)` targets Gloo's `/ai/v2/chat/completions` and emits `response_format: { type: "json_schema" }` — the structured-output shape Gloo honors. Wrap it in Stagehand's `AISdkClient`.
+
+```typescript
+import { AISdkClient, LLMClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+
+// Call with no args to use GLOO_STAGEHAND_MODEL, or pass an explicit Gloo model id.
+export async function glooLlmClient(
+  glooModelId = process.env.GLOO_STAGEHAND_MODEL!,
+): Promise<LLMClient> {
+  const gloo = createOpenAI({
+    baseURL: "https://platform.ai.gloo.com/ai/v2", // chat-completions surface
+    apiKey: await getGlooAccessToken(),            // OAuth Bearer token
+  });
+  // .chat() => /chat/completions + json_schema structured outputs (NOT the Responses API)
+  return new AISdkClient({ model: gloo.chat(glooModelId) });
+}
+```
+
+Wire it into Stagehand (as shown in **Initialize** above):
+
+```typescript
+const stagehand = new Stagehand({
+  env: "LOCAL",
+  verbose: 2,
+  llmClient: await glooLlmClient(), // → gloo-openai-gpt-5-mini via GLOO_STAGEHAND_MODEL
+});
+await stagehand.init();
+```
+
+### Why a custom `llmClient` (not `model: "openai/…"`)
+
+Stagehand's `openai/` model prefix uses the AI SDK's default OpenAI path, which is the **Responses API** (`POST {baseURL}/responses`). Gloo's Responses endpoint (`/ai/v1/responses`) **ignores structured-output formatting** — it returns plain prose where Stagehand expects schema-shaped JSON, so `extract`/`observe` fail (`AI_APICallError: Invalid JSON response`). Gloo's **chat-completions** endpoint (`/ai/v2/chat/completions`) does honor `response_format: json_schema`, and `.chat()` is the only AI SDK path that emits it (the `@ai-sdk/openai-compatible` provider emits `json_object`, which Gloo rejects unless the prompt literally contains "json"). The `llmClient` above is the verified working path (checked against the live Gloo API on 2026-07-15).
+
+### Caveats
+
+- **Token expiry (~1 hour):** `glooLlmClient()` fetches a fresh token at construction — fine for short runs. For long-running processes, rebuild the client/Stagehand instance before expiry, or pass a `fetch` wrapper to `createOpenAI` that injects a fresh Bearer token per request.
+- **`agent()`:** takes its own model config via `stagehand.agent({ … })`, separate from the top-level `llmClient`; CUA mode needs a computer-use model — confirm Gloo exposes one before using `mode: "cua"`.
+- Docs: https://docs.gloo.com/getting-started/overview
 
 ## Act
 
