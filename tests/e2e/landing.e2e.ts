@@ -138,6 +138,24 @@ async function innerWidth(): Promise<number> {
 }
 
 /**
+ * Poll until no element carries `testid`, else throw. The mobile sheet is
+ * conditionally rendered (`{open && …}`) so on dismiss it DETACHES rather than
+ * going `display:none`; the understudy's `waitForSelector(state:"hidden")` waits
+ * for an attached-but-hidden node and never resolves for a removed one. Asserting
+ * the node is GONE is the equivalent "closed" guarantee.
+ */
+async function waitForGone(testid: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await page.locator(`[data-testid="${testid}"]`).count()) === 0) return;
+    await page.waitForTimeout(100);
+  }
+  throw new Error(
+    `[data-testid="${testid}"] still present after ${timeoutMs}ms (expected gone)`,
+  );
+}
+
+/**
  * Exact-copy anchors asserted against DOM text (not LLM output), because the
  * LLM normalizes punctuation/glyphs. Strings copied verbatim from the wireframe
  * (em dash U+2014, en dash U+2013, middot U+00B7, fullwidth glyphs). Under D2-a
@@ -211,6 +229,14 @@ beforeAll(async () => {
   await page.setViewportSize(DESKTOP.width, DESKTOP.height); // pin the desktop state
   await page.goto(BASE_URL, { waitUntil: "load" });
   await waitForText("Supagloo");
+  // Wait past the NavAuth mount-gate: the nav sign-in control (and every other
+  // auth-dependent leaf) renders null until its client `useEffect` fires, which
+  // happens after hydration — later than the server-rendered "Supagloo" wordmark.
+  // Asserting before this races the gate and finds 0 controls (the B failure).
+  await page.waitForSelector('[data-testid="signin-nav"]', {
+    state: "visible",
+    timeout: 20_000,
+  });
 });
 
 afterAll(async () => {
@@ -246,25 +272,22 @@ describe("signed-out landing page — desktop (8a)", () => {
     expect(await isVisibleByTestId("signin-hero-mobile")).toBe(false);
   });
 
-  test("C: hero primary CTA is the gradient demo, not sign-in (semantic extract)", async () => {
-    const hero = await stagehand.extract(
-      "Extract the hero section: the small uppercase eyebrow label above the big " +
-        "headline, the big headline itself, the paragraph of sub-copy beneath it, and " +
-        "the primary call-to-action button label.",
-      z.object({
-        eyebrow: z.string(),
-        headline: z.string(),
-        subCopy: z.string(),
-        primaryCta: z.string(),
-      }),
+  test("C: hero primary CTA is 'Watch the Genesis demo', not sign-in (semantic extract)", async () => {
+    // The genuinely-semantic claim for 8a: an LLM looking at the hero identifies
+    // the DEMO button (not sign-in) as the primary call-to-action. The eyebrow /
+    // headline / sub-copy are covered deterministically by anchor test A, so we
+    // don't add flaky LLM fields for them (a 4-field extract intermittently
+    // returned an empty eyebrow). One focused field keeps the guarantee robust.
+    const { primaryCta } = await stagehand.extract(
+      "In the hero section at the top of the page (the one with the huge headline " +
+        "'TURN SCRIPTURE INTO CINEMATIC VIDEO.'), extract the text label of the " +
+        "primary call-to-action button — the large solid/gradient-filled button " +
+        "directly beneath the sub-copy paragraph.",
+      z.object({ primaryCta: z.string() }),
     );
-    expect(hero.eyebrow).toContain("SCRIPTURE VIDEO STUDIO");
-    expect(hero.headline).toContain("TURN SCRIPTURE INTO");
-    expect(hero.subCopy).toContain("Supagloo storyboards it");
-    // Under 8a the hero's sole/primary CTA is the gradient "Watch the Genesis
-    // demo" — sign-in has moved to the nav.
-    expect(hero.primaryCta).toContain("Watch the Genesis demo");
-    expect(hero.primaryCta).not.toContain("Sign in with YouVersion");
+    // Under 8a the hero's primary CTA is the gradient demo — sign-in moved to the nav.
+    expect(primaryCta).toContain("Watch the Genesis demo");
+    expect(primaryCta).not.toContain("Sign in with YouVersion");
   });
 
   test("D: the three start cards read in order (semantic extract)", async () => {
@@ -399,13 +422,12 @@ describe("signed-out landing page — mobile (9b)", () => {
     expect(await isVisibleByTestId("signin-nav")).toBe(false);
 
     // Escape dismisses (the sheet listens on document keydown, like nav-auth).
+    // The sheet unmounts, so assert it's GONE (not `state:"hidden"`, which never
+    // resolves for a detached node).
     await page.evaluate(() =>
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })),
     );
-    await page.waitForSelector('[data-testid="nav-sheet"]', {
-      state: "hidden",
-      timeout: 5000,
-    });
+    await waitForGone("nav-sheet");
 
     // F3: tapping an inert menu item ("How it works") also closes the sheet.
     await page.locator('[data-testid="nav-hamburger"]').click();
@@ -417,9 +439,6 @@ describe("signed-out landing page — mobile (9b)", () => {
       .locator('[data-testid="nav-sheet"] [role="menuitem"]')
       .first()
       .click();
-    await page.waitForSelector('[data-testid="nav-sheet"]', {
-      state: "hidden",
-      timeout: 5000,
-    });
+    await waitForGone("nav-sheet");
   });
 });

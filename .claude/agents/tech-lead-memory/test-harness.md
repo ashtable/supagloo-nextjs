@@ -184,6 +184,30 @@ seams + `getComputedStyle`/`bounding_box`. Gotcha: a control that exists in both
 This gave 22/22 DOM checks + screenshots with Gloo down — the full compile-safety net is unit +
 `tsc --noEmit` + `eslint` + `build` + this Playwright pass.
 
+## E2E robustness fixes (2026-07-16, Turn 8/9 landing, code-review round 2)
+
+Three real-Gloo E2E flakes, all **test** issues (product verified 31/31 via Playwright), not regressions:
+- **Mount-gate race:** `beforeAll`'s `waitForText("Supagloo")` returns on the SERVER-rendered wordmark,
+  BEFORE hydration — so any assertion on a **mount-gated** client leaf (`NavAuth`→`signin-nav`, hero
+  swaps, etc.) can find 0. Fix: also `await page.waitForSelector('[data-testid="signin-nav"]',
+  {state:"visible"})` in `beforeAll`. Rule: when a test targets a mount-gated seam, wait for that seam,
+  not just server-rendered text.
+- **Understudy `waitForSelector(state:"hidden")` never resolves for a DETACHED node.** Conditionally
+  rendered UI (`{open && …}`, e.g. the mobile sheet) UNMOUNTS on close, so "hidden" (which waits for an
+  attached-but-hidden element) hangs → timeout. Playwright's own `state:"hidden"` treats detached as
+  hidden, but the Stagehand v3 understudy does NOT. Fix: poll `page.locator(sel).count() === 0`
+  (helper `waitForGone`) — the equivalent "closed" guarantee. (Or `state:"detached"`.)
+- **Multi-field Stagehand `extract` intermittently returns an EMPTY field** (saw `eyebrow:""` in a
+  4-field hero extract). Keep semantic extracts to the ONE field that genuinely needs the LLM; cover
+  everything else with deterministic `textContent` anchors / testid+computed-style. The 8a hero test
+  now extracts only `primaryCta` ("Watch the Genesis demo", not sign-in); eyebrow/headline/sub-copy are
+  anchor-covered. Landing E2E 13/13 stable (ran twice).
+
+**Cross-workstream `tsc --noEmit` is RED from OTHER suites** (`lib/studio/*` missing modules + a
+`.next/types` ref to `app/spike/page`) — those are separate in-flight TDD workstreams, NOT the landing.
+Scope type-checks to your files (grep the error paths); landing (`app/_components/landing/*`,
+`lib/landing/*`, `tests/e2e/landing.e2e.ts`) stays type-clean + eslint-clean.
+
 **Lint gotcha (eslint flat config = core-web-vitals + ts):** the mount-gate `useEffect(()=>setMounted(true),[])`
 now trips `react-hooks/set-state-in-effect` (an ERROR). It's the intended post-hydration one-shot gate —
 disable that one line with a rationale comment (`// eslint-disable-next-line react-hooks/set-state-in-effect`).
