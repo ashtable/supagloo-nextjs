@@ -112,6 +112,34 @@ anchor yet vanish from the LLM's view.
   (`node scratch/x.mts`); the package export map rewrites subpath imports, so use the absolute node_modules
   path. Reuse a manually-spawned `next dev` (HMR picks up edits between extracts).
 
+## Step 15 (2026-07-15) — Stagehand viewport + the featured-demo extract is inherently flaky
+
+- **Stagehand `env:"LOCAL"` default viewport = 1288×711** (E2E sets no `viewport`, so `launchLocalChrome`
+  adds no `--window-size` and chrome-launcher's default window applies). This matters for responsive work:
+  the E2E renders the landing at **1288px**, i.e. BELOW the 1320px fixed-design width. So any
+  `min-[1320px]:` breakpoint is INACTIVE during the E2E. (Verified by `page.evaluate(()=>innerWidth)`.)
+- **The `featured-demo band is present (semantic extract)` test (landing.e2e.ts:191-200) is inherently
+  ~50% flaky** and always was — the memory's earlier "3/3 stable" was a lucky streak. The `extract(
+  "the small label above the demo card, and the demo's title")` nondeterministically splits the `<h2>`
+  "GENESIS · LET THERE BE LIGHT" into demoLabel="GENESIS ·" / demoTitle="LET THERE BE LIGHT" (the middot
+  reads as a label separator, and the gold `<span>` exposes TWO StaticText nodes under the heading). Measured
+  2/4 then, after fixing, 6/6.
+- **Deterministic fix (production a11y steer, no test change, no visible-text change):** collapse the title
+  to ONE atomic heading node so it can't be split — `aria-hidden` the visible title `<span>` (removes both
+  StaticTexts from the a11y tree per the Step-9 lesson) and put `aria-label="GENESIS · LET THERE BE LIGHT"`
+  on the `<h2>` so the heading keeps that single name. Tree goes from `heading > StaticText "GENESIS ·" +
+  StaticText "LET THERE BE LIGHT"` to a leaf `heading: GENESIS · LET THERE BE LIGHT`. `textContent` is
+  untouched → all 32 exact-copy anchors still pass. After this the eyebrow "⚡ START IN ONE CLICK…" (the
+  `group`'s `aria-labelledby` name) is the ONLY "label above the card" candidate → 6/6 stable.
+- **Fast flakiness/tree debugging (Gloo-free for the tree):** `new Stagehand({env:"LOCAL",verbose:0})`
+  WITHOUT an `llmClient` still does `init`/`goto`/`evaluate`/`captureHybridSnapshot`. Deep-import the
+  snapshot builder via a **direct file path** (NOT the package specifier — the export map double-prefixes
+  `dist/esm`): `import { captureHybridSnapshot } from "../node_modules/@browserbasehq/stagehand/dist/esm/lib/v3/understudy/a11y/snapshot/index.js"`;
+  `(await captureHybridSnapshot(page,{})).combinedTree` is a printable STRING. To measure extract stability,
+  build Stagehand WITH `glooLlmClient()` and loop the single `extract` N× in one session (one Chrome boot).
+  Put throwaway `.mjs/.mts` in `scratch/` (gitignored) so node resolves `node_modules`; **delete them after**
+  — eslint lints `scratch/` and `tsc` type-checks it, so leftover scripts break `npm run lint`/`tsc --noEmit`.
+
 **Lint gotcha (eslint flat config = core-web-vitals + ts):** the mount-gate `useEffect(()=>setMounted(true),[])`
 now trips `react-hooks/set-state-in-effect` (an ERROR). It's the intended post-hydration one-shot gate —
 disable that one line with a rationale comment (`// eslint-disable-next-line react-hooks/set-state-in-effect`).

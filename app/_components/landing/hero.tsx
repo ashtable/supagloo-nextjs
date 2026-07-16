@@ -7,7 +7,7 @@ import SignInButton from "../sign-in-button";
  */
 export default function Hero() {
   return (
-    <section className="flex flex-col items-center text-center px-12 pt-[66px] pb-11">
+    <section className="flex flex-col items-center text-center px-6 sm:px-12 pt-[66px] pb-11">
       <div
         style={{
           fontFamily: "var(--font-barlow-semi)",
@@ -22,10 +22,13 @@ export default function Hero() {
       </div>
 
       <h1
-        className="max-w-[900px]"
+        className="max-w-[900px] break-words"
         style={{
           fontFamily: "var(--font-anton)",
-          fontSize: 74,
+          // Fixed 74px at the desktop design width; scales down on narrow
+          // viewports so the Anton headline never clips. 74px is reached by
+          // ~925px (8vw), so ≥1320px stays pixel-faithful at 74px.
+          fontSize: "clamp(2rem, 8vw, 74px)",
           lineHeight: 0.98,
           letterSpacing: ".005em",
         }}
@@ -57,7 +60,10 @@ export default function Hero() {
         {"Pick a verse — Supagloo storyboards it, narrates it in the voice you describe, and scores it into a share-ready short. Sign in with your YouVersion account to begin."}
       </p>
 
-      <div className="flex items-center" style={{ gap: 14, marginTop: 34 }}>
+      <div
+        className="flex flex-wrap items-center justify-center"
+        style={{ gap: 14, marginTop: 34 }}
+      >
         <SignInButton variant="hero" />
         <button
           type="button"

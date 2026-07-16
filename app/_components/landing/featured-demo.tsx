@@ -13,7 +13,7 @@ const TAGS = [
  */
 export default function FeaturedDemo() {
   return (
-    <section className="px-12 pt-2 pb-5">
+    <section className="px-6 sm:px-12 pt-2 pb-5">
       <div
         id="featured-demo-eyebrow"
         style={{
@@ -35,7 +35,7 @@ export default function FeaturedDemo() {
       <div
         role="group"
         aria-labelledby="featured-demo-eyebrow"
-        className="flex overflow-hidden"
+        className="flex flex-col lg:flex-row overflow-hidden"
         style={{
           border: "1px solid var(--sg-line2)",
           borderRadius: 16,
@@ -49,8 +49,12 @@ export default function FeaturedDemo() {
             Still present in raw DOM text, so exact-copy anchors are unaffected. */}
         <div
           aria-hidden
-          className="relative overflow-hidden"
-          style={{ width: 462, flex: "none", background: "var(--sg-poster)" }}
+          // Below lg the poster stacks full-width above the details (fixed
+          // height, since its content is absolutely positioned); at ≥lg it
+          // returns to the fixed 462px side column — side-by-side from 1024px up
+          // keeps ≥1320px pixel-faithful and matches the desktop mock.
+          className="relative overflow-hidden w-full h-[240px] lg:w-[462px] lg:h-auto lg:flex-none"
+          style={{ background: "var(--sg-poster)" }}
         >
           <div
             aria-hidden
@@ -125,7 +129,7 @@ export default function FeaturedDemo() {
               separate node), so it folds into the heading's accessible name
               instead of competing with the section eyebrow as "the small label
               above the demo card". Still fully accessible + rendered as text. */}
-          <h2 style={{ margin: 0 }}>
+          <h2 aria-label="GENESIS · LET THERE BE LIGHT" style={{ margin: 0 }}>
             <span
               aria-hidden
               style={{
@@ -140,7 +144,15 @@ export default function FeaturedDemo() {
             >
               {"FEATURED STARTER SCRIPT"}
             </span>
+            {/* The visible title is aria-hidden and the heading's name comes
+                from the h2's aria-label instead. This removes the two split
+                StaticText nodes ("GENESIS ·" / "LET THERE BE LIGHT") from the
+                a11y tree so semantic extraction can't mistake "GENESIS ·" for a
+                separate "label"; the eyebrow stays the only label above the
+                card. aria-hidden/aria-label don't touch `textContent`, so every
+                exact-copy anchor still renders verbatim. */}
             <span
+              aria-hidden
               style={{
                 display: "block",
                 fontFamily: "var(--font-anton)",
@@ -186,7 +198,10 @@ export default function FeaturedDemo() {
             ))}
           </div>
 
-          <div className="flex items-center" style={{ gap: 12, marginTop: 4 }}>
+          <div
+            className="flex flex-wrap items-center"
+            style={{ gap: 12, marginTop: 4 }}
+          >
             <button
               type="button"
               className="flex items-center cursor-pointer"

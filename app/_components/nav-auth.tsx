@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useYVAuth } from "@youversion/platform-react-ui";
 import SignInButton from "./sign-in-button";
 import HolyBibleGlyph from "./holy-bible-glyph";
@@ -21,6 +21,8 @@ export default function NavAuth() {
   const { auth, userInfo, signOut } = useYVAuth();
   const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Intentional post-hydration mount gate: flip `mounted` once, on the client,
   // so the auth-dependent tree (which differs from any server render) only
@@ -28,6 +30,31 @@ export default function NavAuth() {
   // setState, not a cascading-render bug.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
+
+  // Dismiss the menu on an outside pointerdown or on Escape. Listeners only
+  // exist while the menu is open, and are torn down on close/unmount. Escape
+  // returns focus to the trigger so keyboard users don't lose their place.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   if (!mounted) return null;
 
   if (!auth.isAuthenticated) {
@@ -73,8 +100,12 @@ export default function NavAuth() {
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={name ? undefined : "Account menu"}
         className="flex items-center cursor-pointer"
         style={{
           gap: 9,
@@ -95,6 +126,9 @@ export default function NavAuth() {
 
       {open && (
         <div
+          ref={panelRef}
+          role="menu"
+          aria-label={name ?? "Account menu"}
           className="absolute right-0 z-50 overflow-hidden"
           style={{
             top: "calc(100% + 8px)",
@@ -137,6 +171,7 @@ export default function NavAuth() {
           <div style={{ padding: 6 }}>
             <button
               type="button"
+              role="menuitem"
               className="w-full text-left cursor-pointer"
               style={{
                 padding: "9px 11px",
@@ -152,6 +187,7 @@ export default function NavAuth() {
             </button>
             <button
               type="button"
+              role="menuitem"
               className="w-full text-left cursor-pointer"
               style={{
                 padding: "9px 11px",
@@ -176,6 +212,7 @@ export default function NavAuth() {
           >
             <button
               type="button"
+              role="menuitem"
               onClick={() => signOut()}
               className="flex items-center w-full cursor-pointer"
               style={{
