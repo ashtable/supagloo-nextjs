@@ -77,23 +77,37 @@ async function waitForText(needle: string, timeoutMs = 20_000): Promise<void> {
  */
 async function isVisibleByTestId(testid: string): Promise<boolean> {
   return page.evaluate((id) => {
-    const el = document.querySelector(
-      `[data-testid="${id}"]`,
-    ) as HTMLElement | null;
-    if (!el) return false;
-    const cs = getComputedStyle(el);
-    if (cs.display === "none" || cs.visibility === "hidden") return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    const vis = (el: HTMLElement) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    // ANY matching element visible — with dual-copy there can be >1 element per
+    // testid; a first-match-only check could report the hidden desktop/mobile
+    // copy and miss the visible one (the F1 fix).
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`),
+    ).some(vis);
   }, testid);
 }
 
-/** Bounding-rect width of a testid'd element (0 if missing / not laid out). */
+/**
+ * Bounding-rect width of the first VISIBLE element carrying `testid` (falls back
+ * to the first match, else 0). Prefers the visible copy under dual-copy.
+ */
 async function widthByTestId(testid: string): Promise<number> {
   return page.evaluate((id) => {
-    const el = document.querySelector(
-      `[data-testid="${id}"]`,
-    ) as HTMLElement | null;
+    const els = Array.from(
+      document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`),
+    );
+    const visible = els.find((el) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+    const el = visible ?? els[0];
     return el ? el.getBoundingClientRect().width : 0;
   }, testid);
 }
@@ -101,19 +115,21 @@ async function widthByTestId(testid: string): Promise<number> {
 /**
  * Is there a VISIBLE element whose trimmed textContent exactly equals `label`?
  * Lets us probe visibility without a testid (e.g. the "Preview scenes ▸" button,
- * which the mock drops on mobile). Returns false if absent or hidden.
+ * which the mock drops on mobile). Iterates ALL matches and returns true iff any
+ * is visible — a control can exist in both a hidden desktop copy and a visible
+ * mobile copy under dual-copy (the F1 fix).
  */
 async function textIsVisible(label: string): Promise<boolean> {
   return page.evaluate((needle) => {
-    const els = Array.from(
+    const vis = (el: HTMLElement) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    return Array.from(
       document.querySelectorAll<HTMLElement>("button, a, span, div"),
-    );
-    const el = els.find((e) => (e.textContent ?? "").trim() === needle);
-    if (!el) return false;
-    const cs = getComputedStyle(el);
-    if (cs.display === "none" || cs.visibility === "hidden") return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    ).some((e) => (e.textContent ?? "").trim() === needle && vis(e));
   }, label);
 }
 
@@ -361,7 +377,7 @@ describe("signed-out landing page — mobile (9b)", () => {
     ).toBeLessThanOrEqual(innerW);
   });
 
-  test("N: hamburger opens a menu sheet and Escape closes it", async () => {
+  test("N: hamburger opens a sheet; menu actions and Escape dismiss it", async () => {
     // RED cleanly (assertion, not a locator throw) while no hamburger exists.
     expect(
       await page.locator('[data-testid="nav-hamburger"]').count(),
@@ -377,11 +393,30 @@ describe("signed-out landing page — mobile (9b)", () => {
     expect(sheetText).toContain("How it works");
     expect(sheetText).toContain("Gallery");
     expect(sheetText).toContain("Sign in with YouVersion");
+    // The sheet's sign-in is a DISTINCT seam from the desktop nav pill (F2): the
+    // sheet control is `signin-sheet`; the desktop `signin-nav` stays hidden.
+    expect(await isVisibleByTestId("signin-sheet")).toBe(true);
+    expect(await isVisibleByTestId("signin-nav")).toBe(false);
 
     // Escape dismisses (the sheet listens on document keydown, like nav-auth).
     await page.evaluate(() =>
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })),
     );
+    await page.waitForSelector('[data-testid="nav-sheet"]', {
+      state: "hidden",
+      timeout: 5000,
+    });
+
+    // F3: tapping an inert menu item ("How it works") also closes the sheet.
+    await page.locator('[data-testid="nav-hamburger"]').click();
+    await page.waitForSelector('[data-testid="nav-sheet"]', {
+      state: "visible",
+      timeout: 5000,
+    });
+    await page
+      .locator('[data-testid="nav-sheet"] [role="menuitem"]')
+      .first()
+      .click();
     await page.waitForSelector('[data-testid="nav-sheet"]', {
       state: "hidden",
       timeout: 5000,

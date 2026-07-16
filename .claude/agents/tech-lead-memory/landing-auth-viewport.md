@@ -29,17 +29,25 @@ checks). Full plan: `scratch/turn8-9-landing.md`. Builds on [[landing-responsive
 - **D4 hydration:** `hero-lede.tsx` (client) is mount-gated — SSR + first client render = signed-out
   (8a/9b), swap to 9a only when `mounted && auth.isAuthenticated`. `hero.tsx` stays a Server
   Component (section shell + viewport-only trust row). Mirrors nav-auth's gate (+ same eslint-disable).
-- **D1 one breakpoint = `md` (768).** Nav hamburger, hero desktop-vs-mobile CTA split, hero mobile
-  sign-in, AND the 9b content/layout swaps all key off `md`. Moved featured-demo stacking lg→md
-  (safe: E2E/desktop @1288 stays side-by-side since 1288>md). Viewport variants are CSS
-  (`hidden md:block` / `md:hidden`) — no JS; dual-copy keeps BOTH strings in `textContent`.
+- **D1 breakpoint = `md` (768) for nav + hero; featured-demo stays `lg` (1024).** Nav hamburger,
+  hero desktop-vs-mobile CTA split, hero mobile sign-in, and the hero/trust 9b swaps key off `md`.
+  **featured-demo keeps its `lg` breakpoint** for BOTH stacking and its D2 copy swaps (label/overline/
+  description/chips/preview) — code-review F5: unifying it to `md` clipped the 768–1024 band (fixed
+  462px poster squeezing the details column inside the `overflow-hidden` group). At `lg` the 768–1024
+  band gets the stacked+short treatment; E2E/desktop @1288 (≥lg) stays side-by-side long, mobile @390
+  stacked short. Viewport variants are CSS (`hidden md:block`/`md:hidden`, `hidden lg:block`/`lg:hidden`)
+  — no JS; dual-copy keeps BOTH strings in `textContent`.
 - **New components:** `hero-lede.tsx` (client, mount-gated), `mobile-nav.tsx` (client hamburger +
   dismissible sheet — outside-pointerdown/Escape/a11y lifted from nav-auth), `nav-your-videos.tsx`
   (client, authed-only desktop link). `sign-in-button.tsx` variants are now **`nav`** (testid
   `signin-nav`) + **`heroMobile`** (testid `signin-hero-mobile`, full-width) — the old `hero` variant
-  is GONE (desktop hero has no sign-in under 8a).
-- **testids (E2E/Playwright seams):** `signin-nav`, `signin-hero-mobile`, `hero-eyebrow-desktop`,
-  `hero-eyebrow-mobile`, `hero-demo`, `demo-preview`, `nav-hamburger`, `nav-sheet`.
+  is GONE (desktop hero has no sign-in under 8a). It also takes optional `testId`/`role`/`onActivate`
+  props: the mobile sheet renders `<SignInButton variant="nav" testId="signin-sheet" role="menuitem"
+  onActivate={close}/>` so the sheet control is a DISTINCT seam from the desktop pill (code-review F2 —
+  they were both `signin-nav`). The sheet also closes on every action, incl. inert items (F3).
+- **testids (E2E/Playwright seams):** `signin-nav` (desktop pill), `signin-sheet` (mobile sheet),
+  `signin-hero-mobile`, `hero-eyebrow-desktop`, `hero-eyebrow-mobile`, `hero-demo`, `demo-preview`,
+  `nav-hamburger`, `nav-sheet`. Visibility helpers must check ANY match (dual-copy) not first-match (F1).
 
 ## Favicon (7b) — Next 16 file conventions, SHIPPED
 `app/icon.svg` (verbatim copy of the design project's `favicon.canonical.svg` — full-bleed 512

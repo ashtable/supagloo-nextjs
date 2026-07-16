@@ -52,7 +52,20 @@ const VARIANTS: Record<
   },
 };
 
-export default function SignInButton({ variant }: { variant: Variant }) {
+export default function SignInButton({
+  variant,
+  testId,
+  role,
+  onActivate,
+}: {
+  variant: Variant;
+  /** Override the variant's default data-testid (e.g. the mobile sheet's copy). */
+  testId?: string;
+  /** ARIA role — e.g. "menuitem" when the pill sits inside the mobile nav sheet. */
+  role?: string;
+  /** Extra side effect on click (e.g. close the sheet) alongside sign-in. */
+  onActivate?: () => void;
+}) {
   const { signIn } = useYVAuth();
   const s = VARIANTS[variant];
 
@@ -71,8 +84,12 @@ export default function SignInButton({ variant }: { variant: Variant }) {
   return (
     <button
       type="button"
-      data-testid={s.testId}
-      onClick={() => signIn({ scopes: ["profile", "email"] })}
+      data-testid={testId ?? s.testId}
+      role={role}
+      onClick={() => {
+        onActivate?.();
+        signIn({ scopes: ["profile", "email"] });
+      }}
       className="flex items-center cursor-pointer"
       style={style}
     >

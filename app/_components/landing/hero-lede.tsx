@@ -12,9 +12,13 @@ import { heroModel, HERO_COPY } from "@/lib/landing/hero-model";
  * hydration mismatch); after mount, if authenticated, it swaps to the SIGNED-IN
  * (9a) tree — an ordinary post-hydration update. Mirrors `nav-auth.tsx`.
  *
- * Viewport differences (D2-a shortened mobile copy, mobile sign-in, mobile
- * CTA stack) are expressed with `md:` visibility so they need no JS. The headline
- * still server-renders (client components SSR their initial HTML) for crawlers.
+ * The auth layer is driven entirely by `heroModel(...)` (`m.eyebrow`,
+ * `m.subCopy`, `m.primaryCta`, `m.showHeroSignIn`) — the same pure model the
+ * unit tests (U4–U7) assert — so the tests guard the rendered hero. The viewport
+ * layer (D2-a shortened mobile copy, mobile sign-in, mobile CTA stack) sits on
+ * top via `md:` visibility and needs no JS. `m.showHeroSignIn` (true ⇔ signed
+ * out) gates whether the mobile-short dual-copy nodes render. The headline still
+ * server-renders (client components SSR their initial HTML) for crawlers.
  */
 
 const eyebrowStyle: CSSProperties = {
@@ -68,21 +72,21 @@ export default function HeroLede() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
-  const signedIn = mounted && auth.isAuthenticated;
-  const m = heroModel(signedIn, userInfo?.name);
+  const m = heroModel(mounted && auth.isAuthenticated, userInfo?.name);
+  // `showHeroSignIn` is true iff signed out — the state that carries mobile-short
+  // copy and a hero sign-in affordance.
+  const signedOut = m.showHeroSignIn;
 
   return (
     <>
-      {signedIn ? (
-        <div style={eyebrowStyle}>{m.eyebrow}</div>
-      ) : (
+      {signedOut ? (
         <>
           <div
             data-testid="hero-eyebrow-desktop"
             className="hidden md:block"
             style={eyebrowStyle}
           >
-            {HERO_COPY.eyebrowSignedOut}
+            {m.eyebrow}
           </div>
           <div
             data-testid="hero-eyebrow-mobile"
@@ -92,6 +96,8 @@ export default function HeroLede() {
             {HERO_COPY.eyebrowMobileSignedOut}
           </div>
         </>
+      ) : (
+        <div style={eyebrowStyle}>{m.eyebrow}</div>
       )}
 
       <h1
@@ -119,18 +125,14 @@ export default function HeroLede() {
         </span>
       </h1>
 
-      {signedIn ? (
-        <p className="max-w-[600px]" style={subCopyStyle}>
-          {HERO_COPY.subCopyBase}
-        </p>
-      ) : (
+      {signedOut ? (
         <>
           <p
             data-testid="hero-subcopy-desktop"
             className="hidden md:block max-w-[600px]"
             style={subCopyStyle}
           >
-            {HERO_COPY.subCopySignedOut}
+            {m.subCopy}
           </p>
           <p
             data-testid="hero-subcopy-mobile"
@@ -140,15 +142,19 @@ export default function HeroLede() {
             {HERO_COPY.subCopyMobileSignedOut}
           </p>
         </>
+      ) : (
+        <p className="max-w-[600px]" style={subCopyStyle}>
+          {m.subCopy}
+        </p>
       )}
 
-      {/* Desktop CTA row: signed-in → [gradient Start creating] [outline demo];
-          signed-out → [gradient demo] (sole). */}
+      {/* Desktop CTA row: primaryCta "start" → [gradient Start creating]
+          [outline demo]; primaryCta "demo" → [gradient demo] (sole). */}
       <div
         className="hidden md:flex items-center justify-center"
         style={{ gap: 14, marginTop: 34 }}
       >
-        {signedIn && (
+        {m.primaryCta === "start" && (
           <button
             type="button"
             className="flex items-center cursor-pointer"
@@ -161,7 +167,7 @@ export default function HeroLede() {
           type="button"
           data-testid="hero-demo"
           className="flex items-center cursor-pointer"
-          style={signedIn ? outlinePill : gradientPill}
+          style={m.primaryCta === "start" ? outlinePill : gradientPill}
         >
           {HERO_COPY.watchDemo}
         </button>

@@ -114,6 +114,7 @@ export default function MobileNav() {
           <button
             type="button"
             role="menuitem"
+            onClick={() => setOpen(false)}
             className="text-left cursor-pointer"
             style={menuItem}
           >
@@ -122,6 +123,7 @@ export default function MobileNav() {
           <button
             type="button"
             role="menuitem"
+            onClick={() => setOpen(false)}
             className="text-left cursor-pointer"
             style={menuItem}
           >
@@ -131,6 +133,7 @@ export default function MobileNav() {
             <button
               type="button"
               role="menuitem"
+              onClick={() => setOpen(false)}
               className="text-left cursor-pointer"
               style={menuItem}
             >
@@ -149,7 +152,10 @@ export default function MobileNav() {
               <button
                 type="button"
                 role="menuitem"
-                onClick={() => signOut()}
+                onClick={() => {
+                  setOpen(false);
+                  signOut();
+                }}
                 className="flex items-center w-full cursor-pointer"
                 style={{
                   gap: 9,
@@ -168,7 +174,14 @@ export default function MobileNav() {
                 </span>
               </button>
             ) : (
-              <SignInButton variant="nav" />
+              // Distinct testid from the desktop nav pill (both are variant="nav");
+              // role="menuitem" so it matches the sheet's other actions.
+              <SignInButton
+                variant="nav"
+                testId="signin-sheet"
+                role="menuitem"
+                onActivate={() => setOpen(false)}
+              />
             )}
           </div>
         </div>
