@@ -1,18 +1,42 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import {
+  Anton,
+  Barlow,
+  Barlow_Semi_Condensed,
+  Zilla_Slab,
+} from "next/font/google";
 import "./globals.css";
 import "@youversion/platform-react-ui/styles.css";
 import Providers from "./providers";
-import AuthButton from "./auth-button";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Non-variable Google fonts require explicit weights (Next 16). Each exposes a
+// CSS variable consumed by globals.css / component inline styles.
+const anton = Anton({
+  weight: ["400"],
   subsets: ["latin"],
+  display: "swap",
+  variable: "--font-anton",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const barlow = Barlow({
+  weight: ["400", "500", "600", "700", "800"],
   subsets: ["latin"],
+  display: "swap",
+  variable: "--font-barlow",
+});
+
+const barlowSemiCondensed = Barlow_Semi_Condensed({
+  weight: ["500", "600", "700"],
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-barlow-semi",
+});
+
+const zillaSlab = Zilla_Slab({
+  weight: ["400", "700"],
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-zilla",
 });
 
 export const metadata: Metadata = {
@@ -31,15 +55,10 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${anton.variable} ${barlow.variable} ${barlowSemiCondensed.variable} ${zillaSlab.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <Providers appKey={appKey!}>
-          <header className="flex justify-end p-4">
-            <AuthButton />
-          </header>
-          {children}
-        </Providers>
+        <Providers appKey={appKey!}>{children}</Providers>
       </body>
     </html>
   );

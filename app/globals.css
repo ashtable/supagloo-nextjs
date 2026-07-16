@@ -1,26 +1,56 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+  /* Supagloo mono theme — light (black on white) */
+  --sg-bg: #ffffff;
+  --sg-fg: #0b0b0b;
+  --sg-dim: #6b6b6b;
+  --sg-panel: #f6f5f3;
+  --sg-panel2: #efedea;
+  --sg-line: rgba(0, 0, 0, 0.1);
+  --sg-line2: rgba(0, 0, 0, 0.17);
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Accent trio (identical in both themes) */
+  --sg-red: #c0392b;
+  --sg-brown: #6d3b26;
+  --sg-gold: #c99a3f;
+  --sg-cream: #f4e6c8;
+
+  /* Signature gradients */
+  --sg-grad: linear-gradient(150deg, #d4a24c, #c0392b 55%, #6d3b26);
+  --sg-grad-head: linear-gradient(100deg, #d4a24c, #c0392b 50%, #6d3b26);
+  --sg-poster: radial-gradient(
+    circle at 50% 44%,
+    #ffffff 0%,
+    #ffe8a8 13%,
+    #f0a43a 32%,
+    #8a3a1e 60%,
+    #160f14 88%
+  );
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* Supagloo mono theme — dark (white on black) */
+    --sg-bg: #050505;
+    --sg-fg: #fafafa;
+    --sg-dim: #9a9a9a;
+    --sg-panel: #111110;
+    --sg-panel2: #1a1918;
+    --sg-line: rgba(255, 255, 255, 0.11);
+    --sg-line2: rgba(255, 255, 255, 0.2);
   }
 }
 
+@theme inline {
+  --font-anton: var(--font-anton);
+  --font-barlow: var(--font-barlow);
+  --font-barlow-semi: var(--font-barlow-semi);
+  --font-zilla: var(--font-zilla);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--sg-bg);
+  color: var(--sg-fg);
+  font-family: var(--font-barlow);
 }
