@@ -1,0 +1,62 @@
+/*
+ * Wilderness Studio — route-scoped styles for what inline styles can't express
+ * (focus rings, hover affordances, the caret blink, reduced-motion). The palette
+ * itself is carried by inline `--ws-*` custom properties on the page wrapper, so
+ * nothing here leaks into the landing and the landing tokens never reach here.
+ */
+
+.backdrop {
+  min-height: 100vh;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: auto;
+  background: radial-gradient(130% 90% at 50% 0%, #241a12 0%, #0d0a07 70%);
+}
+
+/* A visible keyboard focus ring on any interactive descendant. */
+.backdrop button:focus-visible,
+.backdrop textarea:focus-visible,
+.backdrop [tabindex]:focus-visible {
+  outline: 2px solid #e6a43b;
+  outline-offset: 2px;
+}
+
+/* Subtle press/hover feedback for the many bespoke button surfaces. */
+.hoverable {
+  cursor: pointer;
+  transition: filter 120ms ease, background-color 120ms ease;
+}
+.hoverable:hover {
+  filter: brightness(1.08);
+}
+
+@keyframes wsCaretBlink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 16px;
+  margin-left: 3px;
+  vertical-align: -3px;
+  background: #e6a43b;
+  animation: wsCaretBlink 1s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+  }
+  .hoverable {
+    transition: none;
+  }
+}
