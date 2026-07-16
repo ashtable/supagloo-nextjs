@@ -1,87 +1,15 @@
-import SignInButton from "../sign-in-button";
+import HeroLede from "./hero-lede";
 
 /**
- * Centered hero: eyebrow, two-line headline (line 2 gradient-clipped), serif
- * sub-copy, CTA row (real sign-in pill + inert "Watch the Genesis demo"), and
- * the "100% FREE" trust row.
+ * Centered hero. Stays a Server Component: the auth-varying + mount-gated lede
+ * (eyebrow, headline, sub-copy, CTA block) lives in the `HeroLede` client leaf;
+ * this wrapper keeps the section shell and the viewport-only trust row so the
+ * marketing chrome stays server-rendered.
  */
 export default function Hero() {
   return (
     <section className="flex flex-col items-center text-center px-6 sm:px-12 pt-[66px] pb-11">
-      <div
-        style={{
-          fontFamily: "var(--font-barlow-semi)",
-          fontWeight: 700,
-          fontSize: 12,
-          letterSpacing: ".26em",
-          color: "var(--sg-dim)",
-          marginBottom: 20,
-        }}
-      >
-        {"SCRIPTURE VIDEO STUDIO · BUILT ON YOUVERSION"}
-      </div>
-
-      <h1
-        className="max-w-[900px] break-words"
-        style={{
-          fontFamily: "var(--font-anton)",
-          // Fixed 74px at the desktop design width; scales down on narrow
-          // viewports so the Anton headline never clips. 74px is reached by
-          // ~925px (8vw), so ≥1320px stays pixel-faithful at 74px.
-          fontSize: "clamp(2rem, 8vw, 74px)",
-          lineHeight: 0.98,
-          letterSpacing: ".005em",
-        }}
-      >
-        {"TURN SCRIPTURE INTO"}
-        <br />
-        <span
-          style={{
-            backgroundImage: "var(--sg-grad-head)",
-            WebkitBackgroundClip: "text",
-            backgroundClip: "text",
-            color: "transparent",
-          }}
-        >
-          {"CINEMATIC VIDEO."}
-        </span>
-      </h1>
-
-      <p
-        className="max-w-[600px]"
-        style={{
-          fontFamily: "var(--font-zilla)",
-          fontSize: 18,
-          lineHeight: 1.55,
-          color: "var(--sg-dim)",
-          marginTop: 22,
-        }}
-      >
-        {"Pick a verse — Supagloo storyboards it, narrates it in the voice you describe, and scores it into a share-ready short. Sign in with your YouVersion account to begin."}
-      </p>
-
-      <div
-        className="flex flex-wrap items-center justify-center"
-        style={{ gap: 14, marginTop: 34 }}
-      >
-        <SignInButton variant="hero" />
-        <button
-          type="button"
-          className="flex items-center cursor-pointer"
-          style={{
-            gap: 9,
-            padding: "14px 22px",
-            border: "1px solid var(--sg-line2)",
-            borderRadius: 13,
-            fontWeight: 700,
-            fontSize: 15,
-            color: "var(--sg-fg)",
-            background: "transparent",
-          }}
-        >
-          {"▶ Watch the Genesis demo"}
-        </button>
-      </div>
+      <HeroLede />
 
       <div
         className="flex items-center flex-wrap justify-center"
@@ -103,7 +31,12 @@ export default function Hero() {
         >
           {"✦ 100% FREE"}
         </span>
+
+        {/* Trust note — viewport-only (D2-a): the full note on desktop, the
+            shortened note on mobile (drops "— mix free & premium models"). Both
+            stay in the DOM (the hidden one is display:none). */}
         <span
+          className="hidden md:block"
           style={{
             fontFamily: "var(--font-barlow)",
             fontWeight: 500,
@@ -118,6 +51,24 @@ export default function Hero() {
             OpenRouter.ai
           </b>
           {" keys — mix free & premium models"}
+        </span>
+        <span
+          className="md:hidden"
+          style={{
+            fontFamily: "var(--font-barlow)",
+            fontWeight: 500,
+            fontSize: 11.5,
+            lineHeight: 1.4,
+            color: "var(--sg-dim)",
+          }}
+        >
+          {"No credit card · Bring your own "}
+          <b style={{ fontWeight: 700, color: "var(--sg-fg)" }}>Gloo AI</b>
+          {" & "}
+          <b style={{ fontWeight: 700, color: "var(--sg-fg)" }}>
+            OpenRouter.ai
+          </b>
+          {" keys"}
         </span>
       </div>
     </section>

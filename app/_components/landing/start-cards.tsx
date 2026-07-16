@@ -22,7 +22,11 @@ const CARDS = [
   },
 ];
 
-/** The "or start your own" trio of inert option cards. */
+/**
+ * The "or start your own" trio of inert option cards. Desktop: a 3-up row of
+ * vertical cards. Mobile (9b): stacked full-width cards, each horizontal (icon
+ * left, title + description right).
+ */
 export default function StartCards() {
   return (
     <section className="px-6 sm:px-12 pt-[14px] pb-[30px]">
@@ -39,21 +43,19 @@ export default function StartCards() {
         {"OR START YOUR OWN"}
       </div>
 
-      <div className="flex flex-wrap" style={{ gap: 16 }}>
+      <div className="flex flex-col md:flex-row gap-[10px] md:gap-[16px]">
         {CARDS.map((c) => (
           <button
             key={c.title}
             type="button"
-            className="flex flex-col text-left cursor-pointer"
+            // Mobile: horizontal row (icon + text block). Desktop: flex:1 column
+            // — three equal cards, matching the mock. Gaps are classes (not inline)
+            // so the media variants win.
+            className="flex flex-row md:flex-col items-center md:items-start text-left cursor-pointer w-full md:w-auto md:flex-1 gap-[13px] md:gap-[9px] p-[15px] md:p-5"
             style={{
-              // `1 1 240px`: three equal columns at the desktop width, wrapping
-              // to two then one column as the row narrows (no fixed 3-up row).
-              flex: "1 1 240px",
               border: "1px solid var(--sg-line)",
               borderRadius: 13,
-              padding: 20,
               background: "var(--sg-panel)",
-              gap: 9,
             }}
           >
             <span
@@ -67,24 +69,31 @@ export default function StartCards() {
                 display: "grid",
                 placeItems: "center",
                 fontSize: 17,
+                flex: "none",
               }}
             >
               {c.icon}
             </span>
-            <span
-              style={{
-                fontFamily: "var(--font-barlow-semi)",
-                fontWeight: 700,
-                fontSize: 15,
-                color: "var(--sg-fg)",
-              }}
-            >
-              {c.title}
-            </span>
-            <span
-              style={{ fontSize: 12.5, color: "var(--sg-dim)", lineHeight: 1.4 }}
-            >
-              {c.desc}
+            <span className="flex flex-col gap-[2px] md:gap-[9px]">
+              <span
+                style={{
+                  fontFamily: "var(--font-barlow-semi)",
+                  fontWeight: 700,
+                  fontSize: 15,
+                  color: "var(--sg-fg)",
+                }}
+              >
+                {c.title}
+              </span>
+              <span
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--sg-dim)",
+                  lineHeight: 1.4,
+                }}
+              >
+                {c.desc}
+              </span>
             </span>
           </button>
         ))}

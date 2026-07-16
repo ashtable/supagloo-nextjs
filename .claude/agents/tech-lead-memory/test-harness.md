@@ -140,6 +140,74 @@ anchor yet vanish from the LLM's view.
   Put throwaway `.mjs/.mts` in `scratch/` (gitignored) so node resolves `node_modules`; **delete them after**
   — eslint lints `scratch/` and `tsc` type-checks it, so leftover scripts break `npm run lint`/`tsc --noEmit`.
 
+## Step 6 plan (2026-07-16) — Turn 8/9 auth+viewport E2E seams (verified API facts)
+
+- **Mobile-viewport E2E without a second browser boot:** the v3 understudy `Page` exposes
+  **`page.setViewportSize(width, height, { deviceScaleFactor? })`** (verified `page.d.ts:303`; CDP
+  `Emulation.setDeviceMetricsOverride` under the hood → media queries re-evaluate on resize). So one
+  Stagehand session can assert desktop (8a @ the default 1288×711) then `setViewportSize(390,844)` and
+  assert mobile (9b). Discipline: put the mobile `describe` LAST and restore `setViewportSize(1288,711)`
+  in its `afterAll`; add a small `waitForTimeout` after resize for reflow. Also verified:
+  `waitForSelector(sel, { state: "visible"|"hidden"|"attached"|"detached", timeout, pierceShadow })`.
+- **D2 dual-copy caveat:** when mobile-short copy is rendered alongside desktop copy via `hidden md:block`
+  ⁄ `md:hidden`, BOTH strings stay in `textContent` (hidden one is `display:none`). Exact-anchor
+  `.includes()` tolerates it, but proving a mobile SWAP (short shown / long hidden) needs
+  `evaluate(getComputedStyle)` or bounding-rects, NOT `textContent`. (`extract` respects `display:none`
+  via the a11y snapshot but is flaky — prefer deterministic computed-style checks for the swaps.)
+- **Favicon (7b) is Next 16 file-convention, no layout edit:** `app/icon.svg` (static) → auto
+  `<link rel="icon" type="image/svg+xml" sizes="any">`; `app/apple-icon.tsx` (`next/og` `ImageResponse`,
+  export `size`+`contentType`) → `<link rel="apple-touch-icon">`; `app/favicon.ico` stays legacy;
+  DELETE `app/icon.jpg` (the clipped photo = the Safari bug). E2E guards it by `page.evaluate`-scanning
+  the `<head>` icon links (present in SSR HTML). Full plan: `scratch/turn8-9-landing.md`.
+
+**E2E is fully blocked when Gloo OAuth is degraded (seen 2026-07-16).** `beforeAll` builds
+`glooLlmClient()` (fetches the OAuth token) BEFORE `stagehand.init()`, and Stagehand requires the
+`llmClient` at construction — so if the token fetch fails, **every** E2E test skips, including the
+deterministic Gloo-free ones (testid/computed-style checks). Symptom: `getGlooAccessToken` throws
+`400 … PreTokenGenerationV3_0 failed … Organization lookup failed for client <id> … Read timed out
+(read timeout=2.0)`. That 400 is a **Gloo-side outage** (its Cognito pre-token Lambda can't reach its
+own backend), NOT bad creds (the client id resolves) and NOT an env problem — retries don't help; wait
+it out. If we ever want the deterministic tests to survive a Gloo outage, split them into a suite that
+builds Stagehand WITHOUT an `llmClient` (init/goto/evaluate/locator all work Gloo-free; only
+`extract`/`observe` need it).
+
+**Non-Gloo rendering verification (used when Gloo OAuth was down, 2026-07-16):** the app itself
+needs no Gloo (only Stagehand's LLM token does), so verify real DOM with the `webapp-testing` skill
+(native **Python Playwright**, NOT the repo's Stagehand): `npm run build` then serve via
+`with_server.py --server "npm run start" --port 3000 -- <venv>/python verify.py`. Playwright isn't
+installed by default — make a venv, `pip install playwright`, `python -m playwright install chromium`.
+Drive TWO `browser.new_context(viewport=...)` (1288×711 desktop, 390×844 mobile), `goto(...,
+wait_until="networkidle")` (use `next start`, NOT `next dev` — HMR websocket defeats networkidle),
+`wait_for_selector('[data-testid="signin-nav"]')` to pass the mount-gate, then assert via the testid
+seams + `getComputedStyle`/`bounding_box`. Gotcha: a control that exists in both a `hidden md:*` and a
+`md:hidden` copy → `get_by_text(...).first` may pick the HIDDEN one; assert "any instance visible".
+This gave 22/22 DOM checks + screenshots with Gloo down — the full compile-safety net is unit +
+`tsc --noEmit` + `eslint` + `build` + this Playwright pass.
+
+## E2E robustness fixes (2026-07-16, Turn 8/9 landing, code-review round 2)
+
+Three real-Gloo E2E flakes, all **test** issues (product verified 31/31 via Playwright), not regressions:
+- **Mount-gate race:** `beforeAll`'s `waitForText("Supagloo")` returns on the SERVER-rendered wordmark,
+  BEFORE hydration — so any assertion on a **mount-gated** client leaf (`NavAuth`→`signin-nav`, hero
+  swaps, etc.) can find 0. Fix: also `await page.waitForSelector('[data-testid="signin-nav"]',
+  {state:"visible"})` in `beforeAll`. Rule: when a test targets a mount-gated seam, wait for that seam,
+  not just server-rendered text.
+- **Understudy `waitForSelector(state:"hidden")` never resolves for a DETACHED node.** Conditionally
+  rendered UI (`{open && …}`, e.g. the mobile sheet) UNMOUNTS on close, so "hidden" (which waits for an
+  attached-but-hidden element) hangs → timeout. Playwright's own `state:"hidden"` treats detached as
+  hidden, but the Stagehand v3 understudy does NOT. Fix: poll `page.locator(sel).count() === 0`
+  (helper `waitForGone`) — the equivalent "closed" guarantee. (Or `state:"detached"`.)
+- **Multi-field Stagehand `extract` intermittently returns an EMPTY field** (saw `eyebrow:""` in a
+  4-field hero extract). Keep semantic extracts to the ONE field that genuinely needs the LLM; cover
+  everything else with deterministic `textContent` anchors / testid+computed-style. The 8a hero test
+  now extracts only `primaryCta` ("Watch the Genesis demo", not sign-in); eyebrow/headline/sub-copy are
+  anchor-covered. Landing E2E 13/13 stable (ran twice).
+
+**Cross-workstream `tsc --noEmit` is RED from OTHER suites** (`lib/studio/*` missing modules + a
+`.next/types` ref to `app/spike/page`) — those are separate in-flight TDD workstreams, NOT the landing.
+Scope type-checks to your files (grep the error paths); landing (`app/_components/landing/*`,
+`lib/landing/*`, `tests/e2e/landing.e2e.ts`) stays type-clean + eslint-clean.
+
 **Lint gotcha (eslint flat config = core-web-vitals + ts):** the mount-gate `useEffect(()=>setMounted(true),[])`
 now trips `react-hooks/set-state-in-effect` (an ERROR). It's the intended post-hydration one-shot gate —
 disable that one line with a rationale comment (`// eslint-disable-next-line react-hooks/set-state-in-effect`).
