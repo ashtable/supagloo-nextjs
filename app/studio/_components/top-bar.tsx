@@ -164,6 +164,7 @@ export default function TopBar() {
       <button
         type="button"
         data-testid="regenerate"
+        data-menu-trigger
         onClick={() => dispatch({ type: "TOGGLE_REROLL_MENU" })}
         className={styles.hoverable}
         style={{
@@ -185,6 +186,7 @@ export default function TopBar() {
       <button
         type="button"
         data-testid="render-share"
+        data-menu-trigger
         onClick={() => dispatch({ type: "TOGGLE_SHIP_MENU" })}
         className={styles.hoverable}
         style={{

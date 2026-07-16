@@ -9,10 +9,11 @@ import { aspectDimensions, fitDisplayBox } from "@/lib/studio/aspect";
 import {
   sceneAtFrame,
   sceneBoundaryFractions,
-  sceneRange,
+  sceneEntryFrame,
   totalDurationSeconds,
+  totalFrames,
 } from "@/lib/studio/storyboard";
-import { formatTimecode, framesToSeconds, secondsToFrames } from "@/lib/studio/time";
+import { formatTimecode, framesToSeconds } from "@/lib/studio/time";
 
 // Display bounds for the 9:16 frame (matches the 300×534 wireframe); other
 // aspects fit within these bounds preserving ratio.
@@ -25,11 +26,15 @@ function pad2(n: number): string {
 
 export default function PlayerPanel() {
   const { state, dispatch, playerRef } = useStudio();
-  const { storyboard, aspect, isPlaying } = state;
+  const { storyboard, aspect, isPlaying, selectedSceneId } = state;
   const fps = storyboard.fps;
-  const totalFrames = secondsToFrames(totalDurationSeconds(storyboard), fps);
-  // Open mid scene-2 (the selected scene) so the caption is visible on load.
-  const initialFrame = secondsToFrames(sceneRange(storyboard, "s2").start, fps) + 20;
+  // Single source of truth for the composition length (sum of per-scene rounded
+  // frame counts) — matches the composition's <Sequence> layout, so the Player,
+  // the scrubber clamp, and the timeline never diverge (the [4] fix).
+  const durationInFrames = totalFrames(storyboard, fps);
+  // Open mid the SELECTED scene (derived from state, not a hardcoded "s2") so its
+  // caption is faded in and visible on load (the [0]/[3] fix).
+  const initialFrame = sceneEntryFrame(storyboard, selectedSceneId, fps);
 
   const [frame, setFrame] = useState(initialFrame);
 
@@ -64,17 +69,48 @@ export default function PlayerPanel() {
   }, [playerRef, dispatch]);
 
   const currentScene = sceneAtFrame(storyboard, frame, fps);
-  const progress = totalFrames > 0 ? frame / totalFrames : 0;
+  const progress = durationInFrames > 0 ? frame / durationInFrames : 0;
   const ticks = sceneBoundaryFractions(storyboard);
+  const lastFrame = Math.max(0, durationInFrames - 1);
+
+  const seekTo = (target: number) => {
+    playerRef.current?.seekTo(Math.max(0, Math.min(lastFrame, target)));
+  };
 
   const seekToClientX = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const fraction = (e.clientX - rect.left) / rect.width;
-    const target = Math.max(
-      0,
-      Math.min(totalFrames - 1, Math.round(fraction * totalFrames)),
-    );
-    playerRef.current?.seekTo(target);
+    seekTo(Math.round(fraction * durationInFrames));
+  };
+
+  // [1] The scrubber is a keyboard-operable slider: arrows nudge by a step, Home
+  // and End jump to the ends. seekTo → frameupdate keeps `frame` (and thus the
+  // aria-valuenow / data-current-frame seams) in sync. Read the live frame from
+  // the Player so repeated presses compound correctly.
+  const step = Math.max(1, Math.round(fps)); // ~1 second per arrow press
+  const onScrubberKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const cur = playerRef.current?.getCurrentFrame() ?? frame;
+    let target: number;
+    switch (e.key) {
+      case "ArrowLeft":
+      case "ArrowDown":
+        target = cur - step;
+        break;
+      case "ArrowRight":
+      case "ArrowUp":
+        target = cur + step;
+        break;
+      case "Home":
+        target = 0;
+        break;
+      case "End":
+        target = lastFrame;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    seekTo(target);
   };
 
   return (
@@ -114,7 +150,7 @@ export default function PlayerPanel() {
           ref={playerRef}
           component={StoryboardVideo}
           inputProps={inputProps}
-          durationInFrames={totalFrames}
+          durationInFrames={durationInFrames}
           fps={fps}
           compositionWidth={comp.width}
           compositionHeight={comp.height}
@@ -230,10 +266,11 @@ export default function PlayerPanel() {
           role="slider"
           aria-label="Scrubber"
           aria-valuemin={0}
-          aria-valuemax={totalFrames}
+          aria-valuemax={durationInFrames}
           aria-valuenow={frame}
           tabIndex={0}
           onClick={seekToClientX}
+          onKeyDown={onScrubberKeyDown}
           style={{
             flex: 1,
             position: "relative",

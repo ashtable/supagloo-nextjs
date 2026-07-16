@@ -18,14 +18,34 @@ function StudioFrame() {
   const { state, dispatch } = useStudio();
   const menuOpen = state.rerollMenuOpen || state.shipMenuOpen;
 
-  // Escape dismisses whichever companion popover is open.
+  // Dismiss whichever companion popover is open on Escape or an outside
+  // pointerdown — mirroring the landing nav-auth dismiss. There is NO blocking
+  // overlay, so a pointerdown on the OTHER popover's trigger is skipped here and
+  // reaches the trigger, whose click drives the reducer's mutual exclusion to
+  // switch popovers in ONE click (the [2] fix). Clicks on an open panel or any
+  // menu trigger are ignored; everything else closes. Listeners exist only while
+  // a menu is open.
   useEffect(() => {
     if (!menuOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target;
+      if (
+        t instanceof Element &&
+        (t.closest("[data-menu-panel]") || t.closest("[data-menu-trigger]"))
+      ) {
+        return;
+      }
+      dispatch({ type: "CLOSE_MENUS" });
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") dispatch({ type: "CLOSE_MENUS" });
     };
+    document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [menuOpen, dispatch]);
 
   return (

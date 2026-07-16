@@ -110,6 +110,7 @@ export default function SceneInspector() {
         <button
           type="button"
           data-testid="reroll-scene"
+          data-menu-trigger
           onClick={() => dispatch({ type: "TOGGLE_REROLL_MENU" })}
           className={styles.hoverable}
           style={{

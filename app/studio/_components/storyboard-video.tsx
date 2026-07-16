@@ -61,6 +61,7 @@ function SceneContent({
 
       {caption ? (
         <AbsoluteFill
+          data-testid="scene-caption"
           style={{
             justifyContent: "flex-end",
             alignItems: "center",

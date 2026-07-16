@@ -17,8 +17,7 @@ import {
   type StudioAction,
   type StudioState,
 } from "@/lib/studio/reducer";
-import { sceneRange, type Storyboard } from "@/lib/studio/storyboard";
-import { secondsToFrames } from "@/lib/studio/time";
+import { sceneEntryFrame, type Storyboard } from "@/lib/studio/storyboard";
 import { useReducer } from "react";
 
 interface StudioContextValue {
@@ -47,8 +46,12 @@ export function StudioProvider({
 
   const selectScene = (id: string) => {
     dispatch({ type: "SELECT_SCENE", id });
-    const { start } = sceneRange(state.storyboard, id);
-    playerRef.current?.seekTo(secondsToFrames(start, state.storyboard.fps));
+    // Seek to the scene's SETTLED entry frame (start + a clamped offset) so its
+    // caption has faded in — seeking to the exact start lands on the invisible
+    // fade-in frame 0 (the [0] bug).
+    playerRef.current?.seekTo(
+      sceneEntryFrame(state.storyboard, id, state.storyboard.fps),
+    );
   };
 
   // A fresh value each render is fine: this provider re-renders only on editor

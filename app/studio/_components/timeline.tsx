@@ -3,11 +3,11 @@
 import styles from "../studio.module.css";
 import { useStudio, usePlayerFrame } from "./studio-context";
 import {
-  sceneRange,
+  sceneEntryFrame,
   timelineWeights,
   totalDurationSeconds,
+  totalFrames,
 } from "@/lib/studio/storyboard";
-import { secondsToFrames } from "@/lib/studio/time";
 
 const TRACK_LABEL: React.CSSProperties = {
   width: 52,
@@ -69,8 +69,10 @@ export default function Timeline() {
   const { storyboard, selectedSceneId } = state;
   const fps = storyboard.fps;
   const weights = timelineWeights(storyboard);
-  const totalFrames = secondsToFrames(totalDurationSeconds(storyboard), fps);
-  const initialFrame = secondsToFrames(sceneRange(storyboard, "s2").start, fps) + 20;
+  // Shared frame model with the Player (the [3]/[4] fix): total = sum of
+  // per-scene rounds; playhead seeds at the SELECTED scene's settled entry frame.
+  const durationInFrames = totalFrames(storyboard, fps);
+  const initialFrame = sceneEntryFrame(storyboard, selectedSceneId, fps);
 
   return (
     <div
@@ -301,7 +303,7 @@ export default function Timeline() {
           />
         </div>
 
-        <Playhead initialFrame={initialFrame} totalFrames={totalFrames} />
+        <Playhead initialFrame={initialFrame} totalFrames={durationInFrames} />
       </div>
     </div>
   );

@@ -42,11 +42,13 @@ export type StudioAction =
   | { type: "CLOSE_MENUS" }
   | { type: "TOGGLE_POSTING"; key: PostingKey };
 
-/** Initial editor state: scene 2 selected, 9:16, paused, menus closed. */
+/** Initial editor state: 2nd scene selected (matches the 5a mock; falls back to
+ *  the 1st for short storyboards — never a hardcoded id that a differently-shaped
+ *  storyboard could miss and crash on), 9:16, paused, menus closed. */
 export function initialStudioState(sb: Storyboard): StudioState {
   return {
     storyboard: sb,
-    selectedSceneId: "s2",
+    selectedSceneId: sb.scenes[1]?.id ?? sb.scenes[0].id,
     aspect: "9:16",
     isPlaying: false,
     rerollMenuOpen: false,

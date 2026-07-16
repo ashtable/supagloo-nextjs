@@ -70,7 +70,9 @@ function CheckRow({
 }
 
 /** SHIP IT popover (opened by RENDER & SHARE ▸). Platform + posting toggles are
- * local UI state only — posting/rendering is inert (no backend). */
+ * local UI state only — posting/rendering is inert (no backend). No blocking
+ * overlay — dismissal is handled by the document listener in StudioFrame, which
+ * skips `[data-menu-panel]` / `[data-menu-trigger]` (the [2] one-click-switch fix). */
 export default function ShipMenu() {
   const { state, dispatch } = useStudio();
   const { posting } = state;
@@ -88,102 +90,96 @@ export default function ShipMenu() {
   });
 
   return (
-    <>
+    <div
+      data-testid="ship-menu"
+      data-menu-panel
+      role="menu"
+      aria-label="Ship it"
+      style={{
+        position: "absolute",
+        top: 88,
+        right: 30,
+        zIndex: 31,
+        width: 340,
+        background: "#1b140d",
+        border: "1px solid rgba(230,180,120,.18)",
+        borderRadius: 14,
+        boxShadow: "0 20px 50px rgba(0,0,0,.4)",
+        padding: 18,
+        color: "#f1e7d6",
+      }}
+    >
       <div
-        aria-hidden
-        onClick={() => dispatch({ type: "CLOSE_MENUS" })}
-        style={{ position: "absolute", inset: 0, zIndex: 30 }}
-      />
-      <div
-        data-testid="ship-menu"
-        role="menu"
-        aria-label="Ship it"
         style={{
-          position: "absolute",
-          top: 88,
-          right: 30,
-          zIndex: 31,
-          width: 340,
-          background: "#1b140d",
-          border: "1px solid rgba(230,180,120,.18)",
-          borderRadius: 14,
-          boxShadow: "0 20px 50px rgba(0,0,0,.4)",
-          padding: 18,
-          color: "#f1e7d6",
+          fontFamily: "var(--font-anton), sans-serif",
+          fontSize: 19,
+          marginBottom: 14,
         }}
       >
-        <div
-          style={{
-            fontFamily: "var(--font-anton), sans-serif",
-            fontSize: 19,
-            marginBottom: 14,
-          }}
-        >
-          {"SHIP IT"}
-        </div>
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            flexWrap: "wrap",
-            marginBottom: 16,
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => dispatch({ type: "TOGGLE_POSTING", key: "tiktok" })}
-            className={styles.hoverable}
-            style={pill(posting.tiktok)}
-          >
-            {"TikTok ✓"}
-          </button>
-          <button
-            type="button"
-            onClick={() => dispatch({ type: "TOGGLE_POSTING", key: "ytShorts" })}
-            className={styles.hoverable}
-            style={pill(posting.ytShorts)}
-          >
-            {"YT Shorts ✓"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {}}
-            className={styles.hoverable}
-            style={pill(false)}
-          >
-            {"＋ add"}
-          </button>
-        </div>
-        <div
-          style={{
-            borderTop: "1px solid rgba(230,180,120,.14)",
-            paddingTop: 14,
-            display: "flex",
-            flexDirection: "column",
-            gap: 11,
-          }}
-        >
-          <CheckRow
-            checked={posting.recurring}
-            label="Make this a daily recurring post"
-            onToggle={toggle("recurring")}
-          />
-          <CheckRow
-            checked={posting.approveEachCut}
-            label="Approve each cut before it posts"
-            indent
-            onToggle={toggle("approveEachCut")}
-          />
-          <CheckRow
-            testid="post-auto"
-            checked={posting.postAutomatically}
-            label="Post automatically · 6:00 AM"
-            indent
-            dim
-            onToggle={toggle("postAutomatically")}
-          />
-        </div>
+        {"SHIP IT"}
       </div>
-    </>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          marginBottom: 16,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => dispatch({ type: "TOGGLE_POSTING", key: "tiktok" })}
+          className={styles.hoverable}
+          style={pill(posting.tiktok)}
+        >
+          {"TikTok ✓"}
+        </button>
+        <button
+          type="button"
+          onClick={() => dispatch({ type: "TOGGLE_POSTING", key: "ytShorts" })}
+          className={styles.hoverable}
+          style={pill(posting.ytShorts)}
+        >
+          {"YT Shorts ✓"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {}}
+          className={styles.hoverable}
+          style={pill(false)}
+        >
+          {"＋ add"}
+        </button>
+      </div>
+      <div
+        style={{
+          borderTop: "1px solid rgba(230,180,120,.14)",
+          paddingTop: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 11,
+        }}
+      >
+        <CheckRow
+          checked={posting.recurring}
+          label="Make this a daily recurring post"
+          onToggle={toggle("recurring")}
+        />
+        <CheckRow
+          checked={posting.approveEachCut}
+          label="Approve each cut before it posts"
+          indent
+          onToggle={toggle("approveEachCut")}
+        />
+        <CheckRow
+          testid="post-auto"
+          checked={posting.postAutomatically}
+          label="Post automatically · 6:00 AM"
+          indent
+          dim
+          onToggle={toggle("postAutomatically")}
+        />
+      </div>
+    </div>
   );
 }

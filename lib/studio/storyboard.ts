@@ -88,6 +88,45 @@ export function totalDurationSeconds(sb: Storyboard): number {
   return sb.scenes.reduce((sum, s) => sum + s.durationSeconds, 0);
 }
 
+/**
+ * Total composition length in FRAMES — the SUM of each scene's rounded frame
+ * count. This is the single source of truth for the Player's `durationInFrames`
+ * and the scrubber clamp, and it matches the composition's `<Sequence>` layout
+ * (which also sums per-scene rounds). NB: this is NOT `round(sum(seconds)·fps)`
+ * — with fractional-second scenes `sum(round)` and `round(sum)` diverge, and the
+ * Sequences use `sum(round)`, so the Player must too or the last scene's frames
+ * fall outside the timeline.
+ */
+export function totalFrames(sb: Storyboard, fps: number): number {
+  return sb.scenes.reduce(
+    (sum, s) => sum + secondsToFrames(s.durationSeconds, fps),
+    0,
+  );
+}
+
+/** Frames of settle past a scene's first frame before its caption has faded in
+ *  (the composition fades captions over `interpolate(frame, [0, 8], …)`), so a
+ *  freshly-selected paused scene shows a VISIBLE caption, not an opacity-0 one. */
+const CAPTION_SETTLE_FRAMES = 20;
+
+/**
+ * The frame to seek to when a scene becomes selected (or on initial load): its
+ * start plus a small settle offset, CLAMPED within the scene, so the caption is
+ * faded in rather than sitting at the invisible fade-in edge (frame 0). Derived
+ * from state — never a hardcoded scene id — so no storyboard shape can crash it.
+ */
+export function sceneEntryFrame(
+  sb: Storyboard,
+  id: string,
+  fps: number,
+): number {
+  const startFrame = secondsToFrames(sceneRange(sb, id).start, fps);
+  const scene = sb.scenes.find((s) => s.id === id);
+  const sceneFrames = scene ? secondsToFrames(scene.durationSeconds, fps) : 1;
+  const offset = Math.min(CAPTION_SETTLE_FRAMES, Math.max(0, sceneFrames - 1));
+  return startFrame + offset;
+}
+
 /** Cumulative {start,end} seconds for a scene. */
 export function sceneRange(
   sb: Storyboard,

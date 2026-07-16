@@ -94,6 +94,30 @@ async function playerText(): Promise<string> {
   });
 }
 
+/** Computed opacity of the current scene's caption element (−1 if absent). The
+ *  caption fades in via `interpolate(frame, [0, 8], …)`, so a scene shown at its
+ *  fade-in edge (frame 0) reads 0 even though its text is in the DOM — this is
+ *  how E11 proves the caption is actually VISIBLE, not merely present. */
+async function captionOpacity(): Promise<number> {
+  return page.evaluate(() => {
+    const el = document.querySelector<HTMLElement>(
+      '[data-testid="scene-caption"]',
+    );
+    return el ? parseFloat(getComputedStyle(el).opacity) : -1;
+  });
+}
+
+/** Fire a real keydown on the scrubber. The understudy locator has no key-press
+ *  API, so we dispatch a native KeyboardEvent on the element — it bubbles to
+ *  React's delegated root listener, which invokes the slider's onKeyDown. */
+async function pressKeyOnSlider(key: string): Promise<void> {
+  await page.evaluate((k) => {
+    document
+      .querySelector<HTMLElement>('[data-testid="player-panel"] [role="slider"]')
+      ?.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+  }, key);
+}
+
 async function dataAttr(testid: string, attr: string): Promise<string | null> {
   return page.evaluate(
     ({ id, a }) =>
@@ -417,5 +441,87 @@ describe("Wilderness Studio editor (5a)", () => {
     // restore for suite hygiene
     await page.goto(STUDIO_URL, { waitUntil: "load" });
     await page.waitForTimeout(400);
+  });
+
+  // --- Regression tests for code-review fixes [0]–[2] (E10 left /studio freshly
+  // reloaded: scene 2 selected, frame at scene 2, menus closed). ---
+
+  test("E11 ([0]): selecting a scene shows its caption FADED IN, not opacity 0", async () => {
+    expect(await count('[data-testid="scene-seg-s1"]')).toBeGreaterThan(0);
+    // Select a DIFFERENT text scene. Its caption must render VISIBLE — seeking to
+    // a scene's exact first frame used to land on the fade-in edge (opacity
+    // `interpolate(0,[0,8]) = 0`), so the caption was present in text but invisible.
+    await page.locator('[data-testid="scene-seg-s1"]').click();
+    await page.waitForTimeout(300);
+    expect(await playerText()).toContain("I am the voice of one"); // scene 1's script
+    expect(await captionOpacity()).toBeGreaterThan(0.5);
+
+    // restore scene 2 for suite hygiene
+    await page.locator('[data-testid="scene-seg-s2"]').click();
+    await page.waitForTimeout(200);
+  });
+
+  test("E12 ([1]): the scrubber is keyboard-operable (End / Home seek)", async () => {
+    expect(await count('[data-testid="player-panel"] [role="slider"]')).toBe(1);
+    const before = Number(await dataAttr("player-panel", "data-current-frame"));
+
+    // End → jump to the last frame (durationInFrames − 1 = 899 for the demo).
+    await pressKeyOnSlider("End");
+    await page.waitForTimeout(200);
+    const afterEnd = Number(await dataAttr("player-panel", "data-current-frame"));
+    expect(afterEnd).toBeGreaterThan(before);
+    expect(afterEnd).toBe(899);
+    // aria-valuenow tracks the seek (accessible value stays in sync).
+    const ariaNow = await page.evaluate(() =>
+      document
+        .querySelector('[data-testid="player-panel"] [role="slider"]')
+        ?.getAttribute("aria-valuenow"),
+    );
+    expect(ariaNow).toBe("899");
+
+    // Home → back to frame 0.
+    await pressKeyOnSlider("Home");
+    await page.waitForTimeout(200);
+    expect(Number(await dataAttr("player-panel", "data-current-frame"))).toBe(0);
+
+    // restore scene 2 for suite hygiene
+    await page.locator('[data-testid="scene-seg-s2"]').click();
+    await page.waitForTimeout(200);
+  });
+
+  test("E13 ([2]): reroll ↔ ship switch in ONE click; outside-click dismisses", async () => {
+    // open the REGENERATE popover
+    await page.locator('[data-testid="reroll-scene"]').click();
+    await page.waitForSelector('[data-testid="reroll-menu"]', {
+      state: "visible",
+      timeout: 4000,
+    });
+
+    // ONE click on Render & Share switches reroll → ship (no blocking overlay
+    // intercepts the trigger; the reducer's mutual exclusion does the switch).
+    await page.locator('[data-testid="render-share"]').click();
+    await page.waitForSelector('[data-testid="ship-menu"]', {
+      state: "visible",
+      timeout: 4000,
+    });
+    await waitForGone("reroll-menu");
+
+    // ONE click on the top-bar Regenerate switches ship → reroll (the reverse).
+    // (The inspector's reroll-scene trigger sits UNDER the ship panel, so the
+    // top-bar trigger is the reachable one — the panel has no scrim to punch.)
+    await page.locator('[data-testid="regenerate"]').click();
+    await page.waitForSelector('[data-testid="reroll-menu"]', {
+      state: "visible",
+      timeout: 4000,
+    });
+    await waitForGone("ship-menu");
+
+    // an outside pointerdown dismisses the open popover (Escape is covered by E9).
+    await page.evaluate(() =>
+      document.body.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true }),
+      ),
+    );
+    await waitForGone("reroll-menu");
   });
 });

@@ -35,6 +35,26 @@ describe("initialStudioState", () => {
       postAutomatically: false,
     });
   });
+
+  it("U-R11: defaults to the 2nd scene by INDEX (not a hardcoded 's2'), never crashing on odd storyboards ([3])", () => {
+    // No scene is called "s2" here — the old literal would have mis-selected /
+    // let sceneRange throw downstream. The safe pick is the 2nd scene by index.
+    const twoScene = {
+      ...DEMO_STORYBOARD,
+      scenes: [
+        { ...DEMO_STORYBOARD.scenes[0], id: "intro" },
+        { ...DEMO_STORYBOARD.scenes[1], id: "hook" },
+      ],
+    };
+    expect(initialStudioState(twoScene).selectedSceneId).toBe("hook");
+
+    // A single-scene storyboard falls back to the 1st scene (no scenes[1]).
+    const oneScene = {
+      ...DEMO_STORYBOARD,
+      scenes: [{ ...DEMO_STORYBOARD.scenes[0], id: "solo" }],
+    };
+    expect(initialStudioState(oneScene).selectedSceneId).toBe("solo");
+  });
 });
 
 describe("studioReducer", () => {

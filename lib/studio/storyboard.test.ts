@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   DEMO_STORYBOARD,
   totalDurationSeconds,
+  totalFrames,
+  sceneEntryFrame,
   sceneRange,
   sceneAtFrame,
   timelineWeights,
@@ -12,6 +14,7 @@ import {
   setSceneOnScreenText,
   updateSceneVisualPrompt,
 } from "./storyboard";
+import { secondsToFrames } from "./time";
 
 // Glyph-exact copy, byte-for-byte from the 5a wireframe (lines 804–1040).
 // middot `·` U+00B7, em dash `—` U+2014. Hardcoded here (not imported from the
@@ -98,6 +101,48 @@ describe("sceneBoundaryFractions", () => {
     expect(f[0]).toBeCloseTo(5 / 30, 9);
     expect(f[1]).toBeCloseTo(14 / 30, 9);
     expect(f[2]).toBeCloseTo(22 / 30, 9);
+  });
+});
+
+describe("totalFrames ([4] single source of truth)", () => {
+  it("U-S10: sums per-scene ROUNDED frame counts (demo = 900 @ 30fps)", () => {
+    const sum = DEMO_STORYBOARD.scenes.reduce(
+      (n, s) => n + secondsToFrames(s.durationSeconds, 30),
+      0,
+    );
+    expect(totalFrames(DEMO_STORYBOARD, 30)).toBe(900);
+    expect(totalFrames(DEMO_STORYBOARD, 30)).toBe(sum);
+  });
+
+  it("U-S11: is sum(round), NOT round(sum) — they diverge for fractional scenes", () => {
+    // two 0.5s scenes @1fps: sum(round(0.5·1)) = 1+1 = 2, but round(sum(1.0)·1) = 1.
+    const sb = {
+      ...DEMO_STORYBOARD,
+      scenes: [
+        { ...DEMO_STORYBOARD.scenes[0], durationSeconds: 0.5 },
+        { ...DEMO_STORYBOARD.scenes[1], durationSeconds: 0.5 },
+      ],
+    };
+    expect(totalFrames(sb, 1)).toBe(2);
+    // the OLD divergent value the Player used to compute (regression guard):
+    expect(secondsToFrames(totalDurationSeconds(sb), 1)).toBe(1);
+  });
+});
+
+describe("sceneEntryFrame ([0]/[3] settled, id-safe seek target)", () => {
+  it("U-S12: seeks past the caption fade-in — start + 20, on the LONG demo scenes", () => {
+    expect(sceneEntryFrame(DEMO_STORYBOARD, "s1", 30)).toBe(0 + 20);
+    expect(sceneEntryFrame(DEMO_STORYBOARD, "s2", 30)).toBe(150 + 20);
+    expect(sceneEntryFrame(DEMO_STORYBOARD, "s4", 30)).toBe(660 + 20);
+  });
+
+  it("U-S13: clamps the settle offset to stay inside a short scene", () => {
+    // a 0.2s scene @30fps = 6 frames; offset = min(20, 6-1) = 5, so start + 5.
+    const sb = {
+      ...DEMO_STORYBOARD,
+      scenes: [{ ...DEMO_STORYBOARD.scenes[0], id: "only", durationSeconds: 0.2 }],
+    };
+    expect(sceneEntryFrame(sb, "only", 30)).toBe(0 + 5);
   });
 });
 
