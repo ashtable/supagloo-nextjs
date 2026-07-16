@@ -1,7 +1,13 @@
 import LogoMark from "../logo-mark";
 import NavAuth from "../nav-auth";
+import NavYourVideos from "./nav-your-videos";
+import MobileNav from "./mobile-nav";
 
-/** Top nav: brand mark + wordmark on the left; placeholder links + auth control. */
+/**
+ * Top nav. Desktop (≥md): brand + placeholder links + authed-only "Your videos"
+ * + the auth control (`NavAuth`). Mobile (<md): brand + a hamburger (`MobileNav`)
+ * that collapses the links + auth control into a dismissible sheet.
+ */
 export default function Nav() {
   return (
     <nav
@@ -23,42 +29,47 @@ export default function Nav() {
         </span>
       </div>
 
-      {/* Spacer only at ≥sm — on narrow the auth control is pushed right via
-          `ml-auto`, and wraps to its own row below ~390px. */}
       <div className="hidden sm:block flex-1" />
 
-      <div className="flex items-center ml-auto mr-2" style={{ gap: 28 }}>
-        {/* The two placeholder links hide below md to keep the wordmark + auth
-            control on one row on phones; their text stays in the DOM. */}
-        <div className="hidden md:flex items-center" style={{ gap: 28 }}>
-          <button
-            type="button"
-            className="cursor-pointer"
-            style={{
-              fontWeight: 600,
-              fontSize: 14,
-              color: "var(--sg-dim)",
-              background: "transparent",
-              border: "none",
-            }}
-          >
-            {"How it works"}
-          </button>
-          <button
-            type="button"
-            className="cursor-pointer"
-            style={{
-              fontWeight: 600,
-              fontSize: 14,
-              color: "var(--sg-dim)",
-              background: "transparent",
-              border: "none",
-            }}
-          >
-            {"Gallery"}
-          </button>
-        </div>
+      {/* Desktop cluster — collapses into the hamburger below md. The two links'
+          text stays in the DOM even when hidden, so exact-copy anchors are safe. */}
+      <div
+        className="hidden md:flex items-center ml-auto mr-2"
+        style={{ gap: 28 }}
+      >
+        <button
+          type="button"
+          className="cursor-pointer"
+          style={{
+            fontWeight: 600,
+            fontSize: 14,
+            color: "var(--sg-dim)",
+            background: "transparent",
+            border: "none",
+          }}
+        >
+          {"How it works"}
+        </button>
+        <button
+          type="button"
+          className="cursor-pointer"
+          style={{
+            fontWeight: 600,
+            fontSize: 14,
+            color: "var(--sg-dim)",
+            background: "transparent",
+            border: "none",
+          }}
+        >
+          {"Gallery"}
+        </button>
+        <NavYourVideos />
         <NavAuth />
+      </div>
+
+      {/* Mobile hamburger — hidden at md+. */}
+      <div className="md:hidden ml-auto">
+        <MobileNav />
       </div>
     </nav>
   );
