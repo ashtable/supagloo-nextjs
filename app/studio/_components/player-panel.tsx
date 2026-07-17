@@ -122,8 +122,11 @@ export default function PlayerPanel() {
       data-playing={isPlaying ? "true" : "false"}
       data-current-frame={frame}
       style={{
-        width: 434,
-        flex: "none",
+        // §7 D-13B-LAYOUT: the player column is the center flex-filler (was a
+        // fixed 434px). The visual is still capped + centered by MAX_W, so it
+        // sits center-stage in the wider column.
+        flex: 1,
+        minWidth: 0,
         padding: 26,
         display: "flex",
         flexDirection: "column",

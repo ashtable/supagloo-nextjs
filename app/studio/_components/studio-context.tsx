@@ -15,7 +15,6 @@ import {
   initialStudioState,
   studioReducer,
   MOCK_COMMIT_DELAY_MS,
-  MOCK_PUBLISH_DELAY_MS,
   type StudioAction,
   type StudioState,
 } from "@/lib/studio/reducer";
@@ -33,8 +32,21 @@ interface StudioContextValue {
   selectScene: (id: string) => void;
   /** Mocked-async Commit — pends, then clears `dirty` (D-COMMIT-PUBLISH). */
   commit: () => void;
-  /** Mocked-async Publish — pends, then bumps the version branch + clears `dirty`. */
-  publish: () => void;
+  // ── Turn 14 overlay drivers (the wizard/overlay components own the tickers) ──
+  /** 14a: open the publish wizard's review step (the Publish button's action). */
+  openPublish: () => void;
+  /** 14a: begin publishing (step-1 CTA → seeds the log, starts the ticker). */
+  confirmPublish: () => void;
+  /** 14a: close the publish wizard (step-1 ✕/Cancel/backdrop, step-3 ✕). */
+  closePublish: () => void;
+  /** 14b: toggle the version dropdown (mutually exclusive with reroll/ship). */
+  toggleVersionMenu: () => void;
+  /** 14c: open the render overlay (14a step-3 CTA → seeds the render). */
+  startRender: () => void;
+  /** 14c: hide the overlay while the render keeps ticking in state. */
+  backgroundRender: () => void;
+  /** 14c: abort + clear the render. */
+  cancelRender: () => void;
 }
 
 const StudioContext = createContext<StudioContextValue | null>(null);
@@ -63,18 +75,22 @@ export function StudioProvider({
     );
   };
 
-  // Commit/Publish own their mocked-async timers here (the reducer stays pure);
-  // the `selectScene`-owns-the-side-effect precedent from Turn 5/5a.
+  // Commit owns its mocked-async timer here (the reducer stays pure); the
+  // `selectScene`-owns-the-side-effect precedent from Turn 5/5a. The 14a publish
+  // log + 14c render tickers are component-owned (see PublishWizard / StudioFrame),
+  // so the publish/render drivers below are thin dispatch wrappers.
   const commit = () => {
     if (state.committing) return;
     dispatch({ type: "COMMIT_BEGIN" });
     setTimeout(() => dispatch({ type: "COMMIT_DONE" }), MOCK_COMMIT_DELAY_MS);
   };
-  const publish = () => {
-    if (state.publishing) return;
-    dispatch({ type: "PUBLISH_BEGIN" });
-    setTimeout(() => dispatch({ type: "PUBLISH_DONE" }), MOCK_PUBLISH_DELAY_MS);
-  };
+  const openPublish = () => dispatch({ type: "OPEN_PUBLISH" });
+  const confirmPublish = () => dispatch({ type: "PUBLISH_BEGIN" });
+  const closePublish = () => dispatch({ type: "CLOSE_PUBLISH" });
+  const toggleVersionMenu = () => dispatch({ type: "TOGGLE_VERSION_MENU" });
+  const startRender = () => dispatch({ type: "OPEN_RENDER" });
+  const backgroundRender = () => dispatch({ type: "RENDER_BACKGROUND" });
+  const cancelRender = () => dispatch({ type: "CANCEL_RENDER" });
 
   // A fresh value each render is fine: this provider re-renders only on editor
   // actions (select/edit/toggle/play-pause), never at the Player's 30Hz frame
@@ -86,7 +102,13 @@ export function StudioProvider({
     project,
     selectScene,
     commit,
-    publish,
+    openPublish,
+    confirmPublish,
+    closePublish,
+    toggleVersionMenu,
+    startRender,
+    backgroundRender,
+    cancelRender,
   };
 
   return (

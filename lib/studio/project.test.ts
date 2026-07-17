@@ -7,7 +7,13 @@ import { describe, expect, it } from "vitest";
 import {
   findStudioProject,
   nextVersion,
+  // RED until these three version derivations are added to `project.ts` (Step 9).
+  // The module already exists, so this fails with a missing-export error — the
+  // TDD signal for the D-PUBLISH-SEMANTICS two-step bump helpers.
+  postPublishBranch,
+  prevVersion,
   publishLabel,
+  publishedVersion,
   studioChipUrl,
   studioUrl,
 } from "./project";
@@ -41,6 +47,26 @@ describe("nextVersion", () => {
     expect(nextVersion("v0.0.1")).toBe("v0.0.2");
     expect(nextVersion("v0.2.3")).toBe("v0.2.4");
     expect(nextVersion("v0.0.9")).toBe("v0.0.10"); // not v0.0.91
+  });
+});
+
+describe("prevVersion", () => {
+  it("U-SP7: decrements the patch, clamped at v0.0.0 (never negative)", () => {
+    expect(prevVersion("v0.0.3")).toBe("v0.0.2");
+    expect(prevVersion("v0.2.4")).toBe("v0.2.3");
+    expect(prevVersion("v0.0.0")).toBe("v0.0.0"); // clamp
+  });
+});
+
+describe("publishedVersion / postPublishBranch (D-PUBLISH-SEMANTICS)", () => {
+  it("U-SP8: publishedVersion is the one-step tag that goes live on main", () => {
+    expect(publishedVersion("v0.0.1")).toBe("v0.0.2");
+    expect(publishedVersion("v0.2.3")).toBe("v0.2.4");
+  });
+
+  it("U-SP9: postPublishBranch is the two-step fresh working branch", () => {
+    expect(postPublishBranch("v0.0.1")).toBe("v0.0.3");
+    expect(postPublishBranch("v0.2.3")).toBe("v0.2.5");
   });
 });
 

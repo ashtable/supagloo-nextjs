@@ -27,7 +27,8 @@ const MONO = "ui-monospace, Menlo, monospace";
  */
 export default function TopBar() {
   const router = useRouter();
-  const { state, dispatch, project, commit, publish } = useStudio();
+  const { state, dispatch, project, commit, openPublish, toggleVersionMenu } =
+    useStudio();
   const { aspect, versionBranch, dirty, committing, publishing } = state;
 
   return (
@@ -122,7 +123,26 @@ export default function TopBar() {
             style={{ width: 7, height: 7, borderRadius: "50%", background: "#e6a43b", flex: "none" }}
           />
         )}
-        <span style={{ fontSize: 9, color: "#7a6650" }}>{"▾"}</span>
+        {/* the ▾ is the 14b version-dropdown trigger (data-menu-trigger so the
+            StudioFrame dismiss listener skips it → one-click toggle) */}
+        <button
+          type="button"
+          data-testid="version-menu-trigger"
+          data-menu-trigger
+          aria-label="Version history"
+          onClick={toggleVersionMenu}
+          className={styles.hoverable}
+          style={{
+            fontSize: 9,
+            color: "#7a6650",
+            background: "none",
+            border: "none",
+            padding: "2px 2px",
+            lineHeight: 1,
+          }}
+        >
+          {"▾"}
+        </button>
       </div>
 
       {/* dirty caption */}
@@ -198,11 +218,11 @@ export default function TopBar() {
         {committing ? "Committing…" : "⤓ Commit"}
       </button>
 
-      {/* Publish — labelled with the next version */}
+      {/* Publish — opens the 14a wizard (no direct bump); label = next version */}
       <button
         type="button"
         data-testid="publish-button"
-        onClick={publish}
+        onClick={openPublish}
         disabled={publishing}
         className={styles.hoverable}
         style={{
@@ -223,7 +243,7 @@ export default function TopBar() {
           flex: "none",
         }}
       >
-        {publishing ? "Publishing…" : publishLabel(versionBranch)}
+        {publishLabel(versionBranch)}
       </button>
 
       {/* retained 5a: Regenerate */}

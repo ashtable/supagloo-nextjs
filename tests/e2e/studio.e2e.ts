@@ -23,6 +23,30 @@ import { Stagehand } from "@browserbasehq/stagehand";
  * is unchanged and must return to GREEN once Step 9 ships `/studio/[id]`.
  */
 
+/**
+ * §7 SCOPE AMENDMENT (2026-07-17) — 13b left-panel (scene-tree) + inspector
+ * simplification. RED until Step 9 deletes `nav-rail.tsx`, builds `scene-tree.tsx`,
+ * and rewrites `scene-inspector.tsx` to the 13b shape. This suite:
+ *   • ADDS the scene-tree cluster E14–E16 (RED: `scene-tree*` testids absent).
+ *   • MIGRATES the inspector-coupled tests: E2 (anchor list), E5 (scene-range →
+ *     scene-duration), E7 (onscreen pill → captions-switch) all go RED on the new
+ *     inspector testids/copy.
+ *   • DECOUPLES E9/E13 from the soon-deleted inspector `reroll-scene` trigger onto
+ *     the top-bar `regenerate` (which already exists) — these STAY GREEN across the
+ *     rebuild (they no longer touch the doomed inspector).
+ * E8 (script → live caption), E-SP2 (studio-project.e2e.ts) and Turn-14 E-VER2 stay
+ * GREEN because `script-input` is deliberately kept editable.
+ *
+ * data-testid contract — §7 additions:
+ *   New (scene-tree): `scene-tree`, `scene-tree-root`, `scene-tree-audio`,
+ *     `scene-tree-row` (+`data-scene-id`, +`data-selected`), `scene-tree-add`.
+ *   New (inspector):  `scene-inspector` (panel root), `scene-duration`,
+ *     `reroll-visual` (inert), `captions-switch` (+`data-on`).
+ *   Kept (inspector): `scene-number`, `script-input`, `visual-input`.
+ *   Removed (inspector): `scene-range`, `reroll-scene`, `onscreen-show`,
+ *     `onscreen-voice`.
+ */
+
 const BASE_URL = "http://localhost:3000";
 // Turn 13b migration: the editor moved from bare `/studio` to `/studio/[id]`
 // (A6/D-ROUTE-STUDIO). This suite now drives the `psalm-121` demo project; the
@@ -136,6 +160,21 @@ async function dataAttr(testid: string, attr: string): Promise<string | null> {
   );
 }
 
+/** getAttribute on the FIRST element matching a raw CSS selector — for compound
+ *  selectors the testid-only helpers can't target (e.g. a specific scene-tree row
+ *  `[data-testid="scene-tree-row"][data-scene-id="s3"]`, where several rows share
+ *  the same testid). Returns null when absent. */
+async function attrBySelector(
+  css: string,
+  attr: string,
+): Promise<string | null> {
+  return page.evaluate(
+    ({ c, a }) =>
+      document.querySelector<HTMLElement>(c)?.getAttribute(a) ?? null,
+    { c: css, a: attr },
+  );
+}
+
 async function boxByTestId(
   testid: string,
 ): Promise<{ width: number; height: number }> {
@@ -190,31 +229,30 @@ const EXACT_ANCHORS: readonly string[] = [
   "ROUGH",
   "JOHN 1:23 · KJV",
   "0:30", // transport total + timeline
-  // scene inspector
-  "SCENE",
+  // scene inspector — 13b (§7 migration). The rich 5a inspector copy is REMOVED
+  // (old scene-range "0:05 – 0:14 · 9s", ↻ Reroll scene, NARRATION · SCRIPT,
+  // → AI VOICE, APPLIES TO WHOLE VIDEO, the voice-preview 0:09 / ↻ New take,
+  // → SENT TO AI, ON-SCREEN TEXT, Show text / Voice only, LOWER THIRD · ZILLA
+  // SLAB, MUSIC · MOOD, Swelling strings, REFERENCE, ＋ Drop image, the footer
+  // tagline) and the 13b copy is anchored instead — RED until Step 9 rebuilds the
+  // inspector. NB the 13b "SCRIPT" label is already anchored by the timeline
+  // SCRIPT track (below), so it is not duplicated here.
+  "SCENE", // header "SCENE 02 · INSPECTOR" (also the player "SCENE 02 / 04")
+  "INSPECTOR",
   "02",
-  "0:05 – 0:14 · 9s",
-  "↻ Reroll scene",
-  "NARRATION · SCRIPT",
-  "of one crying in the wilderness,",
+  "of one crying in the wilderness,", // scene-2 script (KEPT — editable seam)
   "NARRATOR VOICE",
-  "→ AI VOICE",
-  "APPLIES TO WHOLE VIDEO",
+  "→ AI",
+  "· whole video",
   "warm, weathered, resonant baritone — unhurried, reverent, like James Earl Jones narrating scripture",
-  "0:09",
-  "↻ New take",
   "VISUAL PROMPT",
-  "→ SENT TO AI",
+  "↻ Reroll visual",
   "lone bearded figure walking a desert path, blowing dust, low golden sun, cinematic 35mm, shallow depth of field",
-  "ON-SCREEN TEXT",
-  "Show text",
-  "Voice only",
-  "LOWER THIRD · ZILLA SLAB",
-  "MUSIC · MOOD",
-  "Swelling strings",
-  "REFERENCE",
-  "＋ Drop image",
-  "The plan, not the render — voice, music & captions all set before you spend a generation.",
+  "On-screen captions",
+  "Show verse text",
+  "Duration",
+  "Scene length",
+  "9.0s", // scene 2 = 9s (initially selected)
   // timeline
   "STORYBOARD",
   "4 SCENES · 0:30",
@@ -302,7 +340,10 @@ describe("Wilderness Studio editor (5a)", () => {
     await page.waitForTimeout(200);
 
     expect(await testidText("scene-number")).toBe("03");
-    expect(await testidText("scene-range")).toBe("0:14 – 0:22 · 8s");
+    // §7: the header scene-range is removed; the 13b inspector shows a derived
+    // scene-duration instead. Scene 3 = 8s → "8.0s" (RED until Step 9 ships the
+    // `scene-duration` testid; `testidText` returns "" for the absent element).
+    expect(await testidText("scene-duration")).toBe("8.0s");
     expect(await testidText("scene-chip")).toContain("SCENE 03 / 04");
 
     // restore scene 2
@@ -353,19 +394,27 @@ describe("Wilderness Studio editor (5a)", () => {
     await page.waitForTimeout(200);
   });
 
-  test("E7: Show text / Voice only toggles the caption in the composition", async () => {
-    expect(await count('[data-testid="onscreen-voice"]')).toBeGreaterThan(0);
+  test("E7: the captions switch toggles the caption in the composition", async () => {
+    // §7: the two-way onscreen-show / onscreen-voice pill is replaced by a single
+    // captions-switch (SET_ON_SCREEN_TEXT: on="text" / off="voice-only", `data-on`).
+    // Same behavioral proof, new control. RED until Step 9 ships captions-switch —
+    // the presence guard fails cleanly (no state mutation) while the switch is absent.
+    expect(await count('[data-testid="captions-switch"]')).toBeGreaterThan(0);
     // scene 2 (selected) shows its caption in the Player DOM
     expect(await playerText()).toContain("of one crying in the wilderness,");
 
-    await page.locator('[data-testid="onscreen-voice"]').click();
+    // toggle OFF → voice-only: the caption leaves the composition
+    await page.locator('[data-testid="captions-switch"]').click();
     await page.waitForTimeout(200);
+    expect(await dataAttr("captions-switch", "data-on")).toBe("false");
     expect(await playerText()).not.toContain(
       "of one crying in the wilderness,",
     );
 
-    await page.locator('[data-testid="onscreen-show"]').click();
+    // toggle ON → text: the caption returns
+    await page.locator('[data-testid="captions-switch"]').click();
     await page.waitForTimeout(200);
+    expect(await dataAttr("captions-switch", "data-on")).toBe("true");
     expect(await playerText()).toContain("of one crying in the wilderness,");
   });
 
@@ -388,9 +437,12 @@ describe("Wilderness Studio editor (5a)", () => {
   });
 
   test("E9: companion popovers open, dismiss, and hold local toggle state", async () => {
-    // Reroll → REGENERATE menu
-    expect(await count('[data-testid="reroll-scene"]')).toBeGreaterThan(0);
-    await page.locator('[data-testid="reroll-scene"]').click();
+    // Reroll → REGENERATE menu. §7: the inspector `reroll-scene` trigger is deleted
+    // in Step 9, so open the REGENERATE popover from the top-bar `regenerate` (the
+    // panel copy is unchanged). `regenerate` already exists → E9 stays GREEN across
+    // the inspector rebuild.
+    expect(await count('[data-testid="regenerate"]')).toBeGreaterThan(0);
+    await page.locator('[data-testid="regenerate"]').click();
     await page.waitForSelector('[data-testid="reroll-menu"]', {
       state: "visible",
       timeout: 4000,
@@ -498,8 +550,10 @@ describe("Wilderness Studio editor (5a)", () => {
   });
 
   test("E13 ([2]): reroll ↔ ship switch in ONE click; outside-click dismisses", async () => {
-    // open the REGENERATE popover
-    await page.locator('[data-testid="reroll-scene"]').click();
+    // open the REGENERATE popover. §7: from the top-bar `regenerate` (the inspector
+    // `reroll-scene` trigger is deleted in Step 9); the reverse switch below already
+    // drives the same top-bar trigger, so E13 stays GREEN across the rebuild.
+    await page.locator('[data-testid="regenerate"]').click();
     await page.waitForSelector('[data-testid="reroll-menu"]', {
       state: "visible",
       timeout: 4000,
@@ -531,5 +585,108 @@ describe("Wilderness Studio editor (5a)", () => {
       ),
     );
     await waitForGone("reroll-menu");
+  });
+
+  // --- §7 scene-tree cluster (RED until Step 9 deletes nav-rail + builds the
+  // 236px COMPOSITION panel). Each test presence-guards its target FIRST so the
+  // failure is a clean missing-panel assertion, not a click-on-missing timeout,
+  // and no studio state is mutated on the RED run. ---
+
+  test("E14: the scene-tree renders the DERIVED composition (root · audio · N scenes · add)", async () => {
+    expect(await count('[data-testid="scene-tree"]')).toBeGreaterThan(0);
+
+    // root: 🎬 <projectName> + aspect dimensions (derived, tracks the toggle)
+    const root = await testidText("scene-tree-root");
+    expect(root).toContain("psalm-121");
+    expect(root).toContain("1080×1920"); // 9:16 default
+
+    // inert whole-video audio node (maps to a real whole-video property → kept)
+    expect(await count('[data-testid="scene-tree-audio"]')).toBeGreaterThan(0);
+
+    // EXACTLY the 4 real John 1:23 scenes (derived from the storyboard)
+    expect(await count('[data-testid="scene-tree-row"]')).toBe(4);
+    const treeText = await testidText("scene-tree");
+    expect(treeText).toContain("Scene 01 · wilderness · dawn");
+    expect(treeText).toContain("Scene 02 · lone figure · desert path");
+    expect(treeText).toContain("Scene 03 · sunrise · road");
+    expect(treeText).toContain("Scene 04 · verse card");
+    // NOT the wireframe's Psalm mock, and NO double-counting EndCard node (§7.5)
+    expect(treeText).not.toContain("Shelter");
+    expect(treeText).not.toContain("Still Waters");
+    expect(treeText).not.toContain("EndCard");
+
+    // inert add-scene affordance
+    expect(await testidText("scene-tree-add")).toContain("＋ Add scene");
+
+    // initial selection = seeded scene 2 (the single selectedSceneId source)
+    expect(
+      await attrBySelector(
+        '[data-testid="scene-tree-row"][data-scene-id="s2"]',
+        "data-selected",
+      ),
+    ).toBe("true");
+    expect(
+      await attrBySelector(
+        '[data-testid="scene-tree-row"][data-scene-id="s1"]',
+        "data-selected",
+      ),
+    ).toBe("false");
+  });
+
+  test("E15: the scene-tree shares ONE selection surface with the timeline + inspector + player", async () => {
+    expect(
+      await count('[data-testid="scene-tree-row"][data-scene-id="s3"]'),
+    ).toBeGreaterThan(0);
+
+    // click the tree's scene-3 row → the SAME selectedSceneId drives every surface
+    await page
+      .locator('[data-testid="scene-tree-row"][data-scene-id="s3"]')
+      .click();
+    await page.waitForTimeout(200);
+
+    expect(
+      await attrBySelector(
+        '[data-testid="scene-tree-row"][data-scene-id="s3"]',
+        "data-selected",
+      ),
+    ).toBe("true");
+    expect(
+      await attrBySelector(
+        '[data-testid="scene-tree-row"][data-scene-id="s2"]',
+        "data-selected",
+      ),
+    ).toBe("false");
+    expect(await testidText("scene-number")).toBe("03"); // inspector
+    expect(await testidText("scene-chip")).toContain("SCENE 03 / 04"); // player
+    expect(await dataAttr("scene-seg-s3", "aria-pressed")).toBe("true"); // timeline
+
+    // round-trip: selecting from the TIMELINE reflects back into the tree (proves
+    // there is no parallel selection state — one shared selectedSceneId).
+    await page.locator('[data-testid="scene-seg-s1"]').click();
+    await page.waitForTimeout(200);
+    expect(
+      await attrBySelector(
+        '[data-testid="scene-tree-row"][data-scene-id="s1"]',
+        "data-selected",
+      ),
+    ).toBe("true");
+
+    // restore scene 2 for suite hygiene
+    await page.locator('[data-testid="scene-seg-s2"]').click();
+    await page.waitForTimeout(200);
+  });
+
+  test("E16: the scene-tree root dimensions track the aspect toggle", async () => {
+    // Guard first so a RED run never mutates the aspect (leaves it at 9:16).
+    expect(await count('[data-testid="scene-tree-root"]')).toBeGreaterThan(0);
+
+    await page.locator('[data-testid="aspect-16x9"]').click();
+    await page.waitForTimeout(150);
+    expect(await testidText("scene-tree-root")).toContain("1920×1080");
+
+    // restore 9:16
+    await page.locator('[data-testid="aspect-9x16"]').click();
+    await page.waitForTimeout(150);
+    expect(await testidText("scene-tree-root")).toContain("1080×1920");
   });
 });
