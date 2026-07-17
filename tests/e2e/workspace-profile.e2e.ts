@@ -389,6 +389,25 @@ describe("Profile & connections 10b", () => {
     // symmetry (ambiguity #5): a not-linked github card offers Connect (→ 11b)
     expect(await countTestId("card-connect-github")).toBeGreaterThan(0);
   });
+
+  test("E-W9: /profile?mock=authed-fresh (first sign-in) redirects to / and shows the wizard, not the profile page", async () => {
+    // Regression guard (Step 15): a first-timer must not be able to deep-link
+    // straight to /profile and bypass the wizard's required-GitHub-connect
+    // gate. profile-page.tsx redirects on `firstSignIn`, same as `!isAuthed`.
+    const ready = await gotoMock(
+      `${BASE_URL}/profile?mock=authed-fresh`,
+      "setup-wizard",
+    );
+    expect(ready, "setup-wizard never mounted after the /profile redirect").toBe(
+      true,
+    );
+
+    // Landed back on / (not /profile), the wizard is shown...
+    expect(page.url()).not.toContain("/profile");
+    expect(await h.isVisibleByTestId("setup-wizard")).toBe(true);
+    // ...and the profile page itself never rendered.
+    expect(await countTestId("profile-page")).toBe(0);
+  });
 });
 
 describe("Standalone connect modals 11b / 11c", () => {

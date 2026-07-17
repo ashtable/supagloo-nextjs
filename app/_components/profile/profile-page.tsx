@@ -14,20 +14,31 @@ import type { Provider } from "@/lib/connections/connections-model";
  * template): `app/profile/page.tsx` is the RSC shell, this is the client
  * island. Owns the 11b/11c modal open-state (plan §3). Signed-out visitors are
  * redirected to `/` — there is no server session to gate this route with.
+ * First-time visitors (`firstSignIn`) are ALSO redirected to `/`: the
+ * required-GitHub-connect gate lives in the wizard (`WorkspaceHome`'s
+ * `{firstSignIn && <SetupWizard/>}`), which only overlays `/`. Without this,
+ * a first-timer could deep-link straight to `/profile` and bypass the gate.
  */
 export default function ProfilePage() {
   const router = useRouter();
-  const { mounted, session, connections, connectProvider, disconnectProvider, signOut } =
-    useSession();
+  const {
+    mounted,
+    session,
+    firstSignIn,
+    connections,
+    connectProvider,
+    disconnectProvider,
+    signOut,
+  } = useSession();
   const [modal, setModal] = useState<"github" | "openrouter" | null>(null);
 
   useEffect(() => {
-    if (mounted && !session.isAuthed) {
+    if (mounted && (!session.isAuthed || firstSignIn)) {
       router.replace("/");
     }
-  }, [mounted, session.isAuthed, router]);
+  }, [mounted, session.isAuthed, firstSignIn, router]);
 
-  if (!mounted || !session.isAuthed) return null;
+  if (!mounted || !session.isAuthed || firstSignIn) return null;
 
   const name = session.user?.name ?? "";
   const email = session.user?.email ?? "";
