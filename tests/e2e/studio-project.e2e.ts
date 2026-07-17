@@ -125,38 +125,6 @@ async function waitForDataAttr(
     `[data-testid="${testid}"] ${attr}="${last}" never became "${expected}" within ${timeoutMs}ms`,
   );
 }
-async function waitForTestidText(
-  testid: string,
-  expected: string,
-  timeoutMs = 6000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = await testidText(testid);
-    if (last === expected) return;
-    await page.waitForTimeout(80);
-  }
-  throw new Error(
-    `[data-testid="${testid}"] textContent never became ${JSON.stringify(expected)} within ${timeoutMs}ms (last: ${JSON.stringify(last)})`,
-  );
-}
-async function waitForTestidTextContains(
-  testid: string,
-  needle: string,
-  timeoutMs = 6000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = await testidText(testid);
-    if (last.includes(needle)) return;
-    await page.waitForTimeout(80);
-  }
-  throw new Error(
-    `[data-testid="${testid}"] textContent never contained ${JSON.stringify(needle)} within ${timeoutMs}ms (last: ${JSON.stringify(last)})`,
-  );
-}
 /** Navigate to a studio id and settle past the client mount. On Step 7 RED the
  *  route 404s so `studio-frame` never appears — we swallow the wait so the
  *  per-test presence guard reports the missing frame as a clean assertion. */
@@ -228,16 +196,25 @@ describe("Studio /studio/[id] — 13b top bar", () => {
     expect(await countTestId("unsaved-dot")).toBe(0);
   });
 
-  test("E-SP3: Publish bumps the branch and recomputes the next label", async () => {
+  test("E-SP3: Publish now OPENS the publish wizard and does NOT directly bump the chip (Turn 14a migration)", async () => {
+    // MIGRATED for Turn 14a (D-PUBLISH-SEMANTICS): the old assertion clicked
+    // Publish and expected a *direct* v0.0.1 → v0.0.2 chip bump. After 14a the
+    // click opens the publish wizard and bumps NOTHING until the flow completes;
+    // the full publish → two-step bump is proven in studio-publish.e2e's E-PUB2/
+    // E-PUB4. RED until Step 9: `publish-button` still direct-bumps and no
+    // `publish-wizard` exists → `waitForTestId("publish-wizard")` throws.
     await gotoStudio("/studio/psalm-121");
     expect(await countTestId("publish-button")).toBeGreaterThan(0);
     expect(await testidText("version-branch-chip")).toContain("v0.0.1");
     expect(await testidText("publish-button")).toBe("Publish v0.0.2 ▸");
 
     await clickTestId("publish-button");
-    // pure nextVersion bump: chip → v0.0.2, publish label → the NEXT next version
-    await waitForTestidTextContains("version-branch-chip", "v0.0.2");
-    await waitForTestidText("publish-button", "Publish v0.0.3 ▸");
+    // the button opens the wizard instead of directly bumping the version
+    await waitForTestId("publish-wizard");
+    expect(await countTestId("publish-backdrop")).toBeGreaterThan(0);
+    // the chip stays on the working branch — nothing published until the flow ends
+    expect(await testidText("version-branch-chip")).toContain("v0.0.1");
+    expect(await testidText("publish-button")).toBe("Publish v0.0.2 ▸");
   });
 });
 

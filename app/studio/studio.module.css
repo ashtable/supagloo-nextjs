@@ -52,11 +52,25 @@
   animation: wsCaretBlink 1s step-end infinite;
 }
 
+/* Spinning "active" ring for the warm log/stage renderer (14a publishing log,
+ * 14c render stages). Scoped to the studio; the palette is inline amber. */
+@keyframes wsSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: wsSpin 0.7s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .caret {
     animation: none;
   }
   .hoverable {
     transition: none;
+  }
+  .spin {
+    animation: none;
   }
 }

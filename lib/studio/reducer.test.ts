@@ -5,14 +5,9 @@ import {
   studioReducer,
   type StudioState,
 } from "./reducer";
-import { DEMO_STORYBOARD } from "./storyboard";
+import { DEMO_STORYBOARD, totalFrames } from "./storyboard";
 import { visibleCaption } from "./captions";
-// RED until `lib/studio/project.ts` exists (Step 9). `initialStudioState` now
-// seeds from a StudioProject (not a bare Storyboard), and the reducer bumps the
-// version branch on publish via `nextVersion` — so the whole suite depends on
-// this module. The value import forces a clean "Cannot find module './project'"
-// RED, exactly the intended TDD signal.
-import { nextVersion, type StudioProject } from "./project";
+import { type StudioProject } from "./project";
 
 /** The `/studio/psalm-121` project — a StudioProject wrapping the one demo
  *  storyboard the repo ships, seeded at the wizard's first working branch. */
@@ -209,14 +204,97 @@ describe("studioReducer", () => {
     expect(done.dirty).toBe(false);
   });
 
-  it("U-R16: PUBLISH_DONE bumps the version branch via nextVersion and cleans", () => {
-    const publishing = studioReducer(init(), { type: "PUBLISH_BEGIN" });
+  // ── Turn 14: the publish wizard is a TWO-STEP bump (D-PUBLISH-SEMANTICS) ─────
+  // U-R16 is REWRITTEN: publishing from v0.0.1 now tags live v0.0.2 onto main AND
+  // cuts a fresh working branch v0.0.3 (not the old one-step → v0.0.2). The flow
+  // is mediated by the wizard state machine (OPEN_PUBLISH → review, PUBLISH_BEGIN
+  // → publishing + seeded log, PUBLISH_DONE → published + the two-step bump).
+
+  it("U-R16: the publish flow seeds a log on BEGIN and lands on v0.0.3 with live v0.0.2 on DONE (two-step)", () => {
+    const open = studioReducer(init(), { type: "OPEN_PUBLISH" });
+    expect(open.publishFlow).toBe("review");
+
+    const publishing = studioReducer(open, { type: "PUBLISH_BEGIN" });
+    expect(publishing.publishFlow).toBe("publishing");
     expect(publishing.publishing).toBe(true);
+    expect(publishing.publishLog?.activeIndex).toBe(0);
+    expect(publishing.publishLog?.rows.length ?? 0).toBeGreaterThan(0);
+
+    const advanced = studioReducer(publishing, { type: "ADVANCE_PUBLISH_LOG" });
+    expect(advanced.publishLog?.activeIndex).toBe(1);
 
     const done = studioReducer(publishing, { type: "PUBLISH_DONE" });
+    expect(done.publishFlow).toBe("published");
     expect(done.publishing).toBe(false);
     expect(done.dirty).toBe(false);
-    expect(done.versionBranch).toBe(nextVersion("v0.0.1"));
-    expect(done.versionBranch).toBe("v0.0.2");
+    // working v0.0.1 → live v0.0.2 → new working v0.0.3
+    expect(done.lastPublishedVersion).toBe("v0.0.2");
+    expect(done.versionBranch).toBe("v0.0.3");
+    expect(done.publishLog).toBeNull();
+  });
+
+  it("U-R17: OPEN_PUBLISH opens the review step and clears the version menu; CLOSE_PUBLISH closes it", () => {
+    const menuOpen = studioReducer(init(), { type: "TOGGLE_VERSION_MENU" });
+    expect(menuOpen.versionMenuOpen).toBe(true);
+
+    const open = studioReducer(menuOpen, { type: "OPEN_PUBLISH" });
+    expect(open.publishFlow).toBe("review");
+    expect(open.versionMenuOpen).toBe(false); // opening publish closes the menu
+
+    const closed = studioReducer(open, { type: "CLOSE_PUBLISH" });
+    expect(closed.publishFlow).toBe("closed");
+  });
+
+  it("U-R18: the version menu toggles, is mutually exclusive with reroll/ship, and CLOSE_MENUS clears all three", () => {
+    const open = studioReducer(init(), { type: "TOGGLE_VERSION_MENU" });
+    expect(open.versionMenuOpen).toBe(true);
+
+    // opening reroll closes the version menu (mutual exclusion)
+    const reroll = studioReducer(open, { type: "TOGGLE_REROLL_MENU" });
+    expect(reroll.rerollMenuOpen).toBe(true);
+    expect(reroll.versionMenuOpen).toBe(false);
+
+    // opening the version menu closes reroll/ship
+    const back = studioReducer(reroll, { type: "TOGGLE_VERSION_MENU" });
+    expect(back.versionMenuOpen).toBe(true);
+    expect(back.rerollMenuOpen).toBe(false);
+
+    const closed = studioReducer(back, { type: "CLOSE_MENUS" });
+    expect(closed.versionMenuOpen).toBe(false);
+    expect(closed.rerollMenuOpen).toBe(false);
+    expect(closed.shipMenuOpen).toBe(false);
+
+    // one-click toggle: re-toggling closes it
+    expect(
+      studioReducer(open, { type: "TOGGLE_VERSION_MENU" }).versionMenuOpen,
+    ).toBe(false);
+  });
+
+  it("U-R19: OPEN_RENDER seeds the render (900 frames); ADVANCE climbs; BACKGROUND hides+preserves; CANCEL clears", () => {
+    const opened = studioReducer(init(), { type: "OPEN_RENDER" });
+    expect(opened.render).toBeTruthy();
+    expect(opened.render?.totalFrames).toBe(totalFrames(DEMO_STORYBOARD, 30));
+    expect(opened.render?.totalFrames).toBe(900);
+    expect(opened.render?.framesDone).toBe(0);
+    expect(opened.render?.backgrounded).toBe(false);
+
+    const advanced = studioReducer(opened, { type: "ADVANCE_RENDER" });
+    expect(advanced.render?.framesDone ?? 0).toBeGreaterThan(0);
+
+    const backgrounded = studioReducer(advanced, { type: "RENDER_BACKGROUND" });
+    expect(backgrounded.render).toBeTruthy(); // preserved, still ticking in state
+    expect(backgrounded.render?.backgrounded).toBe(true);
+
+    const cancelled = studioReducer(backgrounded, { type: "CANCEL_RENDER" });
+    expect(cancelled.render).toBeNull();
+  });
+
+  it("U-R20: initialStudioState seeds all three overlays empty / closed", () => {
+    const s = init();
+    expect(s.publishFlow).toBe("closed");
+    expect(s.versionMenuOpen).toBe(false);
+    expect(s.render).toBeNull();
+    expect(s.lastPublishedVersion).toBeNull();
+    expect(s.publishLog).toBeNull();
   });
 });

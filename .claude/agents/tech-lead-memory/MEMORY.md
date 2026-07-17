@@ -18,3 +18,4 @@ individual files, never here.
 - [Studio editor E2E](studio-editor-e2e.md) — /studio (5a) deterministic-test tactics: understudy center-click, Remotion rAF play-stall→seek guard, per-frame caption restore, detached-popover waitForGone
 - [Workspace/onboarding plan (Turn 10/11)](workspace-onboarding-plan.md) — flag-gated mock-session seam, HomeSwitch RSC-via-props branch, shared connections-model, wizard state machine, new modal primitive
 - [Project wizards + /studio/[id] (Turn 12/13)](turn12-13-project-wizards.md) — New/Import wizards + studio route migration; Step 7 tests written & RED; the exact model/testid contracts Step 9 (Green) must match
+- [Studio publish/render wizard (Turn 14) + §7 13b panels](turn13-14-studio-publish-wizard.md) — 14a Publish + 14b version dropdown + 14c render overlay (Step 7 tests written & RED); §7 amendment (2026-07-17) 13b scene-tree + inspector rebuild (view-only, 3 flagged calls, Step 7 tests written & RED)

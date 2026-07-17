@@ -13,6 +13,11 @@ import {
   updateSceneScript,
   setSceneOnScreenText,
   updateSceneVisualPrompt,
+  // §7 scene-tree — RED until Step 9 adds `sceneTreeLabel` to `storyboard.ts`.
+  // The module already exists, so this resolves to `undefined` and only the
+  // U-ST-TREE test below fails ("sceneTreeLabel is not a function"); every other
+  // storyboard test stays GREEN (same missing-export pattern as project.test.ts).
+  sceneTreeLabel,
 } from "./storyboard";
 import { secondsToFrames } from "./time";
 
@@ -178,6 +183,25 @@ describe("immutable edit transforms", () => {
     );
     expect(DEMO_STORYBOARD.scenes.find((s) => s.id === "s2")!.visualPrompt).toBe(
       VISUAL_PROMPT_S2,
+    );
+  });
+});
+
+// §7 SCOPE AMENDMENT (2026-07-17) — the ONLY genuinely-new pure logic the
+// scene-tree needs (§7.7). Everything else in §7 (aspectDimensions, selectScene,
+// SET_ON_SCREEN_TEXT, durationSeconds) is a view over already-tested models, so
+// per house style it is asserted via the studio.e2e.ts scene-tree cluster, not
+// unit-tested here. RED until Step 9 adds `sceneTreeLabel`.
+describe("sceneTreeLabel (§7 scene-tree row label)", () => {
+  it("U-ST-TREE: is 'Scene NN · <visualLabel>' — zero-padded index, middot join, derived from the real storyboard", () => {
+    // The REAL John 1:23 scenes, NOT the wireframe's Psalm mock. The index is
+    // 1-based and zero-padded; the middot is U+00B7; the scene's own visualLabel
+    // (which itself carries a middot for s1) is appended verbatim.
+    expect(sceneTreeLabel(DEMO_STORYBOARD.scenes[0])).toBe(
+      "Scene 01 · wilderness · dawn",
+    );
+    expect(sceneTreeLabel(DEMO_STORYBOARD.scenes[3])).toBe(
+      "Scene 04 · verse card",
     );
   });
 });

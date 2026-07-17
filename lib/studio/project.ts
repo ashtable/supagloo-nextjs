@@ -59,6 +59,34 @@ export function nextVersion(branch: string): string {
   return `v${major}.${minor}.${Number(patch) + 1}`;
 }
 
+/** Decrement the patch of a `vMAJ.MIN.PATCH` branch, integer-wise, CLAMPED at
+ *  patch 0 (never negative — `v0.0.0 → v0.0.0`). Defensive: passes an
+ *  unparseable string through unchanged. The inverse of `nextVersion`, used to
+ *  derive the archived / template rows of the 14b version history. */
+export function prevVersion(branch: string): string {
+  const m = /^v(\d+)\.(\d+)\.(\d+)$/.exec(branch);
+  if (!m) return branch;
+  const [, major, minor, patch] = m;
+  return `v${major}.${minor}.${Math.max(0, Number(patch) - 1)}`;
+}
+
+/**
+ * The two-step publish version semantics (D-PUBLISH-SEMANTICS). Publishing from
+ * working branch `b`:
+ *  - `publishedVersion(b)` (= one patch up) is the tag that goes LIVE on main,
+ *  - `postPublishBranch(b)` (= two patches up) is the fresh working branch cut
+ *    afterwards, so the studio never sits on a version that 14b would render as
+ *    both "working · uncommitted" AND "live on main".
+ * e.g. publish v0.0.1 → tag v0.0.2 live, land on new working v0.0.3.
+ */
+export function publishedVersion(branch: string): string {
+  return nextVersion(branch);
+}
+
+export function postPublishBranch(branch: string): string {
+  return nextVersion(nextVersion(branch));
+}
+
 /** The dynamic Publish button label — targets the NEXT version. */
 export function publishLabel(branch: string): string {
   return `Publish ${nextVersion(branch)} ▸`;

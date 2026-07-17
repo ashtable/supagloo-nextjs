@@ -61,6 +61,24 @@ export function newProjectLogRows(
   return tab === "existing-empty" ? rows.slice(1) : rows;
 }
 
+/** Publish-flow git lines (14a step 2). The mocked PR dance: commit the working
+ *  branch → push → open PR → merge & tag the published version onto main → cut
+ *  the next working branch. Templated from the working / published / next
+ *  branches the two-step bump derives (D-PUBLISH-SEMANTICS). */
+export function publishLogRows(ctx: {
+  workingBranch: string;
+  publishedVersion: string;
+  nextBranch: string;
+}): string[] {
+  return [
+    `Committed to ${ctx.workingBranch}`,
+    "Pushed branch to origin",
+    "Opened PR #7 → main",
+    `Merging PR & tagging ${ctx.publishedVersion}…`,
+    `Pull main · cut branch ${ctx.nextBranch}`,
+  ];
+}
+
 /** Import verifying lines: clone → detect remotion.config.ts → read the latest
  *  version branch → check it out. Templated from the imported repo's branch. */
 export function importLogRows(ctx: { latestBranch: string }): string[] {

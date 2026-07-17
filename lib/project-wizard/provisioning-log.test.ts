@@ -11,6 +11,10 @@ import {
   isLogComplete,
   logRowStatus,
   newProjectLogRows,
+  // RED until `publishLogRows` is added to `provisioning-log.ts` (Step 9). The
+  // module resolves (it already exists), so this fails with a missing-export
+  // error, the intended TDD signal for the new 14a publishing-log copy.
+  publishLogRows,
 } from "./provisioning-log";
 
 const NP_CTX = { fullName: "ashsrinivas/psalm-121", branch: "v0.0.1" };
@@ -40,6 +44,24 @@ describe("newProjectLogRows", () => {
     ]);
     expect(rows).toHaveLength(6);
     expect(rows.some((r) => r.startsWith("Created repo"))).toBe(false);
+  });
+});
+
+describe("publishLogRows", () => {
+  it("U-PL9: = the 5 publish-flow git lines (commit → push → PR → merge/tag → cut next branch)", () => {
+    expect(
+      publishLogRows({
+        workingBranch: "v0.0.1",
+        publishedVersion: "v0.0.2",
+        nextBranch: "v0.0.3",
+      }),
+    ).toEqual([
+      "Committed to v0.0.1",
+      "Pushed branch to origin",
+      "Opened PR #7 → main",
+      "Merging PR & tagging v0.0.2…",
+      "Pull main · cut branch v0.0.3",
+    ]);
   });
 });
 

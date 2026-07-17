@@ -83,6 +83,14 @@ export const DEMO_STORYBOARD: Storyboard = {
   ],
 };
 
+/** §7 scene-tree row label: `Scene NN · <visualLabel>` — 1-based index,
+ *  zero-padded, joined to the scene's own visualLabel with a middot (U+00B7).
+ *  Derived from the real storyboard (NOT the wireframe's Psalm mock), the only
+ *  genuinely-new pure logic the 13b scene-tree needs. */
+export function sceneTreeLabel(scene: Scene): string {
+  return `Scene ${String(scene.index).padStart(2, "0")} · ${scene.visualLabel}`;
+}
+
 /** Total runtime in seconds. */
 export function totalDurationSeconds(sb: Storyboard): number {
   return sb.scenes.reduce((sum, s) => sum + s.durationSeconds, 0);
