@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { YouVersionProvider } from "@youversion/platform-react-ui";
+import { SessionProvider } from "./_components/session-provider";
 
 export default function Providers({
   appKey,
@@ -28,7 +29,7 @@ export default function Providers({
       authRedirectUrl={authRedirectUrl}
       theme="system"
     >
-      {children}
+      <SessionProvider>{children}</SessionProvider>
     </YouVersionProvider>
   );
 }

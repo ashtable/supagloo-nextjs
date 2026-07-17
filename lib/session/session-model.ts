@@ -1,0 +1,125 @@
+/**
+ * The flag-gated mock-session reachability seam (plan D-AUTH).
+ *
+ * Stagehand can't complete real YouVersion OAuth, so the signed-in UI (10a
+ * workspace, 10b profile, 11a wizard, 11b/11c modals) would otherwise be
+ * unreachable in E2E. In demo mode only (`NEXT_PUBLIC_SUPAGLOO_DEMO === "1"`,
+ * set in `.env.local` for dev + E2E, absent in prod), a `?mock=<scenario>`
+ * query param can force a deterministic signed-in session. This module is
+ * pure — no React, no `window` — so it's fully unit-testable; the client
+ * `SessionProvider` is the only place that touches `window`/`localStorage`.
+ */
+
+export type MockScenario = "authed-fresh" | "authed-returning" | "authed-unlinked";
+
+/** Which `lib/connections/connections-model.ts` seed a mock scenario starts from. */
+export type ConnectionsSeedName = "wireframe" | "none-linked" | "all-linked";
+
+export interface MockSession {
+  scenario: MockScenario;
+  isAuthed: true;
+  hasOnboarded: boolean;
+  connectionsSeed: ConnectionsSeedName;
+}
+
+const MOCK_SCENARIOS: Record<
+  MockScenario,
+  { hasOnboarded: boolean; connectionsSeed: ConnectionsSeedName }
+> = {
+  // Fresh sign-in, onboarding NOT done → the wizard overlays the workspace.
+  // Nothing is linked yet; the wizard is what links them.
+  "authed-fresh": { hasOnboarded: false, connectionsSeed: "none-linked" },
+  // Onboarded returning user, the wireframe's connection mix (github +
+  // openrouter connected, gloo not-linked).
+  "authed-returning": { hasOnboarded: true, connectionsSeed: "wireframe" },
+  // Onboarded, but every provider is not-linked — exercises 10b's Connect
+  // buttons (→ 11b/11c) on an otherwise-settled account.
+  "authed-unlinked": { hasOnboarded: true, connectionsSeed: "none-linked" },
+};
+
+/**
+ * Parse the demo `?mock=` override. Returns `null` when the demo flag is off
+ * (prod safety — real YouVersion auth is the only path to `isAuthed`), or the
+ * scenario is missing/unrecognized.
+ */
+export function parseMockSession(
+  search: string,
+  demoFlag: boolean,
+): MockSession | null {
+  if (!demoFlag) return null;
+
+  const raw = search.startsWith("?") ? search.slice(1) : search;
+  const params = new URLSearchParams(raw);
+  const scenario = params.get("mock");
+  if (!scenario || !(scenario in MOCK_SCENARIOS)) return null;
+
+  const s = scenario as MockScenario;
+  const { hasOnboarded, connectionsSeed } = MOCK_SCENARIOS[s];
+  return { scenario: s, isAuthed: true, hasOnboarded, connectionsSeed };
+}
+
+/** The `"1"` sentinel is the only truthy value the localStorage stopgap writes. */
+export function hasOnboardedFromRaw(raw: string | null): boolean {
+  return raw === "1";
+}
+
+/** Stable, userId-scoped localStorage key for the onboarding stopgap. */
+export function onboardingStorageKey(userId: string): string {
+  return `supagloo:onboarded:${userId}`;
+}
+
+export interface SessionUser {
+  name: string;
+  email: string;
+}
+
+export interface Session {
+  isAuthed: boolean;
+  user: SessionUser | null;
+  hasOnboarded: boolean;
+}
+
+/** The minimal shape of `useYVAuth()` this module consumes (memory `auth-integration`). */
+export interface YvAuthLike {
+  auth: { isAuthenticated: boolean; isLoading?: boolean };
+  userInfo: { name?: string; email?: string; userId?: string } | null;
+}
+
+export interface ResolveSessionInput {
+  yvAuth: YvAuthLike;
+  demoFlag: boolean;
+  search: string;
+  onboardedRaw: string | null;
+}
+
+// The seeded demo identity (plan D-DATA) — used only when the mock override wins.
+const DEMO_USER: SessionUser = { name: "Ash Srinivas", email: "ash@supagloo.com" };
+
+/**
+ * Resolve the final session: the demo `?mock=` override when the flag is set
+ * and a scenario is present, else real YouVersion auth + the localStorage
+ * onboarding stopgap.
+ */
+export function resolveSession(input: ResolveSessionInput): Session {
+  const mock = parseMockSession(input.search, input.demoFlag);
+  if (mock) {
+    return { isAuthed: true, user: DEMO_USER, hasOnboarded: mock.hasOnboarded };
+  }
+
+  const isAuthed = input.yvAuth.auth.isAuthenticated;
+  if (!isAuthed) {
+    return { isAuthed: false, user: null, hasOnboarded: false };
+  }
+
+  const info = input.yvAuth.userInfo;
+  return {
+    isAuthed: true,
+    user: { name: info?.name ?? "", email: info?.email ?? "" },
+    hasOnboarded: hasOnboardedFromRaw(input.onboardedRaw),
+  };
+}
+
+/** Is this the visitor's first authed visit (wizard territory)? */
+export function firstSignIn(session: Session): boolean {
+  return session.isAuthed && !session.hasOnboarded;
+}

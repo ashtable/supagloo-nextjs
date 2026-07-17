@@ -16,3 +16,4 @@ individual files, never here.
 - [Landing auth×viewport (Turn 8/9)](landing-auth-viewport.md) — 8a/9a/9b matrix, hero-model pure seam, mount-gated hero-lede, md breakpoint, favicon Next-16 wiring
 - [Remotion integration](remotion-integration.md) — remotion+@remotion/player 4.0.490 verified on Next 16/Turbopack/React 19; Player renders `.__remotion-player` DOM (no canvas), no bundler config
 - [Studio editor E2E](studio-editor-e2e.md) — /studio (5a) deterministic-test tactics: understudy center-click, Remotion rAF play-stall→seek guard, per-frame caption restore, detached-popover waitForGone
+- [Workspace/onboarding plan (Turn 10/11)](workspace-onboarding-plan.md) — flag-gated mock-session seam, HomeSwitch RSC-via-props branch, shared connections-model, wizard state machine, new modal primitive
