@@ -52,15 +52,17 @@ function StudioFrame() {
     };
   }, [menuOpen, dispatch]);
 
-  // The 14c render advance ticker lives HERE (not in RenderOverlay) so it is not
-  // tied to the overlay's mount. It PAUSES while backgrounded — the overlay is
-  // hidden then and nothing observes the frame count, so continuing to churn the
-  // DOM would only race the understudy's node geometry in later tests for no
-  // visible benefit (backgrounded completion is state-only and untested). It
-  // resumes if the overlay is reopened. Cancel (render → null) stops it at once.
+  // The 14c render advance ticker lives HERE (not in RenderOverlay) so it is NOT
+  // tied to the overlay's mount — a backgrounded render (overlay hidden) keeps
+  // climbing to completion in reducer state, matching D-RENDER-DISMISS ("Run in
+  // background" hides the surface while the mocked render advances to done). The
+  // guard stops the ticker ONLY at terminal state (isRenderComplete) or when
+  // there's no render; Cancel (render → null) stops it at once. Once complete no
+  // further timeout is scheduled, so it can't loop or leak an interval past the
+  // final frame — completion is state-only (no visible surface), so it's untested.
   useEffect(() => {
     const r = state.render;
-    if (!r || r.backgrounded || isRenderComplete(r)) return;
+    if (!r || isRenderComplete(r)) return;
     const t = setTimeout(() => dispatch({ type: "ADVANCE_RENDER" }), RENDER_TICK_MS);
     return () => clearTimeout(t);
   }, [state.render, dispatch]);

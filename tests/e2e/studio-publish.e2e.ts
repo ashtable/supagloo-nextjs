@@ -142,16 +142,6 @@ async function dataAttrAll(testid: string, attr: string): Promise<string[]> {
     { id: testid, a: attr },
   );
 }
-/** Joined textContent of every element carrying `testid`. */
-async function allTestidText(testid: string): Promise<string> {
-  return page.evaluate((id) => {
-    return Array.from(
-      document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`),
-    )
-      .map((el) => (el.textContent ?? "").trim())
-      .join(" · ");
-  }, testid);
-}
 /** First integer parsed out of a testid's text (e.g. "132 / 900" → 132). */
 async function firstIntIn(testid: string): Promise<number> {
   const text = await testidText(testid);
@@ -333,10 +323,18 @@ describe("Studio /studio/[id] — 14a Publish wizard", () => {
     await waitForTestId("publishing-log");
     expect(await countTestId("publish-close")).toBe(0);
 
-    // (iv) a backdrop click dismisses step 1 but NOT step 2
+    // (iv) a backdrop click dismisses step 1 …
     await openPublishReview();
     await clickTestId("publish-backdrop");
     await h.waitForGone("publish-wizard");
+
+    // … but NOT step 2 (can't abort a git op mid-flight — the backdrop's onClick
+    //     only closes while publishFlow === "review", so the wizard stays open)
+    await openPublishReview();
+    await clickTestId("publish-confirm");
+    await waitForTestId("publishing-log");
+    await clickTestId("publish-backdrop");
+    expect(await countTestId("publish-wizard")).toBeGreaterThan(0);
   });
 
   test("E-PUB4: after publishing, the top bar reflects the two-step bump (chip v0.0.3, Publish v0.0.4)", async () => {

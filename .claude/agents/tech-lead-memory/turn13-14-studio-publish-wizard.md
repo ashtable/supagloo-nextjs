@@ -168,3 +168,24 @@ ticker). DELETED `nav-rail.tsx`. `scene-inspector.tsx` rewritten to 13b; `player
   coordinate click on `publish-backdrop` must land on the dimmer (not the card) to dismiss step 1 (E-PUB3).
 - **Stable across reruns:** publish suite 3×11/11, E-VER2 5/5, full e2e 66/66. One pre-existing lint
   WARNING (`allTestidText` unused, a Step-7 helper) left untouched.
+
+## Step 15 revisions (2026-07-17) — user-approved review fixes (3 items)
+
+Three surgical fixes on top of Step 9; unit 149/149, e2e 66/66, tsc + lint clean (**the lint warning is
+now GONE**). Only 2 files changed; `render-overlay.tsx` left untouched (its comment was already correct).
+- **Backgrounded render now RUNS to completion (SUPERSEDES the Step-9 "it PAUSES while backgrounded"
+  note).** User picked option (a) = honor the original D-RENDER-DISMISS ("Run in background hides the
+  overlay while the mocked render keeps advancing to completion in reducer state"). Fix: `studio-app.tsx`
+  render-ticker guard dropped the `r.backgrounded` clause → now `if (!r || isRenderComplete(r)) return;`.
+  Safe: `ADVANCE_RENDER`/`advanceRender` ignore `backgrounded`; at framesDone=900 `advanceRender` sets
+  stage `activeIndex=4` (=rows.length) in the SAME update, so `isRenderComplete` (framesDone≥total &&
+  isLogComplete) flips true → guard returns early → no further `setTimeout` scheduled → NO loop / NO
+  leaked interval past the final frame. Completion is state-only (overlay hidden), so still no test (per
+  plan §4.4). Comment in `studio-app.tsx` rewritten (the old "It resumes if the overlay is reopened" claim
+  was never true and is deleted).
+- **E-PUB3 gained the step-2 backdrop assertion** (`studio-publish.e2e.ts`): after `publish-confirm` →
+  `publishing-log`, a `publish-backdrop` click leaves `publish-wizard` present (`> 0`). GREEN immediately —
+  the `publish-wizard.tsx` backdrop `onClick` already guards `if (publishFlow === "review")`. Robust even
+  if it races to step 3: the `publish-wizard` div is present in steps 1/2/3, gone only when closed.
+- **Deleted the unused `allTestidText` helper** (`studio-publish.e2e.ts` ~line 146) — the repo's sole lint
+  warning; confirmed no other references before deleting.
