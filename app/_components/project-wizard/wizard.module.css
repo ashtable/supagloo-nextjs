@@ -1,0 +1,20 @@
+/*
+ * Route-agnostic wizard styles for what inline styles can't express: the
+ * provisioning-log's spinning "active" ring. Scoped via CSS modules so nothing
+ * leaks into globals.css (all palette tokens already exist there).
+ */
+@keyframes wizardSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: wizardSpin 0.7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}

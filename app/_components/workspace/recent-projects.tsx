@@ -1,8 +1,17 @@
 import { DEMO_PROJECTS, sortByLastOpened } from "@/lib/workspace/projects-model";
 import OctocatIcon from "../octocat-icon";
 
-/** 10a's "Recent projects" grid + dashed new-project card + info bar. */
-export default function RecentProjects() {
+/** 10a's "Recent projects" grid + dashed new-project card + info bar. The
+ *  dashed card opens the New-project wizard; each card's "Open ▸" routes to
+ *  `/studio/<id>` (callbacks lifted to `workspace-home`, which owns the wizard
+ *  open-state and the router). */
+export default function RecentProjects({
+  onNewProject,
+  onOpenProject,
+}: {
+  onNewProject: () => void;
+  onOpenProject: (id: string) => void;
+}) {
   const projects = sortByLastOpened(DEMO_PROJECTS);
 
   return (
@@ -34,6 +43,11 @@ export default function RecentProjects() {
         {projects.map((p) => (
           <div
             key={p.id}
+            data-testid={`project-open-${p.id}`}
+            onClick={() => onOpenProject(p.id)}
+            role="button"
+            tabIndex={0}
+            className="cursor-pointer"
             style={{
               border: "1px solid var(--sg-line2)",
               borderRadius: 14,
@@ -136,6 +150,10 @@ export default function RecentProjects() {
         ))}
 
         <div
+          data-testid="recent-new-project-card"
+          onClick={onNewProject}
+          role="button"
+          tabIndex={0}
           className="flex flex-col items-center justify-center cursor-pointer"
           style={{
             border: "1.5px dashed var(--sg-line2)",

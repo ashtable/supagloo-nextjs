@@ -1,8 +1,12 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import styles from "../studio.module.css";
 import { useStudio } from "./studio-context";
+import LogoMark from "../../_components/logo-mark";
+import OctocatIcon from "../../_components/octocat-icon";
 import { ASPECTS, type Aspect } from "@/lib/studio/aspect";
+import { publishLabel } from "@/lib/studio/project";
 
 const ASPECT_TESTID: Record<Aspect, string> = {
   "9:16": "aspect-9x16",
@@ -10,9 +14,21 @@ const ASPECT_TESTID: Record<Aspect, string> = {
   "1:1": "aspect-1x1",
 };
 
+const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
+const MONO = "ui-monospace, Menlo, monospace";
+
+/**
+ * Turn 13b top bar (D-TOPBAR, "extend" style): project identity + version-branch
+ * chip + dirty caption + Commit/Publish + avatar, wired Back → "/". Builds these
+ * NEW elements while KEEPING 5a's live actions (the aspect toggle, ↻ Regenerate,
+ * Render & Share ▸) — only the old GENERATE/PREVIEW/SHARE step indicator is
+ * dropped. Identity comes from the resolved `project`; the mutable branch/dirty/
+ * pending bits live in the reducer.
+ */
 export default function TopBar() {
-  const { state, dispatch } = useStudio();
-  const { storyboard, aspect } = state;
+  const router = useRouter();
+  const { state, dispatch, project, commit, publish } = useStudio();
+  const { aspect, versionBranch, dirty, committing, publishing } = state;
 
   return (
     <div
@@ -21,18 +37,19 @@ export default function TopBar() {
         flex: "none",
         display: "flex",
         alignItems: "center",
-        gap: 22,
-        padding: "0 26px",
+        gap: 14,
+        padding: "0 20px",
         borderBottom: "1px solid rgba(230,180,120,.12)",
-        background:
-          "linear-gradient(180deg,rgba(40,30,20,.5),rgba(22,17,13,.2))",
+        background: "linear-gradient(180deg,rgba(40,30,20,.5),rgba(22,17,13,.2))",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
+      {/* back + logo */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <button
           type="button"
-          onClick={() => {}}
-          aria-label="Back"
+          data-testid="studio-back"
+          onClick={() => router.push("/")}
+          aria-label="Back to workspace"
           className={styles.hoverable}
           style={{
             color: "#8a7358",
@@ -42,85 +59,80 @@ export default function TopBar() {
             padding: 0,
           }}
         >
-          ‹
+          {"‹"}
         </button>
-        <div>
-          <div
-            style={{
-              fontFamily:
-                "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif",
-              fontWeight: 600,
-              fontSize: 10,
-              letterSpacing: ".28em",
-              color: "#c6552b",
-            }}
+        <LogoMark size={30} />
+      </div>
+
+      {/* project identity */}
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <span
+            data-testid="studio-project-name"
+            style={{ fontFamily: SEMI, fontWeight: 700, fontSize: 17, letterSpacing: "-.01em" }}
           >
-            {"PREVIEW"}
-          </div>
-          <div
-            style={{
-              fontFamily: "var(--font-anton), sans-serif",
-              fontSize: 22,
-              letterSpacing: ".01em",
-              lineHeight: 1,
-              marginTop: 3,
-            }}
+            {project.projectName}
+          </span>
+          <span
+            data-testid="studio-project-rename"
+            aria-hidden
+            style={{ fontSize: 11, color: "#7a6650", cursor: "pointer" }}
           >
-            {storyboard.title}{" "}
-            <span
-              style={{
-                color: "#7a6650",
-                fontSize: 15,
-                fontFamily: "var(--font-barlow), sans-serif",
-                fontWeight: 500,
-                letterSpacing: 0,
-              }}
-            >
-              {storyboard.dateLabel}
-            </span>
-          </div>
+            {"✎"}
+          </span>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 11,
+            color: "#a99b85",
+            marginTop: 1,
+          }}
+        >
+          <OctocatIcon size={11} />
+          <span data-testid="studio-repo-path">{project.repo}</span>
         </div>
       </div>
 
-      {/* step indicator */}
+      {/* version-branch chip */}
       <div
+        data-testid="version-branch-chip"
+        data-dirty={dirty ? "true" : "false"}
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 12,
-          marginLeft: 14,
-          fontFamily:
-            "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif",
-          fontWeight: 600,
-          fontSize: 11,
-          letterSpacing: ".14em",
+          gap: 7,
+          padding: "7px 12px",
+          border: "1px solid rgba(230,180,120,.24)",
+          borderRadius: 9,
+          background: "#0f0b07",
+          flex: "none",
         }}
       >
-        <span style={{ color: "#6f5c46" }}>
-          {"GENERATE "}
-          <span style={{ color: "#d0632e" }}>{"✓"}</span>
+        <span style={{ fontSize: 12 }}>{"⑂"}</span>
+        <span style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: "#f1e7d6" }}>
+          {versionBranch}
         </span>
-        <span
-          style={{ width: 22, height: 1, background: "rgba(230,180,120,.2)" }}
-        />
-        <span
-          style={{
-            color: "#f1e7d6",
-            borderBottom: "2px solid #d0632e",
-            paddingBottom: 3,
-          }}
-        >
-          {"PREVIEW"}
-        </span>
-        <span
-          style={{ width: 22, height: 1, background: "rgba(230,180,120,.2)" }}
-        />
-        <span style={{ color: "#6f5c46" }}>{"SHARE"}</span>
+        {dirty && (
+          <span
+            data-testid="unsaved-dot"
+            title="unsaved changes"
+            style={{ width: 7, height: 7, borderRadius: "50%", background: "#e6a43b", flex: "none" }}
+          />
+        )}
+        <span style={{ fontSize: 9, color: "#7a6650" }}>{"▾"}</span>
       </div>
+
+      {/* dirty caption */}
+      <span data-testid="dirty-caption" style={{ fontSize: 11.5, color: "#a99b85", flex: "none" }}>
+        {dirty ? "Edited 2m ago · not committed" : "All changes committed"}
+      </span>
 
       <div style={{ flex: 1 }} />
 
-      {/* format toggle */}
+      {/* viewport-ratio switcher (the retained 5a aspect toggle) */}
       <div
         role="group"
         aria-label="Aspect ratio"
@@ -130,6 +142,7 @@ export default function TopBar() {
           border: "1px solid rgba(230,180,120,.14)",
           borderRadius: 9,
           padding: 3,
+          flex: "none",
         }}
       >
         {ASPECTS.map((a) => {
@@ -145,14 +158,12 @@ export default function TopBar() {
               style={{
                 padding: "5px 11px",
                 borderRadius: 6,
-                fontWeight: 600,
+                fontWeight: active ? 700 : 600,
                 fontSize: 12,
                 border: "none",
                 color: active ? "#f1e7d6" : "#7a6650",
                 background: active ? "#2a1f15" : "transparent",
-                boxShadow: active
-                  ? "inset 0 1px 0 rgba(230,180,120,.12)"
-                  : "none",
+                boxShadow: active ? "inset 0 1px 0 rgba(230,180,120,.12)" : "none",
               }}
             >
               {a}
@@ -161,6 +172,61 @@ export default function TopBar() {
         })}
       </div>
 
+      {/* Commit — enabled only when dirty */}
+      <button
+        type="button"
+        data-testid="commit-button"
+        onClick={commit}
+        disabled={!dirty || committing}
+        className={styles.hoverable}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "9px 15px",
+          border: "1px solid rgba(230,180,120,.24)",
+          borderRadius: 9,
+          fontWeight: 700,
+          fontSize: 13,
+          color: "#f1e7d6",
+          background: "transparent",
+          opacity: !dirty || committing ? 0.5 : 1,
+          cursor: !dirty || committing ? "default" : "pointer",
+          flex: "none",
+        }}
+      >
+        {committing ? "Committing…" : "⤓ Commit"}
+      </button>
+
+      {/* Publish — labelled with the next version */}
+      <button
+        type="button"
+        data-testid="publish-button"
+        onClick={publish}
+        disabled={publishing}
+        className={styles.hoverable}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "9px 18px",
+          borderRadius: 9,
+          fontFamily: SEMI,
+          fontWeight: 700,
+          fontSize: 13,
+          letterSpacing: ".05em",
+          textTransform: "uppercase",
+          color: "#fff",
+          background: "linear-gradient(150deg,#d4a24c,#c0392b 55%,#6d3b26)",
+          border: "1px solid #e69a5a",
+          boxShadow: "inset 0 1px 0 rgba(255,225,190,.55),0 6px 16px rgba(198,85,43,.4)",
+          flex: "none",
+        }}
+      >
+        {publishing ? "Publishing…" : publishLabel(versionBranch)}
+      </button>
+
+      {/* retained 5a: Regenerate */}
       <button
         type="button"
         data-testid="regenerate"
@@ -171,18 +237,20 @@ export default function TopBar() {
           display: "flex",
           alignItems: "center",
           gap: 7,
-          padding: "9px 15px",
+          padding: "9px 13px",
           border: "1px solid rgba(230,180,120,.24)",
           borderRadius: 9,
           fontWeight: 600,
-          fontSize: 13,
+          fontSize: 12.5,
           color: "#d8c9b2",
           background: "transparent",
+          flex: "none",
         }}
       >
         {"↻ Regenerate"}
       </button>
 
+      {/* retained 5a: Render & Share */}
       <button
         type="button"
         data-testid="render-share"
@@ -193,23 +261,41 @@ export default function TopBar() {
           display: "flex",
           alignItems: "center",
           gap: 7,
-          padding: "10px 20px",
+          padding: "9px 15px",
           borderRadius: 9,
-          fontFamily:
-            "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif",
+          fontFamily: SEMI,
           fontWeight: 700,
-          fontSize: 13.5,
-          letterSpacing: ".06em",
+          fontSize: 12.5,
+          letterSpacing: ".05em",
           textTransform: "uppercase",
           color: "#fff",
           background: "linear-gradient(180deg,#e07a3e,#c6552b)",
           border: "1px solid #e69a5a",
-          boxShadow:
-            "inset 0 1px 0 rgba(255,225,190,.55),0 8px 20px rgba(198,85,43,.4)",
+          boxShadow: "inset 0 1px 0 rgba(255,225,190,.55),0 6px 16px rgba(198,85,43,.4)",
+          flex: "none",
         }}
       >
         {"Render & Share ▸"}
       </button>
+
+      {/* avatar */}
+      <span
+        data-testid="studio-avatar"
+        style={{
+          width: 34,
+          height: 34,
+          borderRadius: "50%",
+          background: "linear-gradient(150deg,#d4a24c,#c0392b 60%,#6d3b26)",
+          display: "grid",
+          placeItems: "center",
+          fontWeight: 800,
+          fontSize: 11,
+          color: "#fff",
+          flex: "none",
+        }}
+      >
+        {"AS"}
+      </span>
     </div>
   );
 }

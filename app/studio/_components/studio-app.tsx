@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import type { Storyboard } from "@/lib/studio/storyboard";
+import type { StudioProject } from "@/lib/studio/project";
 import { StudioProvider, useStudio } from "./studio-context";
 import NavRail from "./nav-rail";
 import TopBar from "./top-bar";
@@ -105,9 +105,9 @@ function StudioFrame() {
   );
 }
 
-export default function StudioApp({ storyboard }: { storyboard: Storyboard }) {
+export default function StudioApp({ project }: { project: StudioProject }) {
   return (
-    <StudioProvider storyboard={storyboard}>
+    <StudioProvider project={project}>
       <StudioFrame />
     </StudioProvider>
   );

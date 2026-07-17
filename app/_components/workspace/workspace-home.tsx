@@ -1,11 +1,18 @@
 "use client";
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useSession } from "../session-provider";
 import WorkspaceNav from "./workspace-nav";
 import ProviderStrip from "./provider-strip";
 import RecentProjects from "./recent-projects";
 import SetupWizard from "../onboarding/setup-wizard";
 import OctocatIcon from "../octocat-icon";
+import NewProjectWizard from "../project-wizard/new-project-wizard";
+import ImportWizard from "../project-wizard/import-wizard";
+import { studioUrl } from "@/lib/studio/project";
+
+type WizardOpen = "none" | "new" | "import";
 
 /**
  * 10a — the signed-in home page. Nav + header row (WELCOME BACK, ASH. + new
@@ -17,10 +24,13 @@ import OctocatIcon from "../octocat-icon";
  */
 export default function WorkspaceHome() {
   const { mounted, session, firstSignIn } = useSession();
+  const router = useRouter();
+  const [wizard, setWizard] = useState<WizardOpen>("none");
 
   if (!mounted || !session.isAuthed) return null;
 
   const firstName = (session.user?.name ?? "").trim().split(/\s+/)[0] ?? "";
+  const openProject = (id: string) => router.push(studioUrl(id));
 
   return (
     <div
@@ -63,6 +73,8 @@ export default function WorkspaceHome() {
           </div>
           <button
             type="button"
+            data-testid="workspace-new-project"
+            onClick={() => setWizard("new")}
             className="flex items-center cursor-pointer"
             style={{
               gap: 9,
@@ -81,6 +93,8 @@ export default function WorkspaceHome() {
           </button>
           <button
             type="button"
+            data-testid="workspace-import-repo"
+            onClick={() => setWizard("import")}
             className="flex items-center cursor-pointer"
             style={{
               gap: 9,
@@ -99,10 +113,22 @@ export default function WorkspaceHome() {
         </div>
 
         <ProviderStrip />
-        <RecentProjects />
+        <RecentProjects
+          onNewProject={() => setWizard("new")}
+          onOpenProject={openProject}
+        />
       </div>
 
       {firstSignIn && <SetupWizard />}
+      {wizard === "new" && (
+        <NewProjectWizard onClose={() => setWizard("none")} />
+      )}
+      {wizard === "import" && (
+        <ImportWizard
+          onClose={() => setWizard("none")}
+          onStartNew={() => setWizard("new")}
+        />
+      )}
     </div>
   );
 }

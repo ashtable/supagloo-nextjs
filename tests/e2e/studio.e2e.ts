@@ -14,13 +14,21 @@ import { Stagehand } from "@browserbasehq/stagehand";
  *
  * Reuses `tests/e2e/global-setup.ts` (boots/reuses `next dev` on :3000).
  *
- * STEP 7 STATUS: RED by construction — `/studio` does not exist yet (Next serves
- * a 404), so `studio-frame` and all seams are absent. Every test below fails on
- * an assertion (guarded so clicks never throw before their presence check).
+ * TURN 13b MIGRATION — RED until Step 9: the editor moved to `/studio/[id]`, so
+ * `/studio/psalm-121` currently 404s (the dynamic route does not exist yet) and
+ * `studio-frame` is absent. The top-bar identity anchors were swapped from the
+ * old `VERSE OF THE DAY`/`PREVIEW`/`· Jul 4`/`GENERATE`/`SHARE` chrome to the new
+ * project identity (`psalm-121`, `ashsrinivas/psalm-121`); everything else
+ * (player mount, aspect toggle, scene editing, reroll↔ship, timeline, home-nav)
+ * is unchanged and must return to GREEN once Step 9 ships `/studio/[id]`.
  */
 
 const BASE_URL = "http://localhost:3000";
-const STUDIO_URL = `${BASE_URL}/studio`;
+// Turn 13b migration: the editor moved from bare `/studio` to `/studio/[id]`
+// (A6/D-ROUTE-STUDIO). This suite now drives the `psalm-121` demo project; the
+// player/timeline/inspector body is unchanged (still the John 1:23 storyboard),
+// only the top-bar IDENTITY migrated (see the anchor swap below).
+const STUDIO_URL = `${BASE_URL}/studio/psalm-121`;
 // The 5a frame is a fixed 1300×950 desktop artifact; give it room.
 const VIEWPORT = { width: 1440, height: 1000 };
 
@@ -152,8 +160,9 @@ beforeAll(async () => {
   await stagehand.init();
   page = stagehand.context.pages()[0];
   await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
-  // `/studio` 404s today; `next dev` still serves a 404 HTML page, so goto
-  // resolves and the per-test assertions below are what go RED.
+  // On Step 7 RED `/studio/psalm-121` 404s (the `[id]` route is not built yet);
+  // `next dev` still serves a 404 HTML page, so goto resolves and the per-test
+  // assertions below are what go RED.
   await page.goto(STUDIO_URL, { waitUntil: "load" });
   await page.waitForTimeout(800); // settle any client mount
 });
@@ -165,12 +174,11 @@ afterAll(async () => {
 // Always-visible chrome only (source case). Popover-only copy is asserted in E9
 // after opening the menus, since the popovers render closed on load.
 const EXACT_ANCHORS: readonly string[] = [
-  // top bar
-  "PREVIEW",
-  "VERSE OF THE DAY",
-  "· Jul 4",
-  "GENERATE",
-  "SHARE",
+  // top bar — 13b identity (migrated from the old VERSE OF THE DAY / PREVIEW /
+  // · Jul 4 / GENERATE / SHARE chrome). The version-branch chip + Commit/Publish
+  // are asserted in studio-project.e2e.ts; here we anchor the stable identity.
+  "psalm-121",
+  "ashsrinivas/psalm-121",
   "9:16",
   "16:9",
   "1:1",
@@ -230,10 +238,10 @@ const EXACT_ANCHORS: readonly string[] = [
 ];
 
 describe("Wilderness Studio editor (5a)", () => {
-  test("E1: /studio renders the studio frame, not the landing", async () => {
+  test("E1: /studio/[id] renders the studio frame, not the landing", async () => {
     expect(await count('[data-testid="studio-frame"]')).toBeGreaterThan(0);
     const text = await readableText();
-    expect(text).toContain("VERSE OF THE DAY");
+    expect(text).toContain("psalm-121"); // the 13b project identity
     expect(text).not.toContain("Supagloo"); // not the landing shell
   });
 
