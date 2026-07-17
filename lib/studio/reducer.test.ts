@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-// Not yet implemented — RED until `lib/studio/reducer.ts` exists.
 import {
   initialStudioState,
   studioReducer,
@@ -8,6 +7,22 @@ import {
 } from "./reducer";
 import { DEMO_STORYBOARD } from "./storyboard";
 import { visibleCaption } from "./captions";
+// RED until `lib/studio/project.ts` exists (Step 9). `initialStudioState` now
+// seeds from a StudioProject (not a bare Storyboard), and the reducer bumps the
+// version branch on publish via `nextVersion` — so the whole suite depends on
+// this module. The value import forces a clean "Cannot find module './project'"
+// RED, exactly the intended TDD signal.
+import { nextVersion, type StudioProject } from "./project";
+
+/** The `/studio/psalm-121` project — a StudioProject wrapping the one demo
+ *  storyboard the repo ships, seeded at the wizard's first working branch. */
+const DEMO_PROJECT: StudioProject = {
+  id: "psalm-121",
+  projectName: "psalm-121",
+  repo: "ashsrinivas/psalm-121",
+  versionBranch: "v0.0.1",
+  storyboard: DEMO_STORYBOARD,
+};
 
 function selected(state: StudioState) {
   const s = state.storyboard.scenes.find(
@@ -17,7 +32,7 @@ function selected(state: StudioState) {
   return s;
 }
 
-const init = () => initialStudioState(DEMO_STORYBOARD);
+const init = () => initialStudioState(DEMO_PROJECT);
 
 describe("initialStudioState", () => {
   it("U-R1: opens on scene 2, 9:16, paused, menus closed, mock posting defaults", () => {
@@ -46,14 +61,28 @@ describe("initialStudioState", () => {
         { ...DEMO_STORYBOARD.scenes[1], id: "hook" },
       ],
     };
-    expect(initialStudioState(twoScene).selectedSceneId).toBe("hook");
+    expect(
+      initialStudioState({ ...DEMO_PROJECT, storyboard: twoScene })
+        .selectedSceneId,
+    ).toBe("hook");
 
     // A single-scene storyboard falls back to the 1st scene (no scenes[1]).
     const oneScene = {
       ...DEMO_STORYBOARD,
       scenes: [{ ...DEMO_STORYBOARD.scenes[0], id: "solo" }],
     };
-    expect(initialStudioState(oneScene).selectedSceneId).toBe("solo");
+    expect(
+      initialStudioState({ ...DEMO_PROJECT, storyboard: oneScene })
+        .selectedSceneId,
+    ).toBe("solo");
+  });
+
+  it("U-R12: seeds the version branch from the project and loads CLEAN (D-CLEAN-STATE)", () => {
+    const s = init();
+    expect(s.versionBranch).toBe("v0.0.1");
+    expect(s.dirty).toBe(false);
+    expect(s.committing).toBe(false);
+    expect(s.publishing).toBe(false);
   });
 });
 
@@ -133,5 +162,61 @@ describe("studioReducer", () => {
     expect(playing.isPlaying).toBe(true);
     const paused = studioReducer(playing, { type: "PAUSE" });
     expect(paused.isPlaying).toBe(false);
+  });
+
+  // ── Turn 13b: dirty / commit / publish (D-CLEAN-STATE, D-COMMIT-PUBLISH) ────
+
+  it("U-R13: content edits flip the project DIRTY", () => {
+    expect(
+      studioReducer(init(), { type: "EDIT_SCRIPT", script: "x" }).dirty,
+    ).toBe(true);
+    expect(
+      studioReducer(init(), { type: "EDIT_VISUAL_PROMPT", prompt: "x" }).dirty,
+    ).toBe(true);
+    expect(
+      studioReducer(init(), { type: "SET_ON_SCREEN_TEXT", value: "voice-only" })
+        .dirty,
+    ).toBe(true);
+    expect(
+      studioReducer(init(), { type: "SET_MUSIC_MOOD", mood: "Ambient pads" })
+        .dirty,
+    ).toBe(true);
+  });
+
+  it("U-R14: view-preference actions do NOT dirty the project", () => {
+    expect(
+      studioReducer(init(), { type: "SET_ASPECT", aspect: "16:9" }).dirty,
+    ).toBe(false);
+    expect(
+      studioReducer(init(), { type: "SELECT_SCENE", id: "s3" }).dirty,
+    ).toBe(false);
+    expect(studioReducer(init(), { type: "PLAY" }).dirty).toBe(false);
+    expect(
+      studioReducer(init(), { type: "TOGGLE_REROLL_MENU" }).dirty,
+    ).toBe(false);
+  });
+
+  it("U-R15: COMMIT_BEGIN pends, COMMIT_DONE returns to clean", () => {
+    const dirty = studioReducer(init(), { type: "EDIT_SCRIPT", script: "x" });
+    expect(dirty.dirty).toBe(true);
+
+    const committing = studioReducer(dirty, { type: "COMMIT_BEGIN" });
+    expect(committing.committing).toBe(true);
+    expect(committing.dirty).toBe(true); // still dirty while the commit is in flight
+
+    const done = studioReducer(committing, { type: "COMMIT_DONE" });
+    expect(done.committing).toBe(false);
+    expect(done.dirty).toBe(false);
+  });
+
+  it("U-R16: PUBLISH_DONE bumps the version branch via nextVersion and cleans", () => {
+    const publishing = studioReducer(init(), { type: "PUBLISH_BEGIN" });
+    expect(publishing.publishing).toBe(true);
+
+    const done = studioReducer(publishing, { type: "PUBLISH_DONE" });
+    expect(done.publishing).toBe(false);
+    expect(done.dirty).toBe(false);
+    expect(done.versionBranch).toBe(nextVersion("v0.0.1"));
+    expect(done.versionBranch).toBe("v0.0.2");
   });
 });

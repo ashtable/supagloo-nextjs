@@ -17,3 +17,4 @@ individual files, never here.
 - [Remotion integration](remotion-integration.md) — remotion+@remotion/player 4.0.490 verified on Next 16/Turbopack/React 19; Player renders `.__remotion-player` DOM (no canvas), no bundler config
 - [Studio editor E2E](studio-editor-e2e.md) — /studio (5a) deterministic-test tactics: understudy center-click, Remotion rAF play-stall→seek guard, per-frame caption restore, detached-popover waitForGone
 - [Workspace/onboarding plan (Turn 10/11)](workspace-onboarding-plan.md) — flag-gated mock-session seam, HomeSwitch RSC-via-props branch, shared connections-model, wizard state machine, new modal primitive
+- [Project wizards + /studio/[id] (Turn 12/13)](turn12-13-project-wizards.md) — New/Import wizards + studio route migration; Step 7 tests written & RED; the exact model/testid contracts Step 9 (Green) must match

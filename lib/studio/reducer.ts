@@ -10,6 +10,7 @@ import {
   updateSceneScript,
   updateSceneVisualPrompt,
 } from "./storyboard";
+import { nextVersion, type StudioProject } from "./project";
 
 export type PostingKey =
   | "tiktok"
@@ -26,6 +27,13 @@ export interface StudioState {
   rerollMenuOpen: boolean;
   shipMenuOpen: boolean;
   posting: Record<PostingKey, boolean>;
+  /** Turn 13b: the version branch the editor is on (Publish bumps it). */
+  versionBranch: string;
+  /** true once a content edit is made; Commit/Publish clear it. */
+  dirty: boolean;
+  /** mocked-async pending flags (caller-owned timers flip them). */
+  committing: boolean;
+  publishing: boolean;
 }
 
 export type StudioAction =
@@ -40,12 +48,23 @@ export type StudioAction =
   | { type: "TOGGLE_REROLL_MENU" }
   | { type: "TOGGLE_SHIP_MENU" }
   | { type: "CLOSE_MENUS" }
-  | { type: "TOGGLE_POSTING"; key: PostingKey };
+  | { type: "TOGGLE_POSTING"; key: PostingKey }
+  | { type: "COMMIT_BEGIN" }
+  | { type: "COMMIT_DONE" }
+  | { type: "PUBLISH_BEGIN" }
+  | { type: "PUBLISH_DONE" };
 
-/** Initial editor state: 2nd scene selected (matches the 5a mock; falls back to
- *  the 1st for short storyboards — never a hardcoded id that a differently-shaped
- *  storyboard could miss and crash on), 9:16, paused, menus closed. */
-export function initialStudioState(sb: Storyboard): StudioState {
+/** Mocked-async delays for the 13b Commit / Publish transitions (ms). */
+export const MOCK_COMMIT_DELAY_MS = 320;
+export const MOCK_PUBLISH_DELAY_MS = 480;
+
+/** Initial editor state seeded from the resolved `/studio/[id]` project: 2nd
+ *  scene selected (matches the 5a mock; falls back to the 1st for short
+ *  storyboards — never a hardcoded id that a differently-shaped storyboard could
+ *  miss and crash on), 9:16, paused, menus closed, on the project's version
+ *  branch and CLEAN (a freshly opened project has no local edits). */
+export function initialStudioState(project: StudioProject): StudioState {
+  const sb = project.storyboard;
   return {
     storyboard: sb,
     selectedSceneId: sb.scenes[1]?.id ?? sb.scenes[0].id,
@@ -60,6 +79,10 @@ export function initialStudioState(sb: Storyboard): StudioState {
       approveEachCut: true,
       postAutomatically: false,
     },
+    versionBranch: project.versionBranch,
+    dirty: false,
+    committing: false,
+    publishing: false,
   };
 }
 
@@ -75,6 +98,7 @@ export function studioReducer(
     case "EDIT_SCRIPT":
       return {
         ...state,
+        dirty: true,
         storyboard: updateSceneScript(
           state.storyboard,
           state.selectedSceneId,
@@ -84,6 +108,7 @@ export function studioReducer(
     case "EDIT_VISUAL_PROMPT":
       return {
         ...state,
+        dirty: true,
         storyboard: updateSceneVisualPrompt(
           state.storyboard,
           state.selectedSceneId,
@@ -93,6 +118,7 @@ export function studioReducer(
     case "SET_ON_SCREEN_TEXT":
       return {
         ...state,
+        dirty: true,
         storyboard: setSceneOnScreenText(
           state.storyboard,
           state.selectedSceneId,
@@ -102,6 +128,7 @@ export function studioReducer(
     case "SET_MUSIC_MOOD":
       return {
         ...state,
+        dirty: true,
         storyboard: setMusicMood(state.storyboard, action.mood),
       };
     case "PLAY":
@@ -129,6 +156,19 @@ export function studioReducer(
           ...state.posting,
           [action.key]: !state.posting[action.key],
         },
+      };
+    case "COMMIT_BEGIN":
+      return { ...state, committing: true };
+    case "COMMIT_DONE":
+      return { ...state, committing: false, dirty: false };
+    case "PUBLISH_BEGIN":
+      return { ...state, publishing: true };
+    case "PUBLISH_DONE":
+      return {
+        ...state,
+        publishing: false,
+        dirty: false,
+        versionBranch: nextVersion(state.versionBranch),
       };
     default:
       return state;
