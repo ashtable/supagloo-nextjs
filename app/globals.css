@@ -16,6 +16,10 @@
   --sg-gold: #c99a3f;
   --sg-cream: #f4e6c8;
 
+  /* Turn 10/11 — connection status accents (identical in both themes) */
+  --sg-green: #2f8f4e;
+  --sg-gold-text: #a5772a;
+
   /* Signature gradients */
   --sg-grad: linear-gradient(150deg, #d4a24c, #c0392b 55%, #6d3b26);
   --sg-grad-head: linear-gradient(100deg, #d4a24c, #c0392b 50%, #6d3b26);

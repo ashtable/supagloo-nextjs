@@ -3,6 +3,7 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod";
 
 import { glooLlmClient } from "../../lib/gloo/llm-client";
+import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
 
 const BASE_URL = "http://localhost:3000";
 
@@ -12,147 +13,22 @@ const BASE_URL = "http://localhost:3000";
 const DESKTOP = { width: 1288, height: 711 };
 const MOBILE = { width: 390, height: 844 };
 
-type StagehandPage = ReturnType<Stagehand["context"]["pages"]>[number];
-
 let stagehand: Stagehand;
 let page: StagehandPage;
 
-/**
- * Read the page's visible text. The Stagehand v3 understudy `Page` has no
- * Playwright-style `getByText`/`innerText`; it exposes `evaluate`, `locator`,
- * `goto`, `waitForSelector`. We read via `evaluate`.
- *
- * We clone `<body>`, strip `<script>/<style>/<noscript>/<template>`, then read
- * `textContent`:
- *  - Stripping scripts excludes Next.js's inline RSC/flight JSON, which embeds
- *    metadata (e.g. the "Supagloo" title) that would otherwise cause false
- *    positives against real page copy.
- *  - `textContent` (vs `innerText`) returns SOURCE text, so exact-copy anchors —
- *    middots `·`, en/em dashes, and the "Start from this demo" button whose CSS
- *    `text-transform:uppercase` would alter `innerText` — match verbatim.
- *
- * NOTE: `textContent` includes `display:none` nodes, so under D2-a dual-copy
- * BOTH the desktop and mobile-short strings are present at every viewport. Use
- * `bodyText()` for exact-copy PRESENCE anchors only; prove a mobile SWAP
- * (short shown / long hidden) with `isVisibleByTestId` / `textIsVisible` below.
- */
-async function bodyText(): Promise<string> {
-  return page.evaluate(() => {
-    const clone = document.body.cloneNode(true) as HTMLElement;
-    clone
-      .querySelectorAll("script, style, noscript, template")
-      .forEach((el) => el.remove());
-    return clone.textContent ?? "";
-  });
-}
-
-/**
- * Poll until the rendered text contains `needle`, else throw. Replaces the
- * plan's `getByText(...).waitFor()`, which the v3 understudy page does not
- * expose. Used to wait past the client mount-gate (the "Supagloo" wordmark is
- * server-rendered, so it appears as soon as the correct page renders).
- */
-async function waitForText(needle: string, timeoutMs = 20_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let seen = "";
-  while (Date.now() < deadline) {
-    seen = await bodyText();
-    if (seen.includes(needle)) return;
-    await page.waitForTimeout(500);
-  }
-  throw new Error(
-    `Timed out after ${timeoutMs}ms waiting for page text to include ` +
-      `${JSON.stringify(needle)}. First 300 chars seen: ` +
-      `${JSON.stringify(seen.slice(0, 300))}`,
-  );
-}
-
-/**
- * Is the element carrying `data-testid={testid}` actually rendered on screen?
- * Deterministic (no LLM): fails for a missing element, a `display:none` /
- * `visibility:hidden` element, or one collapsed to a zero box (e.g. an ancestor
- * hidden by a `md:hidden` / `hidden md:*` responsive class). This is how we
- * assert the auth/viewport SWAPS, since `textContent` can't tell shown from
- * hidden under dual-copy.
- */
-async function isVisibleByTestId(testid: string): Promise<boolean> {
-  return page.evaluate((id) => {
-    const vis = (el: HTMLElement) => {
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") return false;
-      const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    };
-    // ANY matching element visible — with dual-copy there can be >1 element per
-    // testid; a first-match-only check could report the hidden desktop/mobile
-    // copy and miss the visible one (the F1 fix).
-    return Array.from(
-      document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`),
-    ).some(vis);
-  }, testid);
-}
-
-/**
- * Bounding-rect width of the first VISIBLE element carrying `testid` (falls back
- * to the first match, else 0). Prefers the visible copy under dual-copy.
- */
-async function widthByTestId(testid: string): Promise<number> {
-  return page.evaluate((id) => {
-    const els = Array.from(
-      document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`),
-    );
-    const visible = els.find((el) => {
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") return false;
-      const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    });
-    const el = visible ?? els[0];
-    return el ? el.getBoundingClientRect().width : 0;
-  }, testid);
-}
-
-/**
- * Is there a VISIBLE element whose trimmed textContent exactly equals `label`?
- * Lets us probe visibility without a testid (e.g. the "Preview scenes ▸" button,
- * which the mock drops on mobile). Iterates ALL matches and returns true iff any
- * is visible — a control can exist in both a hidden desktop copy and a visible
- * mobile copy under dual-copy (the F1 fix).
- */
-async function textIsVisible(label: string): Promise<boolean> {
-  return page.evaluate((needle) => {
-    const vis = (el: HTMLElement) => {
-      const cs = getComputedStyle(el);
-      if (cs.display === "none" || cs.visibility === "hidden") return false;
-      const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    };
-    return Array.from(
-      document.querySelectorAll<HTMLElement>("button, a, span, div"),
-    ).some((e) => (e.textContent ?? "").trim() === needle && vis(e));
-  }, label);
-}
+// The shared `evaluate`-based helpers, now lifted into `tests/e2e/helpers.ts`
+// and imported by both this (regression control) suite and the Turn 10/11
+// workspace/onboarding suites. Bound in `beforeAll` once `page` exists, so every
+// call site below reads exactly as it did when these were inlined here.
+let bodyText: E2EHelpers["bodyText"];
+let waitForText: E2EHelpers["waitForText"];
+let isVisibleByTestId: E2EHelpers["isVisibleByTestId"];
+let widthByTestId: E2EHelpers["widthByTestId"];
+let textIsVisible: E2EHelpers["textIsVisible"];
+let waitForGone: E2EHelpers["waitForGone"];
 
 async function innerWidth(): Promise<number> {
   return page.evaluate(() => window.innerWidth);
-}
-
-/**
- * Poll until no element carries `testid`, else throw. The mobile sheet is
- * conditionally rendered (`{open && …}`) so on dismiss it DETACHES rather than
- * going `display:none`; the understudy's `waitForSelector(state:"hidden")` waits
- * for an attached-but-hidden node and never resolves for a removed one. Asserting
- * the node is GONE is the equivalent "closed" guarantee.
- */
-async function waitForGone(testid: string, timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if ((await page.locator(`[data-testid="${testid}"]`).count()) === 0) return;
-    await page.waitForTimeout(100);
-  }
-  throw new Error(
-    `[data-testid="${testid}"] still present after ${timeoutMs}ms (expected gone)`,
-  );
 }
 
 /**
@@ -226,6 +102,14 @@ beforeAll(async () => {
   });
   await stagehand.init(); // launches a local Chromium
   page = stagehand.context.pages()[0];
+  ({
+    bodyText,
+    waitForText,
+    isVisibleByTestId,
+    widthByTestId,
+    textIsVisible,
+    waitForGone,
+  } = makeHelpers(page));
   await page.setViewportSize(DESKTOP.width, DESKTOP.height); // pin the desktop state
   await page.goto(BASE_URL, { waitUntil: "load" });
   await waitForText("Supagloo");
