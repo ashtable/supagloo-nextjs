@@ -19,7 +19,8 @@
     "next": "16.2.10",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "remotion": "^4.0.490"
+    "remotion": "^4.0.490",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@ai-sdk/openai": "^2.0.112",
@@ -31,7 +32,6 @@
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.10",
-    "zod": "^4.4.3"
+    "vitest": "^4.1.10"
   }
 }
