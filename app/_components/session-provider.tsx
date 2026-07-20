@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -12,9 +13,10 @@ import { useYVAuth } from "@youversion/platform-react-ui";
 import {
   resolveSession,
   parseMockSession,
-  onboardingStorageKey,
+  parseSeedRequest,
   firstSignIn as computeFirstSignIn,
   type Session,
+  type AuthUserLike,
 } from "@/lib/session/session-model";
 import {
   seedWireframe,
@@ -30,7 +32,7 @@ import {
 import type { ConnectionsSeedName } from "@/lib/session/session-model";
 
 // Build-time constant — inlined by Next.js. Absent/unset in prod, so the
-// `?mock=` override is always a hard no-op there (plan R1).
+// `?mock=`/`?seed=` overrides are always a hard no-op there (plan R1).
 const DEMO_FLAG = process.env.NEXT_PUBLIC_SUPAGLOO_DEMO === "1";
 
 const SIGNED_OUT_SESSION: Session = {
@@ -50,6 +52,11 @@ function seedFor(name: ConnectionsSeedName): ConnectionsState {
   }
 }
 
+function readNonce(search: string): string | undefined {
+  const raw = search.startsWith("?") ? search.slice(1) : search;
+  return new URLSearchParams(raw).get("nonce") ?? undefined;
+}
+
 interface SessionContextValue {
   /** False until after the client mount effect — first paint is always signed-out. */
   mounted: boolean;
@@ -59,7 +66,7 @@ interface SessionContextValue {
   /** Begin the mocked OAuth transition: pending now, connected after `MOCK_OAUTH_DELAY_MS`. */
   connectProvider: (provider: Provider) => void;
   disconnectProvider: (provider: Provider) => void;
-  /** Marks onboarding complete (dismisses the wizard) and persists it for real sessions. */
+  /** Marks onboarding complete (dismisses the wizard) and persists it server-side. */
   markOnboarded: () => void;
   signOut: () => void;
 }
@@ -71,35 +78,102 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
   const [search, setSearch] = useState("");
   const [onboardedOverride, setOnboardedOverride] = useState(false);
-  const [onboardedRaw, setOnboardedRaw] = useState<string | null>(null);
+  // Server-driven session state (Task 23): the AuthUser resolved from the BFF
+  // (`GET /api/me` / the sign-in exchange / the seed seam). Replaces the retired
+  // localStorage onboarding stopgap.
+  const [serverUser, setServerUser] = useState<AuthUserLike | null>(null);
   const [connections, setConnections] = useState<ConnectionsState>(() =>
     seedNoneLinked(),
   );
   const [connectionsSeeded, setConnectionsSeeded] = useState(false);
+  const bootstrappedRef = useRef(false);
 
-  const userId = yv.userInfo?.userId;
+  const accessToken = yv.auth.accessToken;
 
   // Intentional post-hydration mount gate (matches nav-auth's pattern): read
-  // `window.location.search` + the localStorage onboarding stopgap once on the
-  // client, so SSR + first client render always stay signed-out (D-ROUTE's
-  // accepted first-paint trade-off) — never `useSearchParams` (dodges its
-  // Suspense/CSR-bailout requirement, plan R6). One-shot effect setStates, not
-  // a cascading-render bug — same documented exception as `nav-auth.tsx`.
+  // `window.location.search` once on the client, so SSR + first client render
+  // always stay signed-out (D-ROUTE's accepted first-paint trade-off) — never
+  // `useSearchParams` (dodges its Suspense/CSR-bailout requirement, plan R6).
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSearch(window.location.search);
     setMounted(true);
   }, []);
 
+  // The server-driven bootstrap. In `?mock=` mode this is a HARD no-op (pure
+  // client, zero network — keeps the pure-UI e2e specs unchanged). Otherwise it
+  // establishes the real session: the `?seed=` seam mints a real cookie then loads
+  // `GET /api/me`; a real YouVersion sign-in exchanges the access token; a plain
+  // load probes for an existing cookie session. Any failure degrades to
+  // signed-out (never throws), so signed-out pages are unaffected by API state.
   useEffect(() => {
     if (!mounted) return;
-    if (!userId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setOnboardedRaw(null);
-      return;
-    }
-    setOnboardedRaw(window.localStorage.getItem(onboardingStorageKey(userId)));
-  }, [mounted, userId]);
+    if (parseMockSession(search, DEMO_FLAG)) return; // pure-client mock path
+
+    let active = true;
+    const setUser = (u: AuthUserLike | null) => {
+      if (active) setServerUser(u);
+    };
+
+    const loadMe = async () => {
+      try {
+        const res = await fetch("/api/me", { cache: "no-store" });
+        if (res.ok) {
+          const data = (await res.json()) as { user?: AuthUserLike };
+          if (data.user) setUser(data.user);
+        }
+      } catch {
+        /* API unreachable → stay signed-out */
+      }
+    };
+
+    void (async () => {
+      const seed = parseSeedRequest(search, DEMO_FLAG);
+      if (seed) {
+        if (bootstrappedRef.current) return;
+        bootstrappedRef.current = true;
+        try {
+          const res = await fetch("/api/test/seed", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ scenario: seed.scenario, nonce: readNonce(search) }),
+          });
+          if (res.ok) await loadMe();
+        } catch {
+          /* seam disabled / API down → stay signed-out */
+        }
+        return;
+      }
+
+      if (yv.auth.isAuthenticated && accessToken) {
+        if (bootstrappedRef.current) return;
+        bootstrappedRef.current = true;
+        try {
+          const res = await fetch("/api/auth/session", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ accessToken }),
+          });
+          if (res.ok) {
+            const data = (await res.json()) as { user?: AuthUserLike };
+            if (data.user) setUser(data.user);
+          }
+        } catch {
+          /* exchange failed → stay signed-out */
+        }
+        return;
+      }
+
+      // No mock, no seed, not YouVersion-authed → probe for an existing cookie
+      // session once (does NOT latch bootstrappedRef, so a later sign-in can still
+      // exchange).
+      await loadMe();
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [mounted, search, yv.auth.isAuthenticated, accessToken]);
 
   const baseSession = useMemo(
     () =>
@@ -107,10 +181,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         yvAuth: yv,
         demoFlag: DEMO_FLAG,
         search,
-        onboardedRaw,
+        serverUser,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [yv.auth.isAuthenticated, yv.userInfo, search, onboardedRaw],
+    [yv.auth.isAuthenticated, yv.userInfo, search, serverUser],
   );
 
   const session: Session = !mounted
@@ -119,13 +193,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       ? { ...baseSession, hasOnboarded: true }
       : baseSession;
 
-  // Seed the mocked connections state once, from the `?mock=` scenario (or
-  // "none-linked" for a real, non-demo session — nothing is faked in prod).
+  // Suppress the first-time wizard until onboarding state is KNOWN: in mock mode
+  // it's known immediately; in real/seed mode only once the server user resolves.
+  // This stops a real YouVersion sign-in from flashing the wizard pre-exchange.
+  const onboardingResolved =
+    parseMockSession(search, DEMO_FLAG) !== null || serverUser !== null;
+
+  // Seed the mocked connections state once, from the `?mock=` or `?seed=`
+  // scenario (or "none-linked" for a real, non-demo session — nothing is faked in
+  // prod). Connections stay MOCK in the wizard; tasks 24/25 wire the real ones.
   useEffect(() => {
     if (!mounted || connectionsSeeded) return;
     const mock = parseMockSession(search, DEMO_FLAG);
+    const seed = parseSeedRequest(search, DEMO_FLAG);
+    const connSeed = mock?.connectionsSeed ?? seed?.connectionsSeed ?? "none-linked";
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setConnections(seedFor(mock?.connectionsSeed ?? "none-linked"));
+    setConnections(seedFor(connSeed));
     setConnectionsSeeded(true);
   }, [mounted, connectionsSeeded, search]);
 
@@ -141,21 +224,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   };
 
   const markOnboarded = () => {
-    setOnboardedOverride(true);
-    if (typeof window !== "undefined" && userId) {
-      window.localStorage.setItem(onboardingStorageKey(userId), "1");
+    setOnboardedOverride(true); // optimistic — dismisses the wizard immediately
+    if (parseMockSession(search, DEMO_FLAG)) return; // pure-client mock path
+    // Real/seed mode: persist onboarding server-side and refresh the server user.
+    void fetch("/api/me/onboarding", { method: "PATCH" })
+      .then(async (res) => {
+        if (res.ok) {
+          const data = (await res.json()) as { user?: AuthUserLike };
+          if (data.user) setServerUser(data.user);
+        }
+      })
+      .catch(() => undefined);
+  };
+
+  const signOut = () => {
+    if (!parseMockSession(search, DEMO_FLAG)) {
+      void fetch("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
+      setServerUser(null);
+      bootstrappedRef.current = false;
     }
+    yv.signOut();
   };
 
   const value: SessionContextValue = {
     mounted,
     session,
-    firstSignIn: computeFirstSignIn(session),
+    firstSignIn: computeFirstSignIn(session) && onboardingResolved,
     connections,
     connectProvider,
     disconnectProvider,
     markOnboarded,
-    signOut: () => yv.signOut(),
+    signOut,
   };
 
   return (

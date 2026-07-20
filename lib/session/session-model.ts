@@ -58,14 +58,42 @@ export function parseMockSession(
   return { scenario: s, isAuthed: true, hasOnboarded, connectionsSeed };
 }
 
-/** The `"1"` sentinel is the only truthy value the localStorage stopgap writes. */
-export function hasOnboardedFromRaw(raw: string | null): boolean {
-  return raw === "1";
+/**
+ * Parse the extended real-cookie seam's `?seed=` override (Task 23). Distinct
+ * from `?mock=` so the pure-client mock path stays byte-for-byte unchanged: where
+ * `?mock=` fabricates a session client-side with zero network, `?seed=` tells the
+ * `SessionProvider` to mint a REAL httpOnly cookie via `POST /api/test/seed` and
+ * then run the actual server-driven session/onboarding path. Returns `null` (a
+ * HARD no-op) unless the demo flag is set and the scenario is recognized — the
+ * connections seed still drives the wizard's (still-mocked) connect steps.
+ */
+export function parseSeedRequest(
+  search: string,
+  demoFlag: boolean,
+): { scenario: MockScenario; connectionsSeed: ConnectionsSeedName } | null {
+  if (!demoFlag) return null;
+
+  const raw = search.startsWith("?") ? search.slice(1) : search;
+  const params = new URLSearchParams(raw);
+  const scenario = params.get("seed");
+  if (!scenario || !(scenario in MOCK_SCENARIOS)) return null;
+
+  const s = scenario as MockScenario;
+  return { scenario: s, connectionsSeed: MOCK_SCENARIOS[s].connectionsSeed };
 }
 
-/** Stable, userId-scoped localStorage key for the onboarding stopgap. */
-export function onboardingStorageKey(userId: string): string {
-  return `supagloo:onboarded:${userId}`;
+/** The minimal shape of the server `AuthUser` this pure module consumes (from
+ *  `GET /api/me` / the session exchange). */
+export interface AuthUserLike {
+  displayName: string;
+  email: string;
+  onboardingCompletedAt: string | null;
+}
+
+/** Server truth for onboarding — replaces the retired localStorage `"1"` stopgap.
+ *  Onboarded iff the server user carries a non-null `onboardingCompletedAt`. */
+export function hasOnboardedFromServer(user: AuthUserLike | null): boolean {
+  return !!user && user.onboardingCompletedAt !== null;
 }
 
 export interface SessionUser {
@@ -89,16 +117,23 @@ export interface ResolveSessionInput {
   yvAuth: YvAuthLike;
   demoFlag: boolean;
   search: string;
-  onboardedRaw: string | null;
+  /** The resolved server user (from `GET /api/me` / the session exchange / the
+   *  seed), or `null` before/without a server session. Replaces the retired
+   *  `onboardedRaw` localStorage input — onboarding is now server-driven. */
+  serverUser: AuthUserLike | null;
 }
 
 // The seeded demo identity (plan D-DATA) — used only when the mock override wins.
 const DEMO_USER: SessionUser = { name: "Ash Srinivas", email: "ash@supagloo.com" };
 
 /**
- * Resolve the final session: the demo `?mock=` override when the flag is set
- * and a scenario is present, else real YouVersion auth + the localStorage
- * onboarding stopgap.
+ * Resolve the final session. Precedence:
+ *   1. the pure-client `?mock=` override (demo flag + scenario) — unchanged;
+ *   2. a resolved SERVER user (real sign-in or the seed seam) — its
+ *      `onboardingCompletedAt` decides `hasOnboarded`;
+ *   3. real YouVersion auth without a server user yet (pre-exchange) — authed,
+ *      onboarding-unknown (the provider suppresses the wizard until #2 lands);
+ *   4. signed out.
  */
 export function resolveSession(input: ResolveSessionInput): Session {
   const mock = parseMockSession(input.search, input.demoFlag);
@@ -106,17 +141,24 @@ export function resolveSession(input: ResolveSessionInput): Session {
     return { isAuthed: true, user: DEMO_USER, hasOnboarded: mock.hasOnboarded };
   }
 
-  const isAuthed = input.yvAuth.auth.isAuthenticated;
-  if (!isAuthed) {
-    return { isAuthed: false, user: null, hasOnboarded: false };
+  if (input.serverUser) {
+    return {
+      isAuthed: true,
+      user: { name: input.serverUser.displayName, email: input.serverUser.email },
+      hasOnboarded: hasOnboardedFromServer(input.serverUser),
+    };
   }
 
-  const info = input.yvAuth.userInfo;
-  return {
-    isAuthed: true,
-    user: { name: info?.name ?? "", email: info?.email ?? "" },
-    hasOnboarded: hasOnboardedFromRaw(input.onboardedRaw),
-  };
+  if (input.yvAuth.auth.isAuthenticated) {
+    const info = input.yvAuth.userInfo;
+    return {
+      isAuthed: true,
+      user: { name: info?.name ?? "", email: info?.email ?? "" },
+      hasOnboarded: false,
+    };
+  }
+
+  return { isAuthed: false, user: null, hasOnboarded: false };
 }
 
 /** Is this the visitor's first authed visit (wizard territory)? */
