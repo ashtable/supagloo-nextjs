@@ -38,62 +38,41 @@ export const E2E_OPENROUTER_KEY = "sk-or-v1-e2etest-cafe";
 export const E2E_OPENROUTER_LAST4 = "cafe";
 
 /**
- * Route-intercept the browser↔OpenRouter PKCE leg (design-delta §5.1/§9-Q9). The
- * openrouter-stub is a bare REST server — it can't render OpenRouter's hosted
- * authorize HTML page, and the token exchange is a cross-origin browser call — so
- * we fulfill both locally at the context (all pages, popups included):
- *  - `**​/auth?**` (the authorize popup) → a blank no-op; the throwaway callback
- *    page below drives the real completion, so the popup is irrelevant.
- *  - `**​/api/v1/auth/keys` (the token exchange) → a deterministic `{ key }`, with
- *    CORS + preflight headers so the browser's cross-origin fetch is allowed.
+ * Fake OpenRouter's browser↔OpenRouter token exchange (design-delta §5.1/§9-Q9).
+ * The openrouter-stub is a bare REST server that can't render OpenRouter's hosted
+ * authorize HTML page, and the exchange is a cross-origin browser call (the stub has
+ * no CORS). Stagehand v3 is a CDP understudy (no Playwright `route`), so instead we
+ * inject an init script that patches `window.fetch` in every page: any request to
+ * `…/api/v1/auth/keys` resolves in-page to a deterministic `{ key }` (last-4 `cafe`,
+ * asserted below) — no network, no CORS. Everything else passes through. Applies to
+ * pages created AFTER this call, so the throwaway callback page (created per test) is
+ * covered. The authorize popup itself is irrelevant — the throwaway page drives the
+ * real completion — and with `NEXT_PUBLIC_OPENROUTER_BASE_URL` → the stub host it
+ * never touches the public internet.
  */
-/** The Playwright route surface we use — Stagehand's `context` IS a Playwright
- *  BrowserContext at runtime, but its `V3Context` TYPE doesn't surface `.route`, so
- *  we narrow through this minimal structural type. */
-interface RoutableContext {
-  route(
-    url: string,
-    handler: (route: {
-      request(): { method(): string };
-      fulfill(opts: {
-        status: number;
-        headers?: Record<string, string>;
-        contentType?: string;
-        body?: string;
-      }): Promise<void>;
-    }) => void | Promise<void>,
-  ): Promise<void>;
-}
-
 export async function interceptOpenRouter(
   context: Stagehand["context"],
 ): Promise<void> {
-  const ctx = context as unknown as RoutableContext;
-  const CORS = {
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type,authorization",
-  };
-
-  await ctx.route("**/auth?**", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "text/html",
-      body: "<!doctype html><title>authorize</title><body>ok</body>",
-    });
-  });
-
-  await ctx.route("**/api/v1/auth/keys", async (route) => {
-    if (route.request().method() === "OPTIONS") {
-      await route.fulfill({ status: 204, headers: CORS });
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      headers: { "content-type": "application/json", ...CORS },
-      body: JSON.stringify({ key: E2E_OPENROUTER_KEY, user_id: "usr_e2e" }),
-    });
-  });
+  await context.addInitScript((key: string) => {
+    const orig = window.fetch.bind(window);
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : (input as Request).url;
+      if (url && url.endsWith("/api/v1/auth/keys")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ key, user_id: "usr_e2e" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        );
+      }
+      return orig(input as RequestInfo, init);
+    }) as typeof window.fetch;
+  }, E2E_OPENROUTER_KEY);
 }
 
 /**
