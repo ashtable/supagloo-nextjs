@@ -16,12 +16,14 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 describe("base64UrlEncode", () => {
   it("uses the url-safe alphabet and strips padding", () => {
-    // 0xff,0xff,0xfe → standard base64 "//4=", url-safe "__4"
+    // 0xff,0xff,0xfe → standard base64 "///+" → url-safe "___-" (both /→_ and +→-).
     const out = base64UrlEncode(new Uint8Array([0xff, 0xff, 0xfe]));
-    expect(out).toBe("__4");
+    expect(out).toBe("___-");
     expect(out).not.toContain("+");
     expect(out).not.toContain("/");
     expect(out).not.toContain("=");
+    // 0xfb,0xff → "+/8=" → "-_8" also exercises both substitutions + padding strip.
+    expect(base64UrlEncode(new Uint8Array([0xfb, 0xff]))).toBe("-_8");
   });
 });
 

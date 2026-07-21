@@ -47,16 +47,35 @@ export const E2E_OPENROUTER_LAST4 = "cafe";
  *  - `**​/api/v1/auth/keys` (the token exchange) → a deterministic `{ key }`, with
  *    CORS + preflight headers so the browser's cross-origin fetch is allowed.
  */
+/** The Playwright route surface we use — Stagehand's `context` IS a Playwright
+ *  BrowserContext at runtime, but its `V3Context` TYPE doesn't surface `.route`, so
+ *  we narrow through this minimal structural type. */
+interface RoutableContext {
+  route(
+    url: string,
+    handler: (route: {
+      request(): { method(): string };
+      fulfill(opts: {
+        status: number;
+        headers?: Record<string, string>;
+        contentType?: string;
+        body?: string;
+      }): Promise<void>;
+    }) => void | Promise<void>,
+  ): Promise<void>;
+}
+
 export async function interceptOpenRouter(
   context: Stagehand["context"],
 ): Promise<void> {
+  const ctx = context as unknown as RoutableContext;
   const CORS = {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type,authorization",
   };
 
-  await context.route("**/auth?**", async (route) => {
+  await ctx.route("**/auth?**", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "text/html",
@@ -64,7 +83,7 @@ export async function interceptOpenRouter(
     });
   });
 
-  await context.route("**/api/v1/auth/keys", async (route) => {
+  await ctx.route("**/api/v1/auth/keys", async (route) => {
     if (route.request().method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers: CORS });
       return;
