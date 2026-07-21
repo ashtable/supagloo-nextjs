@@ -13,6 +13,11 @@ import {
   GithubInstallUrlResponseSchema,
   ConnectionsResponseSchema,
   GithubRepoListResponseSchema,
+  OpenRouterConnectionStatusSchema,
+  OpenRouterConnectionResponseSchema,
+  OpenRouterCreditsResponseSchema,
+  GlooConnectionStatusSchema,
+  GlooConnectionResponseSchema,
 } from "./contracts";
 
 const validAuthUser = {
@@ -125,5 +130,75 @@ describe("GitHub connect contracts", () => {
     });
     expect(parsed.repositories).toHaveLength(1);
     expect(parsed.repositories[0].fullName).toBe("acme/empty-one");
+  });
+});
+
+// ── Task #25: OpenRouter + Gloo connect wire DTOs (mirror db-lib schemas.ts:468-560) ──
+
+const validOpenRouterStatus = {
+  keyLast4: "cafe",
+  status: "active",
+  connectedAt: "2026-07-20T00:00:00.000Z",
+};
+
+const validGlooStatus = {
+  clientId: "gloo-cid",
+  status: "active",
+  connectedAt: "2026-07-20T00:00:00.000Z",
+  lastVerifiedAt: "2026-07-20T00:00:00.000Z",
+};
+
+describe("OpenRouter + Gloo connect contracts", () => {
+  it("OpenRouterConnectionStatusSchema parses { keyLast4, status, connectedAt } (never the key)", () => {
+    expect(OpenRouterConnectionStatusSchema.parse(validOpenRouterStatus).keyLast4).toBe("cafe");
+    const { keyLast4: _omit, ...missing } = validOpenRouterStatus;
+    void _omit;
+    expect(OpenRouterConnectionStatusSchema.safeParse(missing).success).toBe(false);
+  });
+
+  it("OpenRouterConnectionResponseSchema parses { connection }", () => {
+    expect(
+      OpenRouterConnectionResponseSchema.parse({ connection: validOpenRouterStatus }).connection.keyLast4,
+    ).toBe("cafe");
+  });
+
+  it("OpenRouterCreditsResponseSchema parses { totalCredits, totalUsage, remaining }", () => {
+    const parsed = OpenRouterCreditsResponseSchema.parse({
+      totalCredits: 100,
+      totalUsage: 12.5,
+      remaining: 87.5,
+    });
+    expect(parsed.remaining).toBe(87.5);
+  });
+
+  it("GlooConnectionStatusSchema parses { clientId, status, connectedAt, lastVerifiedAt } (never the secret)", () => {
+    expect(GlooConnectionStatusSchema.parse(validGlooStatus).clientId).toBe("gloo-cid");
+    const { lastVerifiedAt: _omit, ...missing } = validGlooStatus;
+    void _omit;
+    expect(GlooConnectionStatusSchema.safeParse(missing).success).toBe(false);
+  });
+
+  it("GlooConnectionResponseSchema parses { connection }", () => {
+    expect(GlooConnectionResponseSchema.parse({ connection: validGlooStatus }).connection.clientId).toBe(
+      "gloo-cid",
+    );
+  });
+
+  it("ConnectionsResponseSchema now fully types openrouter + gloo (present OR null)", () => {
+    const present = ConnectionsResponseSchema.parse({
+      github: null,
+      openrouter: validOpenRouterStatus,
+      gloo: validGlooStatus,
+    });
+    expect(present.openrouter?.keyLast4).toBe("cafe");
+    expect(present.gloo?.clientId).toBe("gloo-cid");
+
+    const absent = ConnectionsResponseSchema.parse({
+      github: null,
+      openrouter: null,
+      gloo: null,
+    });
+    expect(absent.openrouter).toBeNull();
+    expect(absent.gloo).toBeNull();
   });
 });

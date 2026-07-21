@@ -31,3 +31,85 @@ export async function completeGithubConnectViaCallback(
     await cb.close();
   }
 }
+
+/** The deterministic fake OpenRouter key the intercepted token exchange returns —
+ *  its last 4 chars (`cafe`) are what the profile card must render masked. */
+export const E2E_OPENROUTER_KEY = "sk-or-v1-e2etest-cafe";
+export const E2E_OPENROUTER_LAST4 = "cafe";
+
+/**
+ * Route-intercept the browser↔OpenRouter PKCE leg (design-delta §5.1/§9-Q9). The
+ * openrouter-stub is a bare REST server — it can't render OpenRouter's hosted
+ * authorize HTML page, and the token exchange is a cross-origin browser call — so
+ * we fulfill both locally at the context (all pages, popups included):
+ *  - `**​/auth?**` (the authorize popup) → a blank no-op; the throwaway callback
+ *    page below drives the real completion, so the popup is irrelevant.
+ *  - `**​/api/v1/auth/keys` (the token exchange) → a deterministic `{ key }`, with
+ *    CORS + preflight headers so the browser's cross-origin fetch is allowed.
+ */
+export async function interceptOpenRouter(
+  context: Stagehand["context"],
+): Promise<void> {
+  const CORS = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type,authorization",
+  };
+
+  await context.route("**/auth?**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<!doctype html><title>authorize</title><body>ok</body>",
+    });
+  });
+
+  await context.route("**/api/v1/auth/keys", async (route) => {
+    if (route.request().method() === "OPTIONS") {
+      await route.fulfill({ status: 204, headers: CORS });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { "content-type": "application/json", ...CORS },
+      body: JSON.stringify({ key: E2E_OPENROUTER_KEY, user_id: "usr_e2e" }),
+    });
+  });
+}
+
+/**
+ * Simulate OpenRouter's redirect-back after the user approves (design-delta §6a).
+ * Mirrors `completeGithubConnectViaCallback`: after the wizard/card has kicked off
+ * the connect (`connect-openrouter-submit` → `pending` + the stashed verifier in
+ * localStorage + the main-tab `GET /api/connections` poll), open a throwaway page
+ * in the SAME context (shares localStorage + the httpOnly session cookie) and drive
+ * it to the client callback page with a `code`. That page reads the stashed
+ * verifier, exchanges the code → key (intercepted above), and POSTs ONLY the key to
+ * the BFF — after which the main tab's poll flips openrouter to connected.
+ */
+export async function completeOpenRouterConnectViaCallback(
+  context: Stagehand["context"],
+  opts: { code?: string } = {},
+): Promise<void> {
+  const code = opts.code ?? "e2e-code";
+  const cb = await context.newPage();
+  try {
+    await cb.goto(`${BASE_URL}/connect/openrouter/callback?code=${code}`, {
+      waitUntil: "load",
+    });
+    // Wait for the callback page to finish the exchange + BFF POST before closing.
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      const status = await cb.evaluate(() => {
+        const el = document.querySelector<HTMLElement>(
+          '[data-testid="openrouter-callback-status"]',
+        );
+        return el?.getAttribute("data-state") ?? "";
+      });
+      if (status === "done" || status === "error") break;
+      await cb.waitForTimeout(150);
+    }
+  } finally {
+    await cb.close();
+  }
+}
