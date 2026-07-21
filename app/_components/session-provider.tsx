@@ -55,6 +55,10 @@ import {
   glooErrorMessage,
   type GlooCredentials,
 } from "@/lib/connections/gloo-connect";
+import {
+  requestDisconnect,
+  disconnectErrorMessage,
+} from "@/lib/connections/disconnect";
 import { generateCodeVerifier, computeCodeChallenge } from "@/lib/connections/pkce";
 import type { ConnectionsSeedName } from "@/lib/session/session-model";
 
@@ -103,6 +107,13 @@ interface SessionContextValue {
   glooError: string | null;
   /** Clear the Gloo server error (the form calls this as the user edits). */
   clearGlooError: () => void;
+  /** Per-provider disconnect error: set when a real DELETE failed (non-2xx or
+   *  network) so the provider stayed connected — surfaced on the connected card so
+   *  the user knows the disconnect didn't take and can retry. Null when there is
+   *  none. */
+  disconnectErrors: Record<Provider, string | null>;
+  /** Clear a provider's disconnect error (a fresh disconnect attempt does this). */
+  clearDisconnectError: (provider: Provider) => void;
   /** Marks onboarding complete (dismisses the wizard) and persists it server-side. */
   markOnboarded: () => void;
   signOut: () => void;
@@ -124,6 +135,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
   const [connectionsSeeded, setConnectionsSeeded] = useState(false);
   const [glooError, setGlooError] = useState<string | null>(null);
+  const [disconnectErrors, setDisconnectErrors] = useState<
+    Record<Provider, string | null>
+  >({ github: null, openrouter: null, gloo: null });
   const bootstrappedRef = useRef(false);
 
   const accessToken = yv.auth.accessToken;
@@ -324,6 +338,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const clearGlooError = () => setGlooError(null);
 
+  const setDisconnectError = (provider: Provider, message: string) =>
+    setDisconnectErrors((e) => ({ ...e, [provider]: message }));
+  const clearDisconnectError = (provider: Provider) =>
+    setDisconnectErrors((e) => (e[provider] ? { ...e, [provider]: null } : e));
+
   const connectProvider = (provider: Provider, payload?: GlooCredentials) => {
     const isMock = parseMockSession(search, DEMO_FLAG) !== null;
 
@@ -436,19 +455,33 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const disconnectProvider = (provider: Provider) => {
     const isMock = parseMockSession(search, DEMO_FLAG) !== null;
-    // Best-effort server disconnect (idempotent); the optimistic reducer update is
-    // instant. Real/seed mode only — mock mode stays pure-client.
-    if (!isMock) {
-      const path =
-        provider === "github"
-          ? "/api/connect/github"
-          : provider === "openrouter"
-            ? "/api/connect/openrouter"
-            : "/api/connect/gloo";
-      void fetch(path, { method: "DELETE" }).catch(() => undefined);
+
+    // Mock mode: pure-client, instant optimistic flip (unchanged — keeps the
+    // pure-UI e2e specs synchronous, no network).
+    if (isMock) {
+      if (provider === "gloo") setGlooError(null);
+      setConnections((s) => disconnectReducer(s, provider));
+      return;
     }
-    if (provider === "gloo") setGlooError(null);
-    setConnections((s) => disconnectReducer(s, provider));
+
+    // Real/seed mode: the DELETE must actually SUCCEED before we tell the user the
+    // account is disconnected. A user often disconnects precisely because they
+    // believe a credential is compromised (an OpenRouter key / Gloo secret), so
+    // falsely showing "disconnected" while the server still holds the live
+    // credential is the exact failure we must avoid. On a non-2xx or a network
+    // error, leave the provider CONNECTED and surface a per-provider error so the
+    // user knows the disconnect didn't take and can retry. Applied to all three
+    // providers for consistency (they share this one code path).
+    clearDisconnectError(provider);
+    void (async () => {
+      const { ok } = await requestDisconnect(provider);
+      if (!ok) {
+        setDisconnectError(provider, disconnectErrorMessage(provider));
+        return; // stay connected — the credential is still live server-side
+      }
+      if (provider === "gloo") setGlooError(null);
+      setConnections((s) => disconnectReducer(s, provider));
+    })();
   };
 
   const markOnboarded = () => {
@@ -483,6 +516,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     disconnectProvider,
     glooError,
     clearGlooError,
+    disconnectErrors,
+    clearDisconnectError,
     markOnboarded,
     signOut,
   };

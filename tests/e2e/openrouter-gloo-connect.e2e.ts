@@ -199,12 +199,21 @@ describe("OpenRouter + Gloo connect (real) — wizard + profile", () => {
   });
 
   test("E-C5: disconnect clears both providers server-side", async () => {
+    // The disconnect fix makes the not-linked flip CONDITIONAL on the DELETE's
+    // actual response: the card only reaches `data-status="not-linked"` after the
+    // real `DELETE /api/connect/<provider>` resolved with a 2xx (a failed DELETE
+    // keeps the card connected, so this wait would time out and fail loudly). So
+    // `waitForStatus(..., "not-linked")` is now a GENUINE happens-after-DELETE
+    // barrier — not the old timing coincidence where an un-awaited DELETE merely
+    // happened to beat the follow-up read. Waiting for BOTH cards before the merged
+    // read therefore makes the server-side assertion below a real post-condition.
     await clickTestId("disconnect-openrouter");
     await waitForStatus("connection-card-openrouter", "not-linked");
     await clickTestId("disconnect-gloo");
     await waitForStatus("connection-card-gloo", "not-linked");
 
-    // The real DELETEs fired — a fresh merged read shows both cleared.
+    // Both DELETEs have provably resolved (per the barrier above) — a fresh merged
+    // read must therefore show both cleared, with no race against an in-flight DELETE.
     const merged = await page.evaluate(async () => {
       const res = await fetch("/api/connections", { cache: "no-store" });
       return res.json();

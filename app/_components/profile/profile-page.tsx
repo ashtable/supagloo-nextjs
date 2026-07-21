@@ -30,6 +30,7 @@ export default function ProfilePage() {
     disconnectProvider,
     glooError,
     clearGlooError,
+    disconnectErrors,
     signOut,
   } = useSession();
   const [modal, setModal] = useState<"github" | "openrouter" | null>(null);
@@ -195,6 +196,7 @@ export default function ProfilePage() {
                 onOpenModal={openModal}
                 glooError={provider === "gloo" ? glooError : null}
                 onClearGlooError={clearGlooError}
+                disconnectError={disconnectErrors[provider]}
               />
             ))}
           </div>
