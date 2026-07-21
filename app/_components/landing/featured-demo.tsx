@@ -1,3 +1,8 @@
+import {
+  COMING_SOON_LABEL,
+  START_ENTRY_POINTS,
+} from "@/lib/landing/start-cards-model";
+
 const TAGS = [
   "🔊 Dramatic baritone",
   "🎬 Cosmic visuals",
@@ -238,9 +243,17 @@ export default function FeaturedDemo() {
             className="flex flex-col lg:flex-row lg:items-center"
             style={{ gap: 12, marginTop: 4 }}
           >
+            {/* Demo-origin CTA — descoped in v1 (model: enabled:false,
+                comingSoon:true). aria-disabled + data-disabled (no native
+                `disabled` attr, so an e2e click never hangs), no onClick,
+                reduced opacity. The label stays in its OWN span so the mobile
+                e2e's exact-textContent visibility probe still matches it. */}
             <button
               type="button"
-              className="flex items-center justify-center lg:justify-start cursor-pointer w-full lg:w-auto"
+              aria-disabled="true"
+              data-testid={START_ENTRY_POINTS.demo.testId}
+              data-disabled="true"
+              className="flex items-center justify-center lg:justify-start cursor-default w-full lg:w-auto"
               style={{
                 gap: 8,
                 padding: "12px 22px",
@@ -255,9 +268,26 @@ export default function FeaturedDemo() {
                 border: "none",
                 boxShadow:
                   "inset 0 1px 0 rgba(255,235,205,.45), 0 8px 20px rgba(192,57,43,.34)",
+                opacity: 0.55,
               }}
             >
-              {"▶ Start from this demo"}
+              <span>{START_ENTRY_POINTS.demo.title}</span>
+              {/* App pill geometry; colors adapted to sit on the gradient. */}
+              <span
+                style={{
+                  padding: "2px 8px",
+                  borderRadius: 20,
+                  background: "rgba(22,17,13,.4)",
+                  color: "rgba(255,240,220,.95)",
+                  fontWeight: 700,
+                  fontSize: 10,
+                  textTransform: "none",
+                  letterSpacing: 0,
+                  flex: "none",
+                }}
+              >
+                {COMING_SOON_LABEL}
+              </span>
             </button>
             {/* Dropped on mobile (9b): the single full-width start button is the
                 only CTA there. */}

@@ -18,6 +18,15 @@ import {
   OpenRouterCreditsResponseSchema,
   GlooConnectionStatusSchema,
   GlooConnectionResponseSchema,
+  ProjectJobDtoSchema,
+  ProjectJobResponseSchema,
+  ProjectDtoSchema,
+  ProjectListResponseSchema,
+  CreateProjectRequestSchema,
+  CreateProjectResponseSchema,
+  ImportProjectRequestSchema,
+  CreateRepoRequestSchema,
+  RepoAuthorizeUrlResponseSchema,
 } from "./contracts";
 
 const validAuthUser = {
@@ -200,5 +209,150 @@ describe("OpenRouter + Gloo connect contracts", () => {
     });
     expect(absent.openrouter).toBeNull();
     expect(absent.gloo).toBeNull();
+  });
+});
+
+// ── Task #26 project + wizard wire DTOs ──────────────────────────────────────
+
+const validJob = {
+  id: "job_1",
+  projectId: "prj_1",
+  kind: "scaffold",
+  status: "running",
+  stages: [
+    { key: "mintInstallationToken", label: "Authenticating with GitHub", state: "done" },
+    { key: "cloneToWorkspace", label: "Cloning repository", state: "running" },
+    { key: "writeRemotionScaffold", label: "Scaffolding", state: "pending" },
+  ],
+  error: null,
+  createdAt: "2026-07-21T00:00:00.000Z",
+  completedAt: null,
+};
+
+const validProject = {
+  id: "prj_1",
+  slug: "psalm-121",
+  name: "Psalm 121",
+  repoOwner: "acme",
+  repoName: "psalm-121",
+  repoVisibility: "private",
+  createdFrom: "blank",
+  currentBranch: "v0.0.1",
+  thumbnailAssetKey: null,
+  lastRenderJobId: null,
+  lastOpenedAt: "2026-07-21T00:00:00.000Z",
+  createdAt: "2026-07-21T00:00:00.000Z",
+};
+
+describe("ProjectJobDtoSchema", () => {
+  it("parses a running job with typed stages", () => {
+    const job = ProjectJobDtoSchema.parse(validJob);
+    expect(job.stages).toHaveLength(3);
+    expect(job.stages[0].state).toBe("done");
+  });
+
+  it("accepts a failed terminal job with error + a failed stage", () => {
+    const failed = ProjectJobResponseSchema.parse({
+      job: {
+        ...validJob,
+        kind: "import_verify",
+        status: "failed",
+        error: "not a supagloo project",
+        completedAt: "2026-07-21T00:01:00.000Z",
+        stages: [{ key: "verifySupaglooProject", label: "Verifying", state: "failed" }],
+      },
+    });
+    expect(failed.job.status).toBe("failed");
+    expect(failed.job.stages[0].state).toBe("failed");
+  });
+
+  it("rejects an unknown status or stage state", () => {
+    expect(ProjectJobDtoSchema.safeParse({ ...validJob, status: "weird" }).success).toBe(
+      false,
+    );
+    expect(
+      ProjectJobDtoSchema.safeParse({
+        ...validJob,
+        stages: [{ key: "k", label: "L", state: "bogus" }],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("ProjectDtoSchema + ProjectListResponseSchema", () => {
+  it("parses a project row and a list envelope", () => {
+    expect(ProjectDtoSchema.parse(validProject).slug).toBe("psalm-121");
+    const list = ProjectListResponseSchema.parse({ projects: [validProject] });
+    expect(list.projects).toHaveLength(1);
+  });
+
+  it("allows a rendered project with a thumbnail + render job", () => {
+    const rendered = ProjectDtoSchema.parse({
+      ...validProject,
+      thumbnailAssetKey: "projects/prj_1/renders/r1/thumb.jpg",
+      lastRenderJobId: "r1",
+    });
+    expect(rendered.lastRenderJobId).toBe("r1");
+  });
+});
+
+describe("create/import/create-repo request+response DTOs", () => {
+  it("CreateProjectRequestSchema allows an omitted name; rejects bad visibility", () => {
+    expect(
+      CreateProjectRequestSchema.safeParse({
+        repoOwner: "acme",
+        repoName: "psalm-121",
+        visibility: "private",
+        createdFrom: "blank",
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateProjectRequestSchema.safeParse({
+        repoOwner: "acme",
+        repoName: "psalm-121",
+        visibility: "secret",
+        createdFrom: "blank",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("CreateProjectResponseSchema requires { projectId, jobId }", () => {
+    expect(
+      CreateProjectResponseSchema.parse({ projectId: "p", jobId: "j" }).jobId,
+    ).toBe("j");
+    expect(CreateProjectResponseSchema.safeParse({ projectId: "p" }).success).toBe(false);
+  });
+
+  it("ImportProjectRequestSchema carries no createdFrom (always import)", () => {
+    expect(
+      ImportProjectRequestSchema.safeParse({
+        repoOwner: "acme",
+        repoName: "exodus",
+        visibility: "public",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("CreateRepoRequestSchema requires a code + repoName + createdFrom", () => {
+    expect(
+      CreateRepoRequestSchema.safeParse({
+        code: "gh-code",
+        repoName: "psalm-121",
+        visibility: "private",
+        createdFrom: "blank",
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateRepoRequestSchema.safeParse({
+        repoName: "psalm-121",
+        visibility: "private",
+        createdFrom: "blank",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("RepoAuthorizeUrlResponseSchema requires a non-empty url", () => {
+    expect(RepoAuthorizeUrlResponseSchema.parse({ url: "https://x" }).url).toBe("https://x");
+    expect(RepoAuthorizeUrlResponseSchema.safeParse({ url: "" }).success).toBe(false);
   });
 });

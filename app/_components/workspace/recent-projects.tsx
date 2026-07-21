@@ -1,18 +1,28 @@
-import { DEMO_PROJECTS, sortByLastOpened } from "@/lib/workspace/projects-model";
+import {
+  DEMO_PROJECTS,
+  sortByLastOpened,
+  type DemoProject,
+} from "@/lib/workspace/projects-model";
 import OctocatIcon from "../octocat-icon";
 
 /** 10a's "Recent projects" grid + dashed new-project card + info bar. The
  *  dashed card opens the New-project wizard; each card's "Open ▸" routes to
  *  `/studio/<id>` (callbacks lifted to `workspace-home`, which owns the wizard
- *  open-state and the router). */
+ *  open-state and the router).
+ *
+ *  Task #26: real-mode `projects` are supplied by `workspace-home` from
+ *  `GET /api/projects`; when omitted (mock mode) the grid falls back to
+ *  `DEMO_PROJECTS`. */
 export default function RecentProjects({
   onNewProject,
   onOpenProject,
+  projects: providedProjects,
 }: {
   onNewProject: () => void;
   onOpenProject: (id: string) => void;
+  projects?: readonly DemoProject[];
 }) {
-  const projects = sortByLastOpened(DEMO_PROJECTS);
+  const projects = providedProjects ?? sortByLastOpened(DEMO_PROJECTS);
 
   return (
     <div style={{ padding: "0 34px 30px" }}>
@@ -192,8 +202,11 @@ export default function RecentProjects({
         </div>
       </div>
 
+      {/* §9-Q4 honest-copy directive: the main sentence and the footnote are
+          EXACT strings (each kept as a single literal so DOM textContent
+          matches them verbatim for the e2e anchors). */}
       <div
-        className="flex items-center"
+        className="flex items-start"
         style={{
           marginTop: 14,
           gap: 8,
@@ -206,13 +219,19 @@ export default function RecentProjects({
         }}
       >
         <span style={{ color: "var(--sg-gold)" }}>{"ⓘ"}</span>
-        {" Projects live in "}
-        <b style={{ color: "var(--sg-fg)", fontWeight: 700 }}>
-          {"your GitHub repos"}
-        </b>
-        {
-          " — Supagloo clones them to a temporary workspace when you open one, and pushes your changes back. Nothing is stored on our servers."
-        }
+        <span className="flex flex-col" style={{ gap: 3 }}>
+          <span>
+            {" Projects live in "}
+            <b style={{ color: "var(--sg-fg)", fontWeight: 700 }}>
+              {"your GitHub repos"}
+            </b>
+            {" — "}
+            {"Your Remotion code lives in your GitHub repo, not our database.*"}
+          </span>
+          <span style={{ fontSize: 11, opacity: 0.75 }}>
+            {"* Rendered videos are stored in Supagloo's S3 bucket."}
+          </span>
+        </span>
       </div>
     </div>
   );

@@ -1,19 +1,19 @@
 "use client";
 
-import {
-  logRowStatus,
-  type LogSequence,
-} from "@/lib/project-wizard/provisioning-log";
+import type { LogRow } from "@/lib/project-wizard/job-log";
 import styles from "./wizard.module.css";
 
 /**
- * Renders a `LogSequence` as monospace rows in a panel box. Each row carries
- * `data-testid="log-row"` + `data-status` ("completed" | "active" | "queued"),
- * mapping status → green ✓ / spinning ring / dim ○. Shared by New-project step 2
- * (scaffolding) and Import step 2 (verifying). Purely presentational — the
- * caller ticks the sequence.
+ * Renders provisioning-log rows in a monospace panel box. Each row carries
+ * `data-testid="log-row"` + `data-status` ("completed" | "active" | "queued" |
+ * "failed"), mapping status → green ✓ / spinning ring / dim ○ / red ✕. Shared by
+ * New-project step 2 (scaffolding) and Import step 2 (verifying).
+ *
+ * Task #26: the VIEW is unchanged, only the DATA SOURCE. In mock mode the rows come
+ * from the fake ticker (`logSequenceToRows`); in real mode they come from the polled
+ * `ProjectJob.stages` (`stagesToLogRows`). Purely presentational either way.
  */
-export default function ProvisioningLog({ seq }: { seq: LogSequence }) {
+export default function ProvisioningLog({ rows }: { rows: readonly LogRow[] }) {
   return (
     <div
       data-testid="provisioning-log"
@@ -26,8 +26,8 @@ export default function ProvisioningLog({ seq }: { seq: LogSequence }) {
         fontSize: 12.5,
       }}
     >
-      {seq.rows.map((row, i) => {
-        const status = logRowStatus(seq, i);
+      {rows.map((row, i) => {
+        const status = row.status;
         return (
           <div
             key={i}
@@ -49,11 +49,18 @@ export default function ProvisioningLog({ seq }: { seq: LogSequence }) {
                 height: 13,
                 display: "grid",
                 placeItems: "center",
-                color: status === "completed" ? "var(--sg-green)" : "var(--sg-dim)",
+                color:
+                  status === "completed"
+                    ? "var(--sg-green)"
+                    : status === "failed"
+                      ? "var(--sg-red)"
+                      : "var(--sg-dim)",
               }}
             >
               {status === "completed" ? (
                 "✓"
+              ) : status === "failed" ? (
+                "✕"
               ) : status === "active" ? (
                 <span
                   className={styles.spin}
@@ -71,10 +78,15 @@ export default function ProvisioningLog({ seq }: { seq: LogSequence }) {
             </span>
             <span
               style={{
-                color: status === "active" ? "var(--sg-fg)" : "var(--sg-dim)",
+                color:
+                  status === "active"
+                    ? "var(--sg-fg)"
+                    : status === "failed"
+                      ? "var(--sg-red)"
+                      : "var(--sg-dim)",
               }}
             >
-              {row}
+              {row.label}
             </span>
           </div>
         );

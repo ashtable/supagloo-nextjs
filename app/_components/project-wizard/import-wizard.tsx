@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "../session-provider";
 import WizardShell from "./wizard-shell";
 import RepoPicker from "./repo-picker";
 import ProvisioningLog from "./provisioning-log";
@@ -28,14 +29,26 @@ import {
   PROVISION_ROW_DELAY_MS,
   type LogSequence,
 } from "@/lib/project-wizard/provisioning-log";
+import {
+  logSequenceToRows,
+  stagesToLogRows,
+  jobSucceeded,
+  failedStageKey,
+  type LogRow,
+} from "@/lib/project-wizard/job-log";
+import { fetchWizardRepos } from "@/lib/project-wizard/wizard-repos";
+import { importRepo, pollJobUntilTerminal } from "@/lib/project-wizard/provision-effects";
 import { studioUrl } from "@/lib/studio/project";
 
 /**
- * 12b — the 2-step Import wizard. Step 1 picks a repo that already holds a
- * Supagloo project; step 2 auto-sequences the mocked verifying log and settles
- * to an "Open in studio →" CTA. A repo that fails verification (isSupaglooProject
- * === false) shows the whole-screen "NOT A SUPAGLOO PROJECT" error card, whose
- * "Start new project" hands off to the New-project wizard (D-WIZARD-SPLIT).
+ * 12b — the 2-step Import wizard. Step 1 picks a repo that already holds a Supagloo
+ * project; step 2 renders the verifying log and settles to an "Open in studio →" CTA.
+ * A repo that fails verification shows the "NOT A SUPAGLOO PROJECT" error card.
+ *
+ * Task #26: in `?mock=` mode the fake ticker + `repo.isSupaglooProject` drive it
+ * (pure-UI regression, untouched). In real/seed mode the wizard POSTs to
+ * `/api/projects/import` and polls the real import job — a `verifySupaglooProject`
+ * stage failure is what surfaces the error card (not a mock flag).
  */
 export default function ImportWizard({
   onClose,
@@ -45,45 +58,102 @@ export default function ImportWizard({
   onStartNew: () => void;
 }) {
   const router = useRouter();
+  const { isMock } = useSession();
   const [step, setStep] = useState<ImportStep>("pick");
   const [selectedRepo, setSelectedRepo] = useState<MockRepo | null>(null);
   const [failedRepo, setFailedRepo] = useState<MockRepo | null>(null);
   const [importId, setImportId] = useState("");
   const [log, setLog] = useState<LogSequence>(() => initLog([]));
+  const [realRepos, setRealRepos] = useState<MockRepo[]>([]);
+  const [realRows, setRealRows] = useState<LogRow[]>([]);
+  const [realDone, setRealDone] = useState(false);
+  const aliveRef = useRef(true);
+  useEffect(() => () => void (aliveRef.current = false), []);
 
-  // Auto-sequence the verifying log; stop at the last row (the terminal CTA is
-  // manual — nothing self-navigates, D-REDIRECT).
+  // Real/seed mode: hydrate the import picker from live GitHub repos.
   useEffect(() => {
-    if (step !== "verifying") return;
+    if (isMock) return;
+    let active = true;
+    void fetchWizardRepos("all").then((repos) => {
+      if (active) setRealRepos(repos);
+    });
+    return () => void (active = false);
+  }, [isMock]);
+
+  const pickerRepos = isMock ? reposForImport() : realRepos;
+
+  // MOCK path only: auto-sequence the verifying log; stop at the last row.
+  useEffect(() => {
+    if (!isMock || step !== "verifying") return;
     if (isLogComplete(log)) return;
-    const t = setTimeout(
-      () => setLog((l) => advanceLog(l)),
-      PROVISION_ROW_DELAY_MS,
-    );
+    const t = setTimeout(() => setLog((l) => advanceLog(l)), PROVISION_ROW_DELAY_MS);
     return () => clearTimeout(t);
-  }, [step, log]);
+  }, [isMock, step, log]);
 
   const startImport = () => {
     if (!selectedRepo) return;
-    if (verifyOutcome(selectedRepo) === "failure") {
-      setFailedRepo(selectedRepo);
+    if (isMock) {
+      if (verifyOutcome(selectedRepo) === "failure") {
+        setFailedRepo(selectedRepo);
+        setStep("error");
+        return;
+      }
+      setImportId(deriveProjectId(selectedRepo));
+      setLog(
+        initLog(
+          importLogRows({ latestBranch: selectedRepo.latestBranch ?? "v0.0.1" }),
+        ),
+      );
+      setStep("verifying");
+      return;
+    }
+    // Real/seed mode.
+    setRealRows([]);
+    setRealDone(false);
+    setImportId(deriveProjectId(selectedRepo));
+    setStep("verifying");
+    void startRealImport(selectedRepo);
+  };
+
+  const startRealImport = async (repo: MockRepo) => {
+    const ref = await importRepo({
+      repoOwner: repo.owner,
+      repoName: repo.shortName,
+      projectName: repo.shortName,
+    });
+    if (!aliveRef.current) return;
+    if (!ref) {
+      setFailedRepo(repo);
       setStep("error");
       return;
     }
-    setImportId(deriveProjectId(selectedRepo));
-    setLog(
-      initLog(
-        importLogRows({ latestBranch: selectedRepo.latestBranch ?? "v0.0.1" }),
-      ),
-    );
-    setStep("verifying");
+    const job = await pollJobUntilTerminal(ref.projectId, ref.jobId, {
+      onUpdate: (j) => {
+        if (aliveRef.current) setRealRows(stagesToLogRows(j.stages));
+      },
+    });
+    if (!aliveRef.current) return;
+    if (job && jobSucceeded(job)) {
+      setRealDone(true); // reveals the terminal "Open in studio →" CTA
+      return;
+    }
+    // A verify failure (or any import failure) → the "NOT A SUPAGLOO PROJECT" card.
+    // `verifySupaglooProject` is the typed non-retryable failure the design calls out.
+    if (job) void failedStageKey(job); // (documented: the stage key that failed)
+    setFailedRepo(repo);
+    setStep("error");
   };
 
   const chooseAnother = () => {
     setSelectedRepo(null);
     setFailedRepo(null);
+    setRealRows([]);
+    setRealDone(false);
     setStep("pick");
   };
+
+  const logRows: LogRow[] = isMock ? logSequenceToRows(log) : realRows;
+  const verifyComplete = isMock ? isLogComplete(log) : realDone;
 
   if (step === "error") {
     return (
@@ -224,7 +294,7 @@ export default function ImportWizard({
           </div>
           <div style={{ marginTop: 16 }}>
             <RepoPicker
-              repos={reposForImport()}
+              repos={pickerRepos}
               variant="import"
               selectedFullName={selectedRepo?.fullName ?? null}
               onSelect={setSelectedRepo}
@@ -253,9 +323,9 @@ export default function ImportWizard({
             {"…"}
           </div>
           <div style={{ marginTop: 18 }}>
-            <ProvisioningLog seq={log} />
+            <ProvisioningLog rows={logRows} />
           </div>
-          {isLogComplete(log) && (
+          {verifyComplete && (
             <TerminalReadyCard
               projectId={importId}
               branch=""
