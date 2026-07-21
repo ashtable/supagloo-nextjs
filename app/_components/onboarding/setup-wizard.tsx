@@ -18,6 +18,7 @@ import {
   type WizardStep,
 } from "@/lib/onboarding/wizard-model";
 import type { ConnectionsState } from "@/lib/connections/connections-model";
+import type { GlooCredentials } from "@/lib/connections/gloo-connect";
 
 const eyebrowStyle: CSSProperties = {
   fontWeight: 700,
@@ -63,17 +64,24 @@ const optionalTagStyle: CSSProperties = {
  * own 6px progress bar is its chrome, driven by `lib/onboarding/wizard-model`.
  */
 export default function SetupWizard() {
-  const { session, connections, connectProvider, markOnboarded } = useSession();
+  const { session, connections, connectProvider, glooError, clearGlooError, markOnboarded } =
+    useSession();
   const [step, setStep] = useState<WizardStep>("welcome");
 
   const firstName = (session.user?.name ?? "").trim().split(/\s+/)[0] ?? "";
 
-  // Auto-advance github → openrouter once the mocked OAuth transition lands on
-  // "connected" — the GitHub gate opening is itself the advance signal.
+  // Auto-advance on connect: the GitHub gate opening advances to openrouter; a real
+  // openrouter/gloo connect advances to the next step too (Task #25 — same signal
+  // as github, so a successful optional connect moves the user forward rather than
+  // stranding them). Skipping an optional step is handled separately by `goSkip`.
   useEffect(() => {
     if (step === "github" && canAdvance("github", connections)) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setStep("openrouter");
+    } else if (step === "openrouter" && connections.openrouter.status === "connected") {
+      setStep("gloo");
+    } else if (step === "gloo" && connections.gloo.status === "connected") {
+      setStep("done");
     }
   }, [step, connections]);
 
@@ -140,8 +148,10 @@ export default function SetupWizard() {
         {step === "gloo" && (
           <GlooStep
             connections={connections}
-            onSave={() => connectProvider("gloo")}
+            onSave={(creds) => connectProvider("gloo", creds)}
             onSkip={goSkip}
+            glooError={glooError}
+            onClearGlooError={clearGlooError}
           />
         )}
         {step === "done" && (
@@ -393,10 +403,14 @@ function GlooStep({
   connections,
   onSave,
   onSkip,
+  glooError,
+  onClearGlooError,
 }: {
   connections: ConnectionsState;
-  onSave: () => void;
+  onSave: (creds: GlooCredentials) => void;
   onSkip: () => void;
+  glooError: string | null;
+  onClearGlooError: () => void;
 }) {
   const pending = connections.gloo.status === "pending";
   return (
@@ -455,6 +469,8 @@ function GlooStep({
           onSave={onSave}
           pending={pending}
           onSkip={onSkip}
+          serverError={glooError}
+          onClearServerError={onClearGlooError}
         />
       </div>
     </div>

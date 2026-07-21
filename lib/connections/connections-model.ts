@@ -13,7 +13,8 @@ export type ConnectionStatus = "connected" | "not-linked" | "pending";
 export interface ProviderDetails {
   github: { username: string; repos: number };
   openrouter: { maskedKey: string; credit: string };
-  gloo: { method: string };
+  // `clientId` is the real stored plaintext (Task #25); absent for the mock seed.
+  gloo: { method: string; clientId?: string };
 }
 
 export interface ProviderConnection<P extends Provider = Provider> {
@@ -138,6 +139,37 @@ export function connectGithub(
   return {
     ...state,
     github: { provider: "github", status: "connected", detail },
+  };
+}
+
+/**
+ * Flip openrouter to `connected` with a REAL detail (Task #25, §5.3/§9-Q5): the
+ * masked key (`sk-or-••••••{keyLast4}`) + the LIVE credit label (§2.4, fetched, not
+ * stored). Real-flow counterpart to `completeConnect("openrouter")`, which still
+ * serves the mock seed. Immutable.
+ */
+export function connectOpenRouter(
+  state: ConnectionsState,
+  detail: ProviderDetails["openrouter"],
+): ConnectionsState {
+  return {
+    ...state,
+    openrouter: { provider: "openrouter", status: "connected", detail },
+  };
+}
+
+/**
+ * Flip gloo to `connected` with a REAL detail (Task #25, §2.5): the plaintext
+ * `clientId` the API stored (the secret is never exposed). Real-flow counterpart to
+ * `completeConnect("gloo")`. Immutable.
+ */
+export function connectGloo(
+  state: ConnectionsState,
+  detail: ProviderDetails["gloo"],
+): ConnectionsState {
+  return {
+    ...state,
+    gloo: { provider: "gloo", status: "connected", detail },
   };
 }
 

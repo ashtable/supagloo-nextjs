@@ -28,6 +28,9 @@ export default function ProfilePage() {
     connections,
     connectProvider,
     disconnectProvider,
+    glooError,
+    clearGlooError,
+    disconnectErrors,
     signOut,
   } = useSession();
   const [modal, setModal] = useState<"github" | "openrouter" | null>(null);
@@ -188,9 +191,12 @@ export default function ProfilePage() {
                 key={provider}
                 provider={provider}
                 connections={connections}
-                onConnect={() => connectProvider(provider)}
+                onConnect={(payload) => connectProvider(provider, payload)}
                 onDisconnect={() => disconnectProvider(provider)}
                 onOpenModal={openModal}
+                glooError={provider === "gloo" ? glooError : null}
+                onClearGlooError={clearGlooError}
+                disconnectError={disconnectErrors[provider]}
               />
             ))}
           </div>

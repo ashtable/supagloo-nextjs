@@ -81,6 +81,24 @@ async function dataAttr(testid: string, attr: string): Promise<string | null> {
     { id: testid, a: attr },
   );
 }
+/** Set a React-controlled input's value the way React sees it (native setter +
+ *  input event). Understudy-safe (no Playwright `.fill`). */
+async function typeInto(testid: string, value: string): Promise<void> {
+  await page.evaluate(
+    ({ id, v }) => {
+      const el = document.querySelector<HTMLInputElement>(`[data-testid="${id}"]`);
+      if (!el) throw new Error(`no input [data-testid="${id}"]`);
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!;
+      setter.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    { id: testid, v: value },
+  );
+}
 /** Poll `data-status` on a card until it equals `expected`, else throw. */
 async function waitForStatus(
   testid: string,
@@ -219,11 +237,11 @@ const ANCHORS_10B: readonly string[] = [
   "PKCE OAUTH",
   "sk-or-••••••4f2a",
   "$18.40 credit remaining",
-  // gloo (not linked — inline form)
+  // gloo (not linked — inline form). Task #25 made CLIENT ID a real input, so its
+  // hint (`gloo_client_id…`) moved to a placeholder attribute (not in textContent).
   "Gloo AI",
   "Not linked",
   "CLIENT CREDENTIALS",
-  "gloo_client_id…",
   "Save & verify",
   "Open Gloo dashboard ↗",
   // privacy note (pieces)
@@ -360,6 +378,12 @@ describe("Profile & connections 10b", () => {
     expect(await dataAttr("gloo-secret", "type")).toBe("text");
     await clickTestId("gloo-reveal");
     expect(await dataAttr("gloo-secret", "type")).toBe("password");
+
+    // Task #25: CLIENT ID + CLIENT SECRET are now real controlled inputs and save
+    // is gated by local validation — fill both before saving. (Mock mode still runs
+    // the timer path; the values are ignored, only their presence unblocks submit.)
+    await typeInto("gloo-client-id", "gloo_client_mock");
+    await typeInto("gloo-secret", "gloo_secret_mock");
 
     // save → the mock OAuth transition: synchronous pending, then connected
     expect(await dataAttr("connection-card-gloo", "data-status")).toBe(

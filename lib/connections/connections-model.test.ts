@@ -13,6 +13,8 @@ import {
   beginConnect,
   completeConnect,
   connectGithub,
+  connectOpenRouter,
+  connectGloo,
   disconnect,
   stripItems,
   cardModel,
@@ -203,5 +205,56 @@ describe("connectGithub — real-detail github connect (Task #24)", () => {
     const s = seedWireframe(); // github already connected with the mock detail
     const next = connectGithub(s, { username: "@acme", repos: 42 });
     expect(next.github.detail).toEqual({ username: "@acme", repos: 42 });
+  });
+});
+
+describe("connectOpenRouter — real-detail openrouter connect (Task #25)", () => {
+  // Task #25 (§5.3): the mocked `completeConnect("openrouter")` (hardcoded
+  // `sk-or-••••••4f2a` / `$18.40 credit remaining`) is replaced in the real flow by
+  // `connectOpenRouter`, which sets openrouter connected with the REAL masked key
+  // (`sk-or-••••••{keyLast4}`, §9-Q5) + the LIVE credits label (§2.4). Pure reducer;
+  // only the detail source changes.
+  it("UC-6a: flips openrouter to connected with the supplied real detail", () => {
+    const s = seedNoneLinked();
+    const next = connectOpenRouter(s, {
+      maskedKey: "sk-or-••••••cafe",
+      credit: "$87.50 credit remaining",
+    });
+    expect(next.openrouter.status).toBe("connected");
+    expect(next.openrouter.detail).toEqual({
+      maskedKey: "sk-or-••••••cafe",
+      credit: "$87.50 credit remaining",
+    });
+  });
+
+  it("UC-6b: is immutable — input untouched, siblings preserved", () => {
+    const s = seedNoneLinked();
+    const next = connectOpenRouter(s, { maskedKey: "sk-or-••••••cafe", credit: "" });
+    expect(s.openrouter.status).toBe("not-linked");
+    expect(s.openrouter.detail).toBeUndefined();
+    expect(next.github).toBe(s.github);
+    expect(next.gloo).toBe(s.gloo);
+    expect(next).not.toBe(s);
+  });
+});
+
+describe("connectGloo — real-detail gloo connect (Task #25)", () => {
+  // Task #25 (§2.5): the real gloo connect carries the plaintext `clientId` the API
+  // stored (secret is never exposed). `method` stays the constant "CLIENT
+  // CREDENTIALS" (that IS gloo's grant); `clientId` is the new real-state field.
+  it("UC-7a: flips gloo to connected carrying the real clientId", () => {
+    const s = seedNoneLinked();
+    const next = connectGloo(s, { method: "CLIENT CREDENTIALS", clientId: "gloo-cid" });
+    expect(next.gloo.status).toBe("connected");
+    expect(next.gloo.detail).toEqual({ method: "CLIENT CREDENTIALS", clientId: "gloo-cid" });
+  });
+
+  it("UC-7b: is immutable — input untouched, siblings preserved", () => {
+    const s = seedNoneLinked();
+    const next = connectGloo(s, { method: "CLIENT CREDENTIALS", clientId: "gloo-cid" });
+    expect(s.gloo.status).toBe("not-linked");
+    expect(next.github).toBe(s.github);
+    expect(next.openrouter).toBe(s.openrouter);
+    expect(next).not.toBe(s);
   });
 });

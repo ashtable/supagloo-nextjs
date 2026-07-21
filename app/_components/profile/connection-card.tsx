@@ -1,6 +1,7 @@
 "use client";
 
 import { cardModel, type ConnectionsState, type Provider } from "@/lib/connections/connections-model";
+import type { GlooCredentials } from "@/lib/connections/gloo-connect";
 import GlooCredentialsForm from "../connect/gloo-credentials-form";
 import OctocatIcon from "../octocat-icon";
 
@@ -70,12 +71,24 @@ export default function ConnectionCard({
   onConnect,
   onDisconnect,
   onOpenModal,
+  glooError,
+  onClearGlooError,
+  disconnectError,
 }: {
   provider: Provider;
   connections: ConnectionsState;
-  onConnect: () => void;
+  /** For gloo the inline form supplies the credentials; github/openrouter connect
+   *  via `onOpenModal`, so their `onConnect` is called without a payload. */
+  onConnect: (payload?: GlooCredentials) => void;
   onDisconnect: () => void;
   onOpenModal?: (provider: "github" | "openrouter") => void;
+  /** The Gloo server verify error (gloo card only), shown in the inline form. */
+  glooError?: string | null;
+  onClearGlooError?: () => void;
+  /** A failed-disconnect error (any provider): the DELETE didn't succeed, so the
+   *  card stayed connected — shown next to the connection detail. A retry (clicking
+   *  Disconnect again) clears it. Null/absent when there is none. */
+  disconnectError?: string | null;
 }) {
   const conn = connections[provider];
   const model = cardModel(connections, provider);
@@ -159,6 +172,21 @@ export default function ConnectionCard({
           <ConnectionDetail provider={provider} connections={connections} />
         )}
 
+        {model.body === "detail" && disconnectError && (
+          <div
+            data-testid={`disconnect-error-${provider}`}
+            role="alert"
+            style={{
+              marginTop: 11,
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: "var(--sg-red)",
+            }}
+          >
+            {disconnectError}
+          </div>
+        )}
+
         {model.body === "connect" && (
           <button
             type="button"
@@ -187,8 +215,10 @@ export default function ConnectionCard({
             <GlooCredentialsForm
               variant="card"
               saveLabel="Save & verify"
-              onSave={onConnect}
+              onSave={(creds) => onConnect(creds)}
               pending={conn.status === "pending"}
+              serverError={glooError}
+              onClearServerError={onClearGlooError}
             />
           </div>
         )}
@@ -292,6 +322,17 @@ function ConnectionDetail({
       style={{ gap: 8, marginTop: 11, fontSize: 12.5, color: "var(--sg-dim)" }}
     >
       {`Authenticated via ${detail.method.toLowerCase()}.`}
+      {detail.clientId && (
+        <>
+          <span style={{ opacity: 0.5 }}>{"·"}</span>
+          <span>
+            {"Client ID: "}
+            <b style={{ fontFamily: "monospace", color: "var(--sg-fg)" }}>
+              {detail.clientId}
+            </b>
+          </span>
+        </>
+      )}
     </div>
   );
 }

@@ -1,6 +1,10 @@
 "use client";
 
 import { useState, type CSSProperties } from "react";
+import {
+  validateGlooCredentials,
+  type GlooCredentials,
+} from "@/lib/connections/gloo-connect";
 
 const labelStyle: CSSProperties = {
   fontWeight: 700,
@@ -10,16 +14,28 @@ const labelStyle: CSSProperties = {
   marginBottom: 5,
 };
 
+const inputStyle: CSSProperties = {
+  border: "none",
+  outline: "none",
+  background: "transparent",
+  fontFamily: "monospace",
+  fontSize: 13,
+  color: "var(--sg-fg)",
+  width: "100%",
+};
+
 /**
- * The shared Gloo client-id/secret form — used by 10b's inline not-linked
- * card AND the wizard's Gloo step (plan D-REUSE). CLIENT ID stays a static
- * display (matches the raw fragments, which never show it as an editable
- * field); CLIENT SECRET is the real interactive seam: a masked `<input>`
- * (`gloo-secret`) with a 👁 reveal toggle (`gloo-reveal`).
+ * The shared Gloo client-id/secret form — used by 10b's inline not-linked card AND
+ * the wizard's Gloo step (plan D-REUSE). Task #25 made both fields REAL controlled
+ * inputs (`gloo-client-id`, `gloo-secret`) with a 👁 reveal toggle. On submit it
+ * runs local validation (both non-empty) and, only if that passes, hands the
+ * credentials to `onSave` — the caller runs the LIVE `PUT /api/connect/gloo`
+ * verify-then-store. A server verify failure (`serverError`) is rendered in the same
+ * `gloo-error` slot as local validation, per §6a ("failure surfaces as a real form
+ * error"). Editing a field clears both errors.
  *
- * `variant` only changes layout (stacked in the wizard vs. a 2-col grid in
- * the 10b card, matching the raw fragments) and field background. `onSkip`
- * is provided only by the wizard's Gloo step — 10b's inline form has no skip.
+ * `variant` only changes layout (stacked in the wizard vs. a 2-col grid on the 10b
+ * card) and field background. `onSkip` is provided only by the wizard's Gloo step.
  */
 export default function GlooCredentialsForm({
   variant,
@@ -27,17 +43,42 @@ export default function GlooCredentialsForm({
   onSave,
   pending,
   onSkip,
+  serverError,
+  onClearServerError,
 }: {
   variant: "card" | "wizard";
   saveLabel: string;
-  onSave: () => void;
+  onSave: (creds: GlooCredentials) => void;
   pending: boolean;
   onSkip?: () => void;
+  serverError?: string | null;
+  onClearServerError?: () => void;
 }) {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
   const [revealed, setRevealed] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
   const isWizard = variant === "wizard";
   const fieldBg = isWizard ? "var(--sg-panel)" : "var(--sg-bg)";
   const fieldHeight = isWizard ? 42 : 40;
+
+  const clearErrors = () => {
+    if (localError) setLocalError(null);
+    if (serverError) onClearServerError?.();
+  };
+
+  const handleSave = () => {
+    const creds = { clientId, clientSecret };
+    const err = validateGlooCredentials(creds);
+    if (err) {
+      setLocalError(err);
+      return;
+    }
+    setLocalError(null);
+    onSave(creds);
+  };
+
+  const shownError = localError ?? serverError ?? null;
 
   return (
     <div>
@@ -59,12 +100,22 @@ export default function GlooCredentialsForm({
               display: "flex",
               alignItems: "center",
               padding: "0 12px",
-              fontFamily: "monospace",
-              fontSize: 13,
-              color: "var(--sg-dim)",
             }}
           >
-            {"gloo_client_id…"}
+            <input
+              data-testid="gloo-client-id"
+              type="text"
+              value={clientId}
+              onChange={(e) => {
+                setClientId(e.target.value);
+                clearErrors();
+              }}
+              placeholder="gloo_client_id…"
+              aria-label="Gloo client ID"
+              autoComplete="off"
+              spellCheck={false}
+              style={inputStyle}
+            />
           </div>
         </div>
         <div>
@@ -84,18 +135,16 @@ export default function GlooCredentialsForm({
             <input
               data-testid="gloo-secret"
               type={revealed ? "text" : "password"}
-              defaultValue="gloo_client_secret_mock"
-              readOnly
-              aria-label="Gloo client secret"
-              style={{
-                border: "none",
-                outline: "none",
-                background: "transparent",
-                fontFamily: "monospace",
-                fontSize: 13,
-                color: "var(--sg-dim)",
-                width: "100%",
+              value={clientSecret}
+              onChange={(e) => {
+                setClientSecret(e.target.value);
+                clearErrors();
               }}
+              placeholder="gloo_client_secret…"
+              aria-label="Gloo client secret"
+              autoComplete="off"
+              spellCheck={false}
+              style={inputStyle}
             />
             <button
               type="button"
@@ -117,6 +166,22 @@ export default function GlooCredentialsForm({
         </div>
       </div>
 
+      {shownError && (
+        <div
+          data-testid="gloo-error"
+          role="alert"
+          style={{
+            marginTop: 10,
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: "var(--sg-red)",
+            lineHeight: 1.4,
+          }}
+        >
+          {shownError}
+        </div>
+      )}
+
       <div
         style={{
           display: "flex",
@@ -128,7 +193,7 @@ export default function GlooCredentialsForm({
         <button
           type="button"
           data-testid="gloo-save"
-          onClick={onSave}
+          onClick={handleSave}
           disabled={pending}
           className="cursor-pointer"
           style={{

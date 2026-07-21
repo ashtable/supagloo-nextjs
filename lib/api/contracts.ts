@@ -146,11 +146,60 @@ export const GithubRepoListResponseSchema = z.object({
 });
 export type GithubRepoListResponse = z.infer<typeof GithubRepoListResponseSchema>;
 
-/** `GET /v1/connections` merged status. Only `github` is fully typed here — Task
- *  #25 owns the OpenRouter/Gloo shapes, so those stay nullable/loose for now. */
+// ── OpenRouter + Gloo connect wire DTOs (Task #25 — design-delta §2.4/§2.5/§8) ──
+//
+// Hand-rolled mirrors of the API's OpenRouter/Gloo contracts (db-lib
+// `schemas.ts:468-560`). Same rationale as the GitHub shapes above: this repo's
+// db-lib submodule predates these DTOs and a BFF needs only the wire shapes.
+// Secrets NEVER cross the wire — OpenRouter carries only the masked `keyLast4`
+// (§9-Q5), Gloo only the plaintext `clientId`. Dates are ISO strings.
+
+/** A stored OpenRouter connection on the wire — the masked `keyLast4` only. */
+export const OpenRouterConnectionStatusSchema = z.object({
+  keyLast4: z.string(),
+  status: z.string(),
+  connectedAt: z.string(),
+});
+export type OpenRouterConnectionStatus = z.infer<typeof OpenRouterConnectionStatusSchema>;
+
+/** `POST /v1/connections/openrouter` response. */
+export const OpenRouterConnectionResponseSchema = z.object({
+  connection: OpenRouterConnectionStatusSchema,
+});
+export type OpenRouterConnectionResponse = z.infer<
+  typeof OpenRouterConnectionResponseSchema
+>;
+
+/** `GET /v1/connections/openrouter/credits` — the LIVE balance (§2.4, never stored).
+ *  `remaining = totalCredits − totalUsage`; the UI renders `$X.XX credit remaining`. */
+export const OpenRouterCreditsResponseSchema = z.object({
+  totalCredits: z.number(),
+  totalUsage: z.number(),
+  remaining: z.number(),
+});
+export type OpenRouterCreditsResponse = z.infer<typeof OpenRouterCreditsResponseSchema>;
+
+/** A stored Gloo connection on the wire — plaintext `clientId` + timestamps, never
+ *  the client secret / its ciphertext. */
+export const GlooConnectionStatusSchema = z.object({
+  clientId: z.string(),
+  status: z.string(),
+  connectedAt: z.string(),
+  lastVerifiedAt: z.string(),
+});
+export type GlooConnectionStatus = z.infer<typeof GlooConnectionStatusSchema>;
+
+/** `PUT /v1/connections/gloo` response. */
+export const GlooConnectionResponseSchema = z.object({
+  connection: GlooConnectionStatusSchema,
+});
+export type GlooConnectionResponse = z.infer<typeof GlooConnectionResponseSchema>;
+
+/** `GET /v1/connections` merged status — all three provider tables, each the
+ *  provider's status object or `null` when not connected (§8). */
 export const ConnectionsResponseSchema = z.object({
   github: GithubConnectionStatusSchema.nullable(),
-  openrouter: z.unknown().nullable(),
-  gloo: z.unknown().nullable(),
+  openrouter: OpenRouterConnectionStatusSchema.nullable(),
+  gloo: GlooConnectionStatusSchema.nullable(),
 });
 export type ConnectionsResponse = z.infer<typeof ConnectionsResponseSchema>;
