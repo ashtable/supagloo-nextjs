@@ -16,9 +16,11 @@ import {
   canImport,
   deriveProjectId,
   IMPORT_FAILED_EYEBROW,
+  importErrorKind,
   progressFill,
   stepEyebrow,
   verifyOutcome,
+  VERIFY_STAGE_KEY,
   type ImportStep,
 } from "@/lib/project-wizard/import-model";
 import {
@@ -62,6 +64,10 @@ export default function ImportWizard({
   const [step, setStep] = useState<ImportStep>("pick");
   const [selectedRepo, setSelectedRepo] = useState<MockRepo | null>(null);
   const [failedRepo, setFailedRepo] = useState<MockRepo | null>(null);
+  // Which import stage failed (real mode) — drives the error-card variant. In
+  // mock mode we only ever simulate a verify failure, so it's set to the verify
+  // stage. `null` (e.g. a poll timeout) → the generic-failure card.
+  const [failedStage, setFailedStage] = useState<string | null>(null);
   const [importId, setImportId] = useState("");
   const [log, setLog] = useState<LogSequence>(() => initLog([]));
   const [realRepos, setRealRepos] = useState<MockRepo[]>([]);
@@ -94,6 +100,8 @@ export default function ImportWizard({
     if (!selectedRepo) return;
     if (isMock) {
       if (verifyOutcome(selectedRepo) === "failure") {
+        // The mock deterministically simulates ONLY the verify-failure case.
+        setFailedStage(VERIFY_STAGE_KEY);
         setFailedRepo(selectedRepo);
         setStep("error");
         return;
@@ -123,6 +131,9 @@ export default function ImportWizard({
     });
     if (!aliveRef.current) return;
     if (!ref) {
+      // No job was ever created (the POST failed) → generic failure, not a
+      // verification failure.
+      setFailedStage(null);
       setFailedRepo(repo);
       setStep("error");
       return;
@@ -137,9 +148,12 @@ export default function ImportWizard({
       setRealDone(true); // reveals the terminal "Open in studio →" CTA
       return;
     }
-    // A verify failure (or any import failure) → the "NOT A SUPAGLOO PROJECT" card.
-    // `verifySupaglooProject` is the typed non-retryable failure the design calls out.
-    if (job) void failedStageKey(job); // (documented: the stage key that failed)
+    // Terminal failure (or a poll timeout with no job). Record WHICH stage failed
+    // so the error card can distinguish a genuine `verifySupaglooProject` failure
+    // ("NOT A SUPAGLOO PROJECT") from any other stage / a timeout (generic
+    // failure) — the latter must NOT be mislabeled as "not a Supagloo project".
+    const stage = job ? failedStageKey(job) : null;
+    setFailedStage(stage);
     setFailedRepo(repo);
     setStep("error");
   };
@@ -147,6 +161,7 @@ export default function ImportWizard({
   const chooseAnother = () => {
     setSelectedRepo(null);
     setFailedRepo(null);
+    setFailedStage(null);
     setRealRows([]);
     setRealDone(false);
     setStep("pick");
@@ -156,6 +171,94 @@ export default function ImportWizard({
   const verifyComplete = isMock ? isLogComplete(log) : realDone;
 
   if (step === "error") {
+    // Only a genuine `verifySupaglooProject` failure earns the "NOT A SUPAGLOO
+    // PROJECT" card. Any other failed stage (or a timeout with no job) gets a
+    // generic-failure card that does NOT mislabel the repo. See `importErrorKind`.
+    const errorKind = importErrorKind(failedStage);
+
+    // The red "!" badge — shared by both error variants.
+    const errorIcon = (
+      <div
+        style={{
+          width: 64,
+          height: 64,
+          margin: "0 auto",
+          borderRadius: "50%",
+          background: "rgba(192,57,43,.12)",
+          border: "2px solid var(--sg-red)",
+          display: "grid",
+          placeItems: "center",
+          color: "var(--sg-red)",
+          fontSize: 32,
+        }}
+      >
+        {"!"}
+      </div>
+    );
+
+    // The two recovery actions — identical in both variants (same testids so
+    // tests target them the same way regardless of which card is showing).
+    const recoveryButtons = (
+      <div style={{ display: "flex", gap: 10, marginTop: 22 }}>
+        <button
+          type="button"
+          data-testid="import-error-choose-another"
+          onClick={chooseAnother}
+          className="cursor-pointer"
+          style={{
+            flex: 1,
+            textAlign: "center",
+            padding: 13,
+            border: "1px solid var(--sg-line2)",
+            borderRadius: 11,
+            fontWeight: 700,
+            fontSize: 14,
+            color: "var(--sg-fg)",
+            background: "transparent",
+          }}
+        >
+          {"← Choose another"}
+        </button>
+        <button
+          type="button"
+          data-testid="import-error-start-new"
+          onClick={onStartNew}
+          className="cursor-pointer"
+          style={{
+            flex: 1,
+            textAlign: "center",
+            padding: 13,
+            borderRadius: 11,
+            backgroundImage: "var(--sg-grad)",
+            boxShadow: "0 6px 16px rgba(192,57,43,.3)",
+            fontWeight: 700,
+            fontSize: 14,
+            color: "#fff",
+            border: "none",
+          }}
+        >
+          {"Start new project"}
+        </button>
+      </div>
+    );
+
+    const headingStyle = {
+      fontFamily: "var(--font-anton), sans-serif",
+      fontSize: 24,
+      lineHeight: 1.05,
+      marginTop: 18,
+    } as const;
+    const bodyStyle = {
+      fontFamily: "var(--font-zilla), 'Zilla Slab', Georgia, serif",
+      fontSize: 14,
+      color: "var(--sg-dim)",
+      marginTop: 10,
+      lineHeight: 1.55,
+      maxWidth: 400,
+      marginLeft: "auto",
+      marginRight: "auto",
+    } as const;
+
     return (
       <WizardShell
         testId="import-wizard"
@@ -168,94 +271,36 @@ export default function ImportWizard({
         onClose={onClose}
         contentStyle={{ padding: "30px 28px 28px", textAlign: "center" }}
       >
-        <div data-testid="import-error-card">
-          <div
-            style={{
-              width: 64,
-              height: 64,
-              margin: "0 auto",
-              borderRadius: "50%",
-              background: "rgba(192,57,43,.12)",
-              border: "2px solid var(--sg-red)",
-              display: "grid",
-              placeItems: "center",
-              color: "var(--sg-red)",
-              fontSize: 32,
-            }}
-          >
-            {"!"}
+        {errorKind === "not-a-project" ? (
+          <div data-testid="import-error-card">
+            {errorIcon}
+            <div style={headingStyle}>{"NOT A SUPAGLOO PROJECT"}</div>
+            <div style={bodyStyle}>
+              <b style={{ color: "var(--sg-fg)" }}>
+                {failedRepo?.fullName ?? "This repo"}
+              </b>
+              {" doesn't contain a Remotion project (no "}
+              <span style={{ fontFamily: "monospace" }}>
+                {"remotion.config.ts"}
+              </span>
+              {" or version branch). Pick a different repo, or start a new project instead."}
+            </div>
+            {recoveryButtons}
           </div>
-          <div
-            style={{
-              fontFamily: "var(--font-anton), sans-serif",
-              fontSize: 24,
-              lineHeight: 1.05,
-              marginTop: 18,
-            }}
-          >
-            {"NOT A SUPAGLOO PROJECT"}
+        ) : (
+          <div data-testid="import-error-card-generic">
+            {errorIcon}
+            <div style={headingStyle}>{"IMPORT FAILED"}</div>
+            <div style={bodyStyle}>
+              {"Something went wrong while importing "}
+              <b style={{ color: "var(--sg-fg)" }}>
+                {failedRepo?.fullName ?? "this repo"}
+              </b>
+              {". Try again, or pick a different repo."}
+            </div>
+            {recoveryButtons}
           </div>
-          <div
-            style={{
-              fontFamily: "var(--font-zilla), 'Zilla Slab', Georgia, serif",
-              fontSize: 14,
-              color: "var(--sg-dim)",
-              marginTop: 10,
-              lineHeight: 1.55,
-              maxWidth: 400,
-              marginLeft: "auto",
-              marginRight: "auto",
-            }}
-          >
-            <b style={{ color: "var(--sg-fg)" }}>
-              {failedRepo?.fullName ?? "This repo"}
-            </b>
-            {" doesn't contain a Remotion project (no "}
-            <span style={{ fontFamily: "monospace" }}>{"remotion.config.ts"}</span>
-            {" or version branch). Pick a different repo, or start a new project instead."}
-          </div>
-          <div style={{ display: "flex", gap: 10, marginTop: 22 }}>
-            <button
-              type="button"
-              data-testid="import-error-choose-another"
-              onClick={chooseAnother}
-              className="cursor-pointer"
-              style={{
-                flex: 1,
-                textAlign: "center",
-                padding: 13,
-                border: "1px solid var(--sg-line2)",
-                borderRadius: 11,
-                fontWeight: 700,
-                fontSize: 14,
-                color: "var(--sg-fg)",
-                background: "transparent",
-              }}
-            >
-              {"← Choose another"}
-            </button>
-            <button
-              type="button"
-              data-testid="import-error-start-new"
-              onClick={onStartNew}
-              className="cursor-pointer"
-              style={{
-                flex: 1,
-                textAlign: "center",
-                padding: 13,
-                borderRadius: 11,
-                backgroundImage: "var(--sg-grad)",
-                boxShadow: "0 6px 16px rgba(192,57,43,.3)",
-                fontWeight: 700,
-                fontSize: 14,
-                color: "#fff",
-                border: "none",
-              }}
-            >
-              {"Start new project"}
-            </button>
-          </div>
-        </div>
+        )}
       </WizardShell>
     );
   }

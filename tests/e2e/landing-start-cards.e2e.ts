@@ -48,6 +48,32 @@ async function locationSearch(): Promise<string> {
   return page.evaluate(() => window.location.search);
 }
 
+/** Click a testid, retrying a transient Stagehand-understudy CDP race. Clicking a
+ *  freshly-rendered card intermittently makes the understudy's `DOM.getBoxModel`
+ *  come back "-32000 Node does not have a layout object" — `waitForText()` can
+ *  resolve before the newly-rendered subtree has a box model. `getBoxModel` runs
+ *  BEFORE the synthetic mouse dispatch, so a rejected click performed NO action —
+ *  retrying re-resolves the (now-stable) node and cannot double-fire. Pure
+ *  test-infra resilience (ported from `studio-publish.e2e.ts`); assertions are
+ *  unchanged. NOT a scrollIntoView/viewport issue — the driver already
+ *  scroll-into-views before every click. */
+async function clickTestId(testid: string): Promise<void> {
+  const sel = `[data-testid="${testid}"]`;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await page.locator(sel).click();
+      return;
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err);
+      if (attempt < 3 && /layout object|not (found|visible)/i.test(msg)) {
+        await page.waitForTimeout(150);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 beforeAll(async () => {
   stagehand = new Stagehand({
     env: "LOCAL",
@@ -98,7 +124,7 @@ describe("landing origin entry points (Task #26 §3.4)", () => {
     // No native `disabled` attr (understudy clicks would hang), so prove
     // inertness behaviorally: click each and assert the URL never changes.
     for (const tid of ["start-card-votd", "start-card-passage", "start-demo"]) {
-      await page.locator(`[data-testid="${tid}"]`).click();
+      await clickTestId(tid);
       await page.waitForTimeout(400);
       expect(await locationSearch(), tid).not.toContain("newproject");
     }
@@ -116,7 +142,7 @@ describe("landing origin entry points (Task #26 §3.4)", () => {
   });
 
   test("E: clicking 'Blank canvas' navigates into the new-project intent", async () => {
-    await page.locator('[data-testid="start-card-blank"]').click();
+    await clickTestId("start-card-blank");
     // Poll for the navigation (full-page anchor nav, not client routing).
     const deadline = Date.now() + 15_000;
     let search = "";
