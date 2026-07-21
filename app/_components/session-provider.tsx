@@ -24,11 +24,19 @@ import {
   seedAllLinked,
   beginConnect,
   completeConnect,
+  connectGithub,
   disconnect as disconnectReducer,
   MOCK_OAUTH_DELAY_MS,
   type ConnectionsState,
   type Provider,
 } from "@/lib/connections/connections-model";
+import {
+  githubUsername,
+  openGithubInstall,
+  pollGithubConnected,
+  fetchGithubConnection,
+  fetchGithubRepoCount,
+} from "@/lib/connections/github-connect";
 import type { ConnectionsSeedName } from "@/lib/session/session-model";
 
 // Build-time constant — inlined by Next.js. Absent/unset in prod, so the
@@ -212,7 +220,67 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setConnectionsSeeded(true);
   }, [mounted, connectionsSeeded, search]);
 
+  // Hydrate the REAL github connection status (Task 24, real/seed mode only) once
+  // a server session exists — so a returning user whose github is already
+  // connected shows it on load without reconnecting. Never sets not-linked and
+  // yields to an in-flight `pending`, so it can't clobber an optimistic connect.
+  // Runs only after the mock seed has initialized the connections object.
+  useEffect(() => {
+    if (!mounted || !connectionsSeeded) return;
+    if (parseMockSession(search, DEMO_FLAG)) return; // pure-client mock: no network
+    if (!serverUser) return; // no server session → nothing to hydrate
+    let active = true;
+    void (async () => {
+      const snap = await fetchGithubConnection({});
+      if (!active || !snap.connected || !snap.login) return;
+      const username = githubUsername(snap.login);
+      setConnections((s) =>
+        s.github.status === "pending" ? s : connectGithub(s, { username, repos: 0 }),
+      );
+      const repos = await fetchGithubRepoCount({});
+      if (!active) return;
+      setConnections((s) =>
+        s.github.status === "connected" ? connectGithub(s, { username, repos }) : s,
+      );
+    })();
+    return () => {
+      active = false;
+    };
+  }, [mounted, connectionsSeeded, search, serverUser]);
+
   const connectProvider = (provider: Provider) => {
+    const isMock = parseMockSession(search, DEMO_FLAG) !== null;
+
+    // Real GitHub App connect (§5.3/§6a): open the install tab, then poll the BFF
+    // until the callback has stored the connection — `pending` spans that real
+    // round-trip. Only in the real/seed session path; mock mode + every
+    // openrouter/gloo click stay on the pure mock timer (Task 25 wires the rest).
+    if (provider === "github" && !isMock) {
+      setConnections((s) => beginConnect(s, "github"));
+      openGithubInstall(
+        typeof window !== "undefined" ? window.open.bind(window) : () => null,
+      );
+      void (async () => {
+        const login = await pollGithubConnected({});
+        if (!login) {
+          // Timed out → return the user to not-linked (they can retry).
+          setConnections((s) => disconnectReducer(s, "github"));
+          return;
+        }
+        const username = githubUsername(login);
+        // Flip to connected immediately (opens the wizard gate); backfill the live
+        // repo count without blocking the auto-advance.
+        setConnections((s) => connectGithub(s, { username, repos: 0 }));
+        const repos = await fetchGithubRepoCount({});
+        setConnections((s) =>
+          s.github.status === "connected"
+            ? connectGithub(s, { username, repos })
+            : s,
+        );
+      })();
+      return;
+    }
+
     setConnections((s) => beginConnect(s, provider));
     setTimeout(() => {
       setConnections((s) => completeConnect(s, provider));
@@ -220,6 +288,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   };
 
   const disconnectProvider = (provider: Provider) => {
+    const isMock = parseMockSession(search, DEMO_FLAG) !== null;
+    if (provider === "github" && !isMock) {
+      // Best-effort server disconnect; the optimistic reducer update is instant.
+      void fetch("/api/connect/github", { method: "DELETE" }).catch(() => undefined);
+    }
     setConnections((s) => disconnectReducer(s, provider));
   };
 

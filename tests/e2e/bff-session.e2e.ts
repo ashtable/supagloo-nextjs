@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
+import { completeGithubConnectViaCallback } from "./connect-helpers";
 
 /**
  * Task 23 — the BFF session layer + server-driven onboarding, exercised end to
@@ -123,8 +124,12 @@ describe("BFF session — first sign-in via the extended seam (real stack)", () 
     await a.waitForStepLabel("STEP 2 OF 4 · CONNECT GITHUB");
     expect(await a.countTestId("wizard-skip")).toBe(0); // required gate, no skip
 
+    // Task 24: the github step is now REAL in seed mode — Authorize kicks off the
+    // §6a round-trip; we simulate GitHub's redirect-back into the real callback,
+    // then the main-tab poll opens the gate and auto-advances.
     await a.clickTestId("connect-authorize");
-    await a.waitForStepLabel("STEP 3 OF 4 · OPENROUTER"); // mock OAuth auto-advance
+    await completeGithubConnectViaCallback(shA.context);
+    await a.waitForStepLabel("STEP 3 OF 4 · OPENROUTER");
 
     await a.clickTestId("wizard-skip");
     await a.waitForStepLabel("STEP 4 OF 4 · GLOO AI");

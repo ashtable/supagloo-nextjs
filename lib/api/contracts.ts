@@ -91,3 +91,66 @@ export const SeedTriggerRequestSchema = z.object({
   nonce: z.string().min(1).optional(),
 });
 export type SeedTriggerRequest = z.infer<typeof SeedTriggerRequestSchema>;
+
+// ── GitHub App connect wire DTOs (Task #24 — design-delta §2.3/§6a/§8) ────────
+//
+// Hand-rolled mirrors of the API's GitHub connection contracts (db-lib
+// `schemas.ts:372-446` + the merged `GET /v1/connections` at `:552-560`). Same
+// rationale as above: this repo's db-lib submodule predates these DTOs and a BFF
+// needs only the wire shapes. Only the installation POINTER is ever stored — no
+// long-lived token crosses the wire (§2.3). Dates are ISO strings.
+
+/** `GET /v1/connections/github/install-url` response — the hosted App
+ *  install-picker URL the `start` BFF route 302-redirects the new tab to. */
+export const GithubInstallUrlResponseSchema = z.object({
+  url: z.string().min(1),
+});
+export type GithubInstallUrlResponse = z.infer<typeof GithubInstallUrlResponseSchema>;
+
+/** A stored GitHub App connection on the wire. No token field — the installation
+ *  id is the only stored credential-pointer. Named `*Status` to match the API's
+ *  `GithubConnectionStatus` (which is suffixed to avoid colliding with Prisma's
+ *  `GithubConnection` model type in the API's db-lib barrel). */
+export const GithubConnectionStatusSchema = z.object({
+  githubLogin: z.string(),
+  installationId: z.string(),
+  repositorySelection: z.string(),
+  status: z.string(),
+  connectedAt: z.string(),
+});
+export type GithubConnectionStatus = z.infer<typeof GithubConnectionStatusSchema>;
+
+/** `POST /v1/connections/github/callback` response. */
+export const GithubConnectionResponseSchema = z.object({
+  connection: GithubConnectionStatusSchema,
+});
+export type GithubConnectionResponse = z.infer<typeof GithubConnectionResponseSchema>;
+
+/** One repo in the live listing. `empty` is derived by the API from GitHub's
+ *  `size === 0`. */
+export const GithubRepoSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  fullName: z.string(),
+  owner: z.string(),
+  private: z.boolean(),
+  defaultBranch: z.string(),
+  empty: z.boolean(),
+});
+export type GithubRepo = z.infer<typeof GithubRepoSchema>;
+
+/** `GET /v1/github/repos` response (already filtered server-side). The BFF uses
+ *  `repositories.length` as the live "N repos accessible" count. */
+export const GithubRepoListResponseSchema = z.object({
+  repositories: z.array(GithubRepoSchema),
+});
+export type GithubRepoListResponse = z.infer<typeof GithubRepoListResponseSchema>;
+
+/** `GET /v1/connections` merged status. Only `github` is fully typed here — Task
+ *  #25 owns the OpenRouter/Gloo shapes, so those stay nullable/loose for now. */
+export const ConnectionsResponseSchema = z.object({
+  github: GithubConnectionStatusSchema.nullable(),
+  openrouter: z.unknown().nullable(),
+  gloo: z.unknown().nullable(),
+});
+export type ConnectionsResponse = z.infer<typeof ConnectionsResponseSchema>;
