@@ -9,6 +9,10 @@ import {
   YouVersionSignInResponseSchema,
   MeResponseSchema,
   TestSeedResponseSchema,
+  GithubConnectionStatusSchema,
+  GithubInstallUrlResponseSchema,
+  ConnectionsResponseSchema,
+  GithubRepoListResponseSchema,
 } from "./contracts";
 
 const validAuthUser = {
@@ -60,5 +64,66 @@ describe("response schemas", () => {
       users: [{ user: validAuthUser, token: "seed-token" }],
     });
     expect(parsed.users[0].token).toBe("seed-token");
+  });
+});
+
+// ── Task #24: GitHub App connect wire DTOs (mirror db-lib schemas.ts:372-446,552) ──
+
+const validGithubStatus = {
+  githubLogin: "acme",
+  installationId: "42",
+  repositorySelection: "selected",
+  status: "active",
+  connectedAt: "2026-07-20T00:00:00.000Z",
+};
+
+describe("GitHub connect contracts", () => {
+  it("GithubConnectionStatusSchema parses a full status and rejects a missing field", () => {
+    expect(GithubConnectionStatusSchema.parse(validGithubStatus).githubLogin).toBe("acme");
+    const { githubLogin: _omit, ...missing } = validGithubStatus;
+    void _omit;
+    expect(GithubConnectionStatusSchema.safeParse(missing).success).toBe(false);
+  });
+
+  it("GithubInstallUrlResponseSchema parses { url }", () => {
+    expect(
+      GithubInstallUrlResponseSchema.parse({
+        url: "https://github.com/apps/supagloo-app/installations/new",
+      }).url,
+    ).toContain("installations/new");
+  });
+
+  it("ConnectionsResponseSchema parses github present OR null (the merged status)", () => {
+    const present = ConnectionsResponseSchema.parse({
+      github: validGithubStatus,
+      openrouter: null,
+      gloo: null,
+    });
+    expect(present.github?.githubLogin).toBe("acme");
+
+    const absent = ConnectionsResponseSchema.parse({
+      github: null,
+      openrouter: null,
+      gloo: null,
+    });
+    expect(absent.github).toBeNull();
+  });
+
+  it("GithubRepoListResponseSchema parses { repositories: [...] }", () => {
+    const parsed = GithubRepoListResponseSchema.parse({
+      repositories: [
+        {
+          id: 101,
+          name: "empty-one",
+          fullName: "acme/empty-one",
+          owner: "acme",
+          private: true,
+          defaultBranch: "main",
+          empty: true,
+        },
+      ],
+    });
+    expect(parsed.repositories).toHaveLength(1);
+    expect(parsed.repositories[0].fullName).toBe("acme/empty-one");
   });
 });

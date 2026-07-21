@@ -12,6 +12,7 @@ import {
   seedAllLinked,
   beginConnect,
   completeConnect,
+  connectGithub,
   disconnect,
   stripItems,
   cardModel,
@@ -168,5 +169,39 @@ describe("cardModel — 10b's full card view-model (one renderer, all states)", 
     const m = cardModel(seedNoneLinked(), "openrouter");
     expect(m.actionLabel).toBe("Connect");
     expect(m.opensModal).toBe("openrouter");
+  });
+});
+
+describe("connectGithub — real-detail github connect (Task #24)", () => {
+  // Task #24 (§5.3): the mocked `completeConnect("github")` (hardcoded
+  // "@ashsrinivas" / 12) is replaced in the real flow by `connectGithub`, which
+  // sets github connected with the REAL detail the BFF resolved (`@<githubLogin>`
+  // + the live repo count). The pure reducer is kept; only the detail source
+  // changes. `completeConnect` remains for the still-mocked openrouter/gloo.
+  it("UC-5a: flips github to connected with the supplied real detail", () => {
+    const s = seedNoneLinked();
+    const next = connectGithub(s, { username: "@acme", repos: 4 });
+
+    expect(next.github.status).toBe("connected");
+    expect(next.github.detail).toEqual({ username: "@acme", repos: 4 });
+  });
+
+  it("UC-5b: is immutable — input untouched, siblings preserved", () => {
+    const s = seedNoneLinked();
+    const next = connectGithub(s, { username: "@octocat", repos: 0 });
+
+    // input unchanged
+    expect(s.github.status).toBe("not-linked");
+    expect(s.github.detail).toBeUndefined();
+    // siblings preserved (identity), only github replaced
+    expect(next.openrouter).toBe(s.openrouter);
+    expect(next.gloo).toBe(s.gloo);
+    expect(next).not.toBe(s);
+  });
+
+  it("UC-5c: overwrites a prior (e.g. mock) github detail with the real one", () => {
+    const s = seedWireframe(); // github already connected with the mock detail
+    const next = connectGithub(s, { username: "@acme", repos: 42 });
+    expect(next.github.detail).toEqual({ username: "@acme", repos: 42 });
   });
 });

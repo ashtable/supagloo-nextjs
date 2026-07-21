@@ -124,6 +124,23 @@ export function completeConnect(
   }
 }
 
+/**
+ * Flip github to `connected` with a REAL, caller-supplied detail (`@<githubLogin>`
+ * + the live repo count the BFF resolved). Task #24's real-flow counterpart to
+ * `completeConnect("github")`: the reducer is kept pure ("keep the reducer",
+ * §5.3) — only the detail source changes from the hardcoded mock to real data.
+ * `completeConnect` still serves the mocked openrouter/gloo. Immutable.
+ */
+export function connectGithub(
+  state: ConnectionsState,
+  detail: ProviderDetails["github"],
+): ConnectionsState {
+  return {
+    ...state,
+    github: { provider: "github", status: "connected", detail },
+  };
+}
+
 /** Flip `provider` back to `not-linked`, clearing its detail. Immutable. */
 export function disconnect(
   state: ConnectionsState,
