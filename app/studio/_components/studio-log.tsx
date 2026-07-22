@@ -5,22 +5,37 @@ import {
   logRowStatus,
   type LogSequence,
 } from "@/lib/project-wizard/provisioning-log";
+import type { LogRow, LogRowStatus } from "@/lib/project-wizard/job-log";
 
 /**
- * Warm, studio-scoped `LogSequence` row renderer (mirrors the neutral
- * `project-wizard/provisioning-log.tsx` LOGIC, re-skinned amber per D-SKIN).
- * Each row carries `data-testid={rowTestId}` (default `log-row`) + `data-status`
- * ("completed" | "active" | "queued"), mapping status → green ✓ / spinning rust
- * ring / dim ○. Shared by the 14a publishing step (`log-row`) and the 14c stage
- * checklist (`render-stage`). Purely presentational — the caller ticks the seq.
+ * Warm, studio-scoped log-row renderer (mirrors the neutral
+ * `project-wizard/provisioning-log.tsx` LOGIC, re-skinned amber per D-SKIN). Renders
+ * from EITHER a mocked `LogSequence` (`seq` — the mock publish step + the 14c render
+ * checklist) OR pre-mapped `LogRow[]` (`rows` — Task 28's REAL publish path, driven by
+ * the polled `ProjectJob.stages`). Each row carries `data-testid={rowTestId}` (default
+ * `log-row`) + `data-status` ("completed" | "active" | "queued" | "failed"), mapping
+ * status → green ✓ / spinning rust ring / dim ○ / red ✕. `seq` mode never produces
+ * "failed", so it is byte-for-byte unchanged (the `rows`/failed path is strictly
+ * additive). Purely presentational — the caller ticks the seq / dispatches the stages.
  */
 export default function StudioLog({
   seq,
+  rows,
   rowTestId = "log-row",
 }: {
-  seq: LogSequence;
+  seq?: LogSequence;
+  rows?: LogRow[];
   rowTestId?: string;
 }) {
+  const items: { label: string; status: LogRowStatus }[] = rows
+    ? rows
+    : seq
+      ? seq.rows.map((label, i) => ({
+          label,
+          status: logRowStatus(seq, i) as LogRowStatus,
+        }))
+      : [];
+
   return (
     <div
       style={{
@@ -30,8 +45,8 @@ export default function StudioLog({
         fontSize: 12.5,
       }}
     >
-      {seq.rows.map((row, i) => {
-        const status = logRowStatus(seq, i);
+      {items.map(({ label, status }, i) => {
+        const failed = status === "failed";
         return (
           <div
             key={i}
@@ -61,7 +76,11 @@ export default function StudioLog({
                 placeItems: "center",
                 lineHeight: "13px",
                 fontSize: 12,
-                color: status === "completed" ? "#2f8f4e" : "#7a6650",
+                color: failed
+                  ? "#e0745a"
+                  : status === "completed"
+                    ? "#2f8f4e"
+                    : "#7a6650",
                 borderRadius: "50%",
                 border:
                   status === "active"
@@ -70,14 +89,24 @@ export default function StudioLog({
                 borderTopColor: status === "active" ? "#c6552b" : "transparent",
               }}
             >
-              {status === "completed" ? "✓" : status === "active" ? "" : "○"}
+              {status === "completed"
+                ? "✓"
+                : failed
+                  ? "✕"
+                  : status === "active"
+                    ? ""
+                    : "○"}
             </span>
             <span
               style={{
-                color: status === "active" ? "#f1e7d6" : "#a99b85",
+                color: failed
+                  ? "#e0745a"
+                  : status === "active"
+                    ? "#f1e7d6"
+                    : "#a99b85",
               }}
             >
-              {row}
+              {label}
             </span>
           </div>
         );

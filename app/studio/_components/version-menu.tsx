@@ -1,7 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useStudio } from "./studio-context";
-import { versionHistory, type VersionRow } from "@/lib/studio/version-history";
+import {
+  versionHistory,
+  versionRowsFromDtos,
+  type VersionRow,
+} from "@/lib/studio/version-history";
+import { fetchVersions } from "@/lib/studio/studio-data";
+import type { ProjectVersionDto } from "@/lib/api/contracts";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
 const MONO = "ui-monospace, Menlo, monospace";
@@ -16,17 +23,44 @@ const STATE_ACCENT: Record<VersionRow["state"], string> = {
 /**
  * 14b — the version dropdown, anchored under the top-bar chip's ▾. A warm
  * sibling of the reroll/ship popovers (`data-menu-panel`, joins the StudioFrame
- * dismiss family). Rows are DERIVED from `versionHistory` and are entirely INERT
- * (D-14B-INERT): the ⇄ Compare stub, the archived restore link, and every row
- * click mutate no state — the version model is derived, not switchable here.
+ * dismiss family). Rows are entirely INERT (D-14B-INERT): the ⇄ Compare stub, the
+ * archived restore link, and every row click mutate no state.
+ *
+ * MOCK catalog projects (no source manifest) derive their rows from `versionHistory`
+ * (the wireframe-literal two-step model). REAL projects fetch the authoritative
+ * version list from `GET /api/projects/:id/versions` — the menu only mounts while open,
+ * so this is a lazy on-open fetch — and map the wire DTOs onto the SAME `VersionRow`
+ * shape via `versionRowsFromDtos` (Task 28). Restore stays inert either way (no restore
+ * endpoint exists anywhere in the backend).
  */
 export default function VersionMenu() {
-  const { state } = useStudio();
-  const rows = versionHistory(
-    state.versionBranch,
-    state.lastPublishedVersion,
-    state.dirty,
-  );
+  const { state, project } = useStudio();
+  const isReal = project.manifest !== undefined;
+
+  const [versions, setVersions] = useState<ProjectVersionDto[] | null>(null);
+  useEffect(() => {
+    if (!isReal) return;
+    let active = true;
+    void (async () => {
+      const v = await fetchVersions(project.id);
+      if (active) setVersions(v ?? []);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [isReal, project.id]);
+
+  // `dirty` is applied in the mapping (not baked into the fetch) so toggling dirty
+  // re-renders without a refetch.
+  const rows = isReal
+    ? versions
+      ? versionRowsFromDtos(versions, state.dirty)
+      : []
+    : versionHistory(
+        state.versionBranch,
+        state.lastPublishedVersion,
+        state.dirty,
+      );
 
   return (
     <div

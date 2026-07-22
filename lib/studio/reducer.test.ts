@@ -4,6 +4,7 @@ import {
   initialStudioState,
   studioReducer,
   commitOutcome,
+  publishOutcome,
   type StudioState,
 } from "./reducer";
 import { DEMO_STORYBOARD, totalFrames } from "./storyboard";
@@ -344,5 +345,118 @@ describe("studioReducer", () => {
     });
     // a null job (poll timeout / POST failure) is also a failure
     expect(commitOutcome(null)).toMatchObject({ type: "COMMIT_FAILED" });
+  });
+
+  // ── Task 28: the REAL publish flow — a DISTINCT set of actions (the mock
+  // PUBLISH_BEGIN/PUBLISH_DONE two-step above stay untouched). Model A = ONE-step:
+  // publish the current working v0.0.1, land on v0.0.2 (vs the mock two-step). The
+  // real path drives the wizard from the polled ProjectJob stages, not a mock log. ─
+
+  it("U-R25: PUBLISH_REAL_BEGIN opens the publishing step WITHOUT seeding the mock log", () => {
+    const open = studioReducer(init(), { type: "OPEN_PUBLISH" });
+    const publishing = studioReducer(open, { type: "PUBLISH_REAL_BEGIN" });
+    expect(publishing.publishFlow).toBe("publishing");
+    expect(publishing.publishing).toBe(true);
+    expect(publishing.publishError).toBeNull();
+    expect(publishing.publishStages).toBeNull();
+    // real mode renders polled stages, NOT the mocked LogSequence
+    expect(publishing.publishLog).toBeNull();
+  });
+
+  it("U-R26: PUBLISH_STAGES stores the polled stage rows the wizard renders", () => {
+    const publishing = studioReducer(
+      studioReducer(init(), { type: "OPEN_PUBLISH" }),
+      { type: "PUBLISH_REAL_BEGIN" },
+    );
+    const withStages = studioReducer(publishing, {
+      type: "PUBLISH_STAGES",
+      rows: [
+        { label: "Authenticating with GitHub", status: "completed" },
+        { label: "Committing pending changes", status: "active" },
+      ],
+    });
+    expect(withStages.publishStages).toHaveLength(2);
+    expect(withStages.publishStages?.[1]).toEqual({
+      label: "Committing pending changes",
+      status: "active",
+    });
+  });
+
+  it("U-R27: PUBLISH_REAL_DONE lands published+clean on the authoritative next branch (one-step)", () => {
+    const publishing = studioReducer(
+      studioReducer(init(), { type: "OPEN_PUBLISH" }),
+      { type: "PUBLISH_REAL_BEGIN" },
+    );
+    const done = studioReducer(publishing, {
+      type: "PUBLISH_REAL_DONE",
+      publishedTag: "v0.0.1",
+      nextBranch: "v0.0.2",
+    });
+    expect(done.publishFlow).toBe("published");
+    expect(done.publishing).toBe(false);
+    expect(done.dirty).toBe(false);
+    // Model A one-step: published v0.0.1 live, now editing on v0.0.2 (NOT the mock v0.0.3)
+    expect(done.lastPublishedVersion).toBe("v0.0.1");
+    expect(done.versionBranch).toBe("v0.0.2");
+    expect(done.publishStages).toBeNull();
+    expect(done.publishError).toBeNull();
+  });
+
+  it("U-R28: PUBLISH_FAILED clears publishing + records the error but STAYS on the publishing step", () => {
+    const publishing = studioReducer(
+      studioReducer(init(), { type: "OPEN_PUBLISH" }),
+      { type: "PUBLISH_REAL_BEGIN" },
+    );
+    const failed = studioReducer(publishing, {
+      type: "PUBLISH_FAILED",
+      error: "publish_failed",
+    });
+    expect(failed.publishing).toBe(false);
+    expect(failed.publishError).toBe("publish_failed");
+    // still on the publishing step so the wizard can surface the error + a close/retry
+    expect(failed.publishFlow).toBe("publishing");
+  });
+
+  it("U-R29: OPEN_PUBLISH and CLOSE_PUBLISH both clear a stale publishError / publishStages", () => {
+    const failed = studioReducer(
+      studioReducer(studioReducer(init(), { type: "OPEN_PUBLISH" }), {
+        type: "PUBLISH_REAL_BEGIN",
+      }),
+      { type: "PUBLISH_FAILED", error: "boom" },
+    );
+    expect(failed.publishError).toBe("boom");
+
+    const reopened = studioReducer(failed, { type: "OPEN_PUBLISH" });
+    expect(reopened.publishError).toBeNull();
+    expect(reopened.publishStages).toBeNull();
+
+    const closed = studioReducer(failed, { type: "CLOSE_PUBLISH" });
+    expect(closed.publishFlow).toBe("closed");
+    expect(closed.publishError).toBeNull();
+    expect(closed.publishStages).toBeNull();
+  });
+
+  it("U-R30: publishOutcome maps a polled terminal publish job (succeeded → one-step DONE, else FAILED)", () => {
+    expect(
+      publishOutcome({ status: "succeeded", stages: [] }, "v0.0.1"),
+    ).toEqual({
+      type: "PUBLISH_REAL_DONE",
+      publishedTag: "v0.0.1",
+      nextBranch: "v0.0.2",
+    });
+    expect(
+      publishOutcome({ status: "failed", stages: [] }, "v0.0.1"),
+    ).toMatchObject({ type: "PUBLISH_FAILED" });
+    expect(
+      publishOutcome({ status: "canceled", stages: [] }, "v0.0.1"),
+    ).toMatchObject({ type: "PUBLISH_FAILED" });
+    // a null job (POST failure / poll timeout) is also a failure
+    expect(publishOutcome(null, "v0.0.1")).toMatchObject({ type: "PUBLISH_FAILED" });
+  });
+
+  it("U-R31: initialStudioState seeds the real-publish fields clean (null)", () => {
+    const s = init();
+    expect(s.publishStages).toBeNull();
+    expect(s.publishError).toBeNull();
   });
 });

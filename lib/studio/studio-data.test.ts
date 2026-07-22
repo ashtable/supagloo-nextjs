@@ -6,8 +6,14 @@ import {
   fetchManifest,
   loadStudioProject,
   commitVersion,
+  publishVersion,
+  fetchVersions,
 } from "./studio-data";
-import { type ProjectManifest, type ProjectDto } from "../api/contracts";
+import {
+  type ProjectManifest,
+  type ProjectDto,
+  type ProjectVersionDto,
+} from "../api/contracts";
 
 const DTO: ProjectDto = {
   id: "clabc123",
@@ -174,5 +180,67 @@ describe("commitVersion", () => {
   it("U-D10: a non-2xx (e.g. 409 git_ops_in_flight) → null", async () => {
     const fetchImpl = fakeFetch(() => jsonResponse(409, { error: "git_ops_in_flight" }));
     expect(await commitVersion("clabc123", MANIFEST, "x", { fetchImpl })).toBeNull();
+  });
+});
+
+// ── Task 28: publish + version-list effects (mirror commitVersion's shape) ────
+
+const VERSION: ProjectVersionDto = {
+  id: "ver_1",
+  projectId: "clabc123",
+  semver: "0.0.1",
+  branchName: "v0.0.1",
+  state: "published",
+  commitMessage: "Release v0.0.1",
+  autoSummary: null,
+  changedFiles: [],
+  headCommitSha: "abc123",
+  prNumber: 7,
+  prUrl: "https://example.test/pull/7",
+  publishedAt: "2026-07-21T00:00:00.000Z",
+};
+
+describe("publishVersion", () => {
+  it("U-D11: POSTs { message } (no manifest) and returns the jobId", async () => {
+    let sentBody: unknown = null;
+    const fetchImpl = fakeFetch((url, init) => {
+      expect(url).toContain("/api/projects/clabc123/publish");
+      expect(init?.method).toBe("POST");
+      sentBody = JSON.parse(String(init?.body));
+      return jsonResponse(201, { jobId: "pub_1" });
+    });
+    const jobId = await publishVersion("clabc123", "Release v0.0.1", { fetchImpl });
+    expect(jobId).toBe("pub_1");
+    expect(sentBody).toEqual({ message: "Release v0.0.1" });
+  });
+
+  it("U-D12: a non-2xx (e.g. 409 no_working_version / git_ops_in_flight) → null", async () => {
+    const fetchImpl = fakeFetch(() => jsonResponse(409, { error: "git_ops_in_flight" }));
+    expect(await publishVersion("clabc123", "x", { fetchImpl })).toBeNull();
+  });
+});
+
+describe("fetchVersions", () => {
+  it("U-D13: unwraps { versions } from GET /api/projects/:id/versions", async () => {
+    const fetchImpl = fakeFetch((url) => {
+      expect(url).toContain("/api/projects/clabc123/versions");
+      return jsonResponse(200, {
+        versions: [
+          { ...VERSION, semver: "0.0.2", branchName: "v0.0.2", state: "working" },
+          VERSION,
+        ],
+      });
+    });
+    const versions = await fetchVersions("clabc123", { fetchImpl });
+    expect(versions).toHaveLength(2);
+    expect(versions?.[0].state).toBe("working");
+  });
+
+  it("U-D14: a non-2xx / unparseable body → null", async () => {
+    const dead = fakeFetch(() => jsonResponse(404, { error: "not_found" }));
+    expect(await fetchVersions("clabc123", { fetchImpl: dead })).toBeNull();
+
+    const junk = fakeFetch(() => jsonResponse(200, { nope: true }));
+    expect(await fetchVersions("clabc123", { fetchImpl: junk })).toBeNull();
   });
 });

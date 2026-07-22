@@ -15,6 +15,7 @@ import {
   initialStudioState,
   studioReducer,
   commitOutcome,
+  publishOutcome,
   MOCK_COMMIT_DELAY_MS,
   type StudioAction,
   type StudioState,
@@ -25,8 +26,10 @@ import {
   serializeManifest,
   commitMessage,
 } from "@/lib/studio/manifest-adapter";
-import { commitVersion } from "@/lib/studio/studio-data";
+import { commitVersion, publishVersion } from "@/lib/studio/studio-data";
+import { publishReview } from "@/lib/studio/publish-review";
 import { pollJobUntilTerminal } from "@/lib/project-wizard/provision-effects";
+import { stagesToLogRows } from "@/lib/project-wizard/job-log";
 import { useReducer } from "react";
 
 interface StudioContextValue {
@@ -125,7 +128,44 @@ export function StudioProvider({
     })();
   };
   const openPublish = () => dispatch({ type: "OPEN_PUBLISH" });
-  const confirmPublish = () => dispatch({ type: "PUBLISH_BEGIN" });
+  // Confirm publish (14a step 1 CTA). Mirrors `commit()`: MOCK catalog projects (no
+  // source manifest) keep the mocked PR-dance ticker + two-step bump — the wizard's
+  // own `useEffect` seeds/advances `publishLog` and fires PUBLISH_DONE. REAL projects
+  // (a source manifest present) `POST /api/projects/:id/publish { message }`, poll the
+  // publish ProjectJob (feeding its 7 stages into `publishStages`), and settle via
+  // `publishOutcome` → PUBLISH_REAL_DONE (Model-A one-step bump) or PUBLISH_FAILED
+  // (stays on the publishing step, retryable). The publish message is the reviewed
+  // message shown in the review pane (no separate input — publish is one-click too).
+  const confirmPublish = () => {
+    if (state.publishing) return;
+
+    const base = project.manifest;
+    if (!base) {
+      dispatch({ type: "PUBLISH_BEGIN" });
+      return;
+    }
+
+    const branch = state.versionBranch;
+    const message = publishReview(project).title || `Publish ${branch}`;
+    dispatch({ type: "PUBLISH_REAL_BEGIN" });
+    void (async () => {
+      const jobId = await publishVersion(project.id, message);
+      if (!aliveRef.current) return;
+      if (!jobId) {
+        dispatch(publishOutcome(null, branch));
+        return;
+      }
+      const job = await pollJobUntilTerminal(project.id, jobId, {
+        onUpdate: (j) => {
+          if (aliveRef.current) {
+            dispatch({ type: "PUBLISH_STAGES", rows: stagesToLogRows(j.stages) });
+          }
+        },
+      });
+      if (!aliveRef.current) return;
+      dispatch(publishOutcome(job, branch));
+    })();
+  };
   const closePublish = () => dispatch({ type: "CLOSE_PUBLISH" });
   const toggleVersionMenu = () => dispatch({ type: "TOGGLE_VERSION_MENU" });
   const startRender = () => dispatch({ type: "OPEN_RENDER" });

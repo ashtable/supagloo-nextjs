@@ -7,6 +7,7 @@
  * these), so the dropdown stays consistent with the chip + the published card.
  */
 import { prevVersion } from "./project";
+import type { ProjectVersionDto } from "../api/contracts";
 
 export type VersionState = "working" | "live" | "archived" | "template";
 
@@ -85,4 +86,68 @@ export function versionHistory(
   });
 
   return rows;
+}
+
+/**
+ * The REAL-mode counterpart of `versionHistory` (Task #28): map the wire
+ * `ProjectVersionDto[]` from `GET /v1/projects/:id/versions` onto the SAME `VersionRow`
+ * shape the 14b dropdown already renders, so `version-menu.tsx` renders both mock + real
+ * with one code path. The API returns versions DESCENDING by real semver (newest first),
+ * so the FIRST `published` row is the highest = LIVE ON MAIN; any later `published`
+ * (or an explicit wire `archived`) is restorable history. `branch` is the DTO's
+ * `branchName` (verified `v<semver>`). Like the mock rows, everything is DERIVED — the
+ * dropdown never mutates it (D-14B-INERT: restore stays inert, no backend supports it).
+ */
+export function versionRowsFromDtos(
+  versions: readonly ProjectVersionDto[],
+  dirty: boolean,
+): VersionRow[] {
+  let seenLive = false;
+  return versions.map((v): VersionRow => {
+    switch (v.state) {
+      case "working":
+        return {
+          branch: v.branchName,
+          state: "working",
+          label: dirty ? "working branch · uncommitted edits" : "working branch",
+          showDot: dirty,
+          canRestore: false,
+        };
+      case "published":
+        if (!seenLive) {
+          seenLive = true;
+          return {
+            branch: v.branchName,
+            state: "live",
+            label: "published to main",
+            showDot: false,
+            canRestore: false,
+          };
+        }
+        return {
+          branch: v.branchName,
+          state: "archived",
+          label: "previous release",
+          showDot: false,
+          canRestore: true,
+        };
+      case "archived":
+        return {
+          branch: v.branchName,
+          state: "archived",
+          label: "previous release",
+          showDot: false,
+          canRestore: true,
+        };
+      case "base":
+      default:
+        return {
+          branch: v.branchName,
+          state: "template",
+          label: "empty template",
+          showDot: false,
+          canRestore: false,
+        };
+    }
+  });
 }

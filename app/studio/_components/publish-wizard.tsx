@@ -9,6 +9,7 @@ import {
   isLogComplete,
 } from "@/lib/project-wizard/provisioning-log";
 import {
+  nextVersion,
   postPublishBranch,
   publishLabel,
   publishedVersion,
@@ -54,7 +55,17 @@ const TONE_COLOR: Record<DiffTone, string> = {
 export default function PublishWizard() {
   const { state, dispatch, project, confirmPublish, closePublish, startRender } =
     useStudio();
-  const { publishFlow, versionBranch, lastPublishedVersion, publishLog } = state;
+  const {
+    publishFlow,
+    versionBranch,
+    lastPublishedVersion,
+    publishLog,
+    publishStages,
+    publishError,
+  } = state;
+  // Real mode (a source manifest present) drives the publishing step from the polled
+  // ProjectJob stages (`publishStages`), not the mock `publishLog` ticker.
+  const isReal = project.manifest !== undefined;
 
   // Publishing-log ticker: advance one row per tick, then fire the two-step
   // PUBLISH_DONE once complete. Tied to the mounted card, so a Cancel/unmount
@@ -68,8 +79,11 @@ export default function PublishWizard() {
     return () => clearTimeout(t);
   }, [publishFlow, publishLog, dispatch]);
 
-  const published = publishedVersion(versionBranch); // v0.0.1 → v0.0.2
-  const nextBranch = postPublishBranch(versionBranch); // v0.0.1 → v0.0.3
+  const published = publishedVersion(versionBranch); // v0.0.1 → v0.0.2 (mock two-step)
+  const nextBranch = postPublishBranch(versionBranch); // v0.0.1 → v0.0.3 (mock two-step)
+  // Real Model-A one-step: publishing the CURRENT working v0.0.1 lands on v0.0.2.
+  const realNextBranch = nextVersion(versionBranch); // v0.0.1 → v0.0.2
+  const footnoteNextBranch = isReal ? realNextBranch : nextBranch;
 
   return (
     <>
@@ -136,9 +150,87 @@ export default function PublishWizard() {
                 >
                   <span style={{ color: "#e6a43b" }}>{"ⓘ"}</span>
                   {" Your next edits continue on a fresh "}
-                  <b style={{ color: "#f1e7d6", fontFamily: MONO }}>{nextBranch}</b>
+                  <b style={{ color: "#f1e7d6", fontFamily: MONO }}>{footnoteNextBranch}</b>
                   {" branch."}
                 </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* REAL publishing step (Task 28): the SAME `publishing-log` container, but
+            fed by the polled ProjectJob's 7 stages (`publishStages`) instead of the
+            mock ticker, plus a failure slot when the publish job errors — the git op
+            can genuinely fail, so a failed publish stays visible + dismissible. */}
+        {publishFlow === "publishing" && !publishLog ? (
+          <div>
+            <StepHeader label={`PUBLISHING ${versionBranch}…`} />
+            <div style={{ padding: 22 }}>
+              <div
+                data-testid="publishing-log"
+                style={{
+                  border: "1px solid rgba(230,180,120,.14)",
+                  borderRadius: 12,
+                  background: "#0f0b07",
+                  padding: "6px 12px",
+                }}
+              >
+                <StudioLog rows={publishStages ?? []} />
+                {publishError ? (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      paddingTop: 10,
+                      borderTop: "1px solid rgba(230,180,120,.12)",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                    }}
+                  >
+                    <span
+                      data-testid="publish-error"
+                      title={publishError}
+                      style={{ flex: 1, fontSize: 12.5, color: "#e0745a" }}
+                    >
+                      {"Publish failed — nothing was merged. Close and try again."}
+                    </span>
+                    <button
+                      type="button"
+                      data-testid="publish-error-close"
+                      onClick={closePublish}
+                      className={styles.hoverable}
+                      style={{
+                        padding: "7px 13px",
+                        borderRadius: 9,
+                        fontWeight: 700,
+                        fontSize: 12.5,
+                        color: "#f1e7d6",
+                        background: "transparent",
+                        border: "1px solid rgba(230,180,120,.24)",
+                      }}
+                    >
+                      {"Close"}
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      paddingTop: 10,
+                      borderTop: "1px solid rgba(230,180,120,.12)",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 12,
+                      color: "#a99b85",
+                    }}
+                  >
+                    <span style={{ color: "#e6a43b" }}>{"ⓘ"}</span>
+                    {" Your next edits continue on a fresh "}
+                    <b style={{ color: "#f1e7d6", fontFamily: MONO }}>{footnoteNextBranch}</b>
+                    {" branch."}
+                  </div>
+                )}
               </div>
             </div>
           </div>
