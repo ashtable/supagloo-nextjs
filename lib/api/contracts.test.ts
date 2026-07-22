@@ -27,6 +27,12 @@ import {
   ImportProjectRequestSchema,
   CreateRepoRequestSchema,
   RepoAuthorizeUrlResponseSchema,
+  ProjectResponseSchema,
+  ManifestSceneSchema,
+  ProjectManifestSchema,
+  ManifestResponseSchema,
+  CommitVersionRequestSchema,
+  CommitVersionResponseSchema,
 } from "./contracts";
 
 const validAuthUser = {
@@ -354,5 +360,95 @@ describe("create/import/create-repo request+response DTOs", () => {
   it("RepoAuthorizeUrlResponseSchema requires a non-empty url", () => {
     expect(RepoAuthorizeUrlResponseSchema.parse({ url: "https://x" }).url).toBe("https://x");
     expect(RepoAuthorizeUrlResponseSchema.safeParse({ url: "" }).success).toBe(false);
+  });
+});
+
+// ── Task 27: studio hydration + commit wire DTOs ─────────────────────────────
+
+const validManifestScene = {
+  id: "s1",
+  name: "wilderness · dawn",
+  scriptText: "I am the voice of one",
+  reference: "JOHN 1:23",
+  translation: "KJV",
+  visualPrompt: "sweeping empty wilderness at first light",
+  durationSeconds: 5,
+  captions: true,
+  visualAssetKey: null,
+};
+
+const validManifest = {
+  manifestVersion: 1,
+  composition: { width: 1080, height: 1920, fps: 30, aspectRatio: "9:16" },
+  scenes: [validManifestScene],
+  narratorVoice: { description: "warm baritone", label: "JAMES EARL JONES-STYLE" },
+  music: { style: "Swelling strings", assetKey: null },
+  endCard: { headline: "JOHN 1:23 · KJV", subtext: "Verse of the day" },
+};
+
+describe("ProjectResponseSchema", () => {
+  it("parses the single-project { project } envelope (GET /v1/projects/:id)", () => {
+    expect(ProjectResponseSchema.parse({ project: validProject }).project.slug).toBe(
+      "psalm-121",
+    );
+  });
+});
+
+describe("ManifestSceneSchema + ProjectManifestSchema", () => {
+  it("parses a full manifest, its optional music/endCard, and a null visualAssetKey", () => {
+    const m = ProjectManifestSchema.parse(validManifest);
+    expect(m.scenes[0].translation).toBe("KJV");
+    expect(m.music?.style).toBe("Swelling strings");
+    expect(m.scenes[0].visualAssetKey).toBeNull();
+  });
+
+  it("accepts the minimal manifest (empty scenes, no music/endCard, voice with no label)", () => {
+    expect(
+      ProjectManifestSchema.safeParse({
+        manifestVersion: 1,
+        composition: { width: 1080, height: 1920, fps: 30, aspectRatio: "9:16" },
+        scenes: [],
+        narratorVoice: { description: "a plain voice" },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a non-KJV/BSB translation, a missing scriptText, and manifestVersion != 1", () => {
+    expect(
+      ManifestSceneSchema.safeParse({ ...validManifestScene, translation: "NIV" }).success,
+    ).toBe(false);
+    const { scriptText: _drop, ...noScript } = validManifestScene;
+    void _drop;
+    expect(ManifestSceneSchema.safeParse(noScript).success).toBe(false);
+    expect(
+      ProjectManifestSchema.safeParse({ ...validManifest, manifestVersion: 2 }).success,
+    ).toBe(false);
+  });
+});
+
+describe("ManifestResponseSchema", () => {
+  it("parses the { manifest } envelope (GET /v1/projects/:id/manifest)", () => {
+    expect(
+      ManifestResponseSchema.parse({ manifest: validManifest }).manifest.scenes,
+    ).toHaveLength(1);
+  });
+});
+
+describe("CommitVersionRequestSchema + CommitVersionResponseSchema", () => {
+  it("requires a manifest + a non-empty message", () => {
+    expect(
+      CommitVersionRequestSchema.safeParse({
+        manifest: validManifest,
+        message: "Update scene: wilderness · dawn",
+      }).success,
+    ).toBe(true);
+    expect(
+      CommitVersionRequestSchema.safeParse({ manifest: validManifest, message: "" }).success,
+    ).toBe(false);
+  });
+
+  it("CommitVersionResponseSchema returns just the jobId", () => {
+    expect(CommitVersionResponseSchema.parse({ jobId: "job_1" }).jobId).toBe("job_1");
+    expect(CommitVersionResponseSchema.safeParse({}).success).toBe(false);
   });
 });

@@ -24,10 +24,13 @@ export interface StageLike {
   state: "pending" | "running" | "done" | "failed";
 }
 
-/** A polled job (structural mirror of the `ProjectJobDto` fields the log reads). */
+/** A polled job (structural mirror of the `ProjectJobDto` fields the log reads).
+ *  `error` is optional so this stays a superset-friendly structural mirror (the
+ *  studio's commit-outcome mapping reads it; the provisioning log does not). */
 export interface JobLike {
   status: "queued" | "running" | "succeeded" | "failed" | "canceled";
   stages: readonly StageLike[];
+  error?: string | null;
 }
 
 const STAGE_STATE_TO_STATUS: Record<StageLike["state"], LogRowStatus> = {

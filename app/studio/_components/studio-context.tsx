@@ -14,12 +14,19 @@ import type { PlayerRef } from "@remotion/player";
 import {
   initialStudioState,
   studioReducer,
+  commitOutcome,
   MOCK_COMMIT_DELAY_MS,
   type StudioAction,
   type StudioState,
 } from "@/lib/studio/reducer";
 import { sceneEntryFrame } from "@/lib/studio/storyboard";
 import type { StudioProject } from "@/lib/studio/project";
+import {
+  serializeManifest,
+  commitMessage,
+} from "@/lib/studio/manifest-adapter";
+import { commitVersion } from "@/lib/studio/studio-data";
+import { pollJobUntilTerminal } from "@/lib/project-wizard/provision-effects";
 import { useReducer } from "react";
 
 interface StudioContextValue {
@@ -64,6 +71,16 @@ export function StudioProvider({
     initialStudioState,
   );
   const playerRef = useRef<PlayerRef>(null);
+  // Mounted guard for the async commit flow (the task-26 `drivePolling` idiom): a
+  // commit that resolves after the editor unmounts must not dispatch into a dead
+  // reducer.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   const selectScene = (id: string) => {
     dispatch({ type: "SELECT_SCENE", id });
@@ -75,14 +92,37 @@ export function StudioProvider({
     );
   };
 
-  // Commit owns its mocked-async timer here (the reducer stays pure); the
-  // `selectScene`-owns-the-side-effect precedent from Turn 5/5a. The 14a publish
-  // log + 14c render tickers are component-owned (see PublishWizard / StudioFrame),
-  // so the publish/render drivers below are thin dispatch wrappers.
+  // Commit (D-1/D-2). MOCK catalog projects (no source manifest) keep the mocked
+  // pending→settled timer — the reducer stays pure; the side-effect lives here,
+  // matching the Turn 5/5a precedent. REAL projects (a source manifest is present)
+  // serialize the edited manifest, `POST /api/projects/:id/commit`, and poll the
+  // commit ProjectJob to a terminal status — `commitOutcome` maps that to
+  // COMMIT_DONE (clean) or COMMIT_FAILED (stays dirty, retryable). One-click: the
+  // commit message is auto-generated from the edit (publish is the reviewed step).
   const commit = () => {
     if (state.committing) return;
+
+    const base = project.manifest;
+    if (!base) {
+      dispatch({ type: "COMMIT_BEGIN" });
+      setTimeout(() => dispatch({ type: "COMMIT_DONE" }), MOCK_COMMIT_DELAY_MS);
+      return;
+    }
+
+    const manifest = serializeManifest(state.storyboard, base);
+    const message = commitMessage(state.storyboard, base);
     dispatch({ type: "COMMIT_BEGIN" });
-    setTimeout(() => dispatch({ type: "COMMIT_DONE" }), MOCK_COMMIT_DELAY_MS);
+    void (async () => {
+      const jobId = await commitVersion(project.id, manifest, message);
+      if (!aliveRef.current) return;
+      if (!jobId) {
+        dispatch(commitOutcome(null));
+        return;
+      }
+      const job = await pollJobUntilTerminal(project.id, jobId);
+      if (!aliveRef.current) return;
+      dispatch(commitOutcome(job));
+    })();
   };
   const openPublish = () => dispatch({ type: "OPEN_PUBLISH" });
   const confirmPublish = () => dispatch({ type: "PUBLISH_BEGIN" });

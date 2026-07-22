@@ -28,6 +28,7 @@ import {
   initRender,
   type RenderState,
 } from "./render-model";
+import type { JobLike } from "../project-wizard/job-log";
 
 export type PostingKey =
   | "tiktok"
@@ -54,6 +55,11 @@ export interface StudioState {
   /** mocked-async pending flags (caller-owned timers flip them). */
   committing: boolean;
   publishing: boolean;
+  /** Task 27: the last commit's terminal error (a real network/ProjectJob failure),
+   *  or null. Set by COMMIT_FAILED (the edit stays dirty so the user can retry);
+   *  cleared by a fresh COMMIT_BEGIN or a successful COMMIT_DONE. The mocked
+   *  setTimeout commit never had a failure path — a real one does. */
+  commitError: string | null;
   // ── Turn 14 overlays (all pure; timers live in the components) ──────────────
   /** 14a: which step of the publish wizard is open. */
   publishFlow: PublishFlow;
@@ -83,6 +89,7 @@ export type StudioAction =
   | { type: "TOGGLE_POSTING"; key: PostingKey }
   | { type: "COMMIT_BEGIN" }
   | { type: "COMMIT_DONE" }
+  | { type: "COMMIT_FAILED"; error: string }
   // 14a publish wizard
   | { type: "OPEN_PUBLISH" }
   | { type: "PUBLISH_BEGIN" }
@@ -116,7 +123,10 @@ export function initialStudioState(project: StudioProject): StudioState {
   const sb = project.storyboard;
   return {
     storyboard: sb,
-    selectedSceneId: sb.scenes[1]?.id ?? sb.scenes[0].id,
+    // 2nd scene by index (matches 5a), 1st for short storyboards, and "" for a
+    // freshly-scaffolded EMPTY manifest (real projects start with zero scenes until
+    // generation) — never `scenes[0].id`, which would throw on an empty storyboard.
+    selectedSceneId: sb.scenes[1]?.id ?? sb.scenes[0]?.id ?? "",
     aspect: "9:16",
     isPlaying: false,
     rerollMenuOpen: false,
@@ -132,6 +142,7 @@ export function initialStudioState(project: StudioProject): StudioState {
     dirty: false,
     committing: false,
     publishing: false,
+    commitError: null,
     publishFlow: "closed",
     publishLog: null,
     lastPublishedVersion: null,
@@ -215,9 +226,13 @@ export function studioReducer(
         },
       };
     case "COMMIT_BEGIN":
-      return { ...state, committing: true };
+      return { ...state, committing: true, commitError: null };
     case "COMMIT_DONE":
-      return { ...state, committing: false, dirty: false };
+      return { ...state, committing: false, dirty: false, commitError: null };
+    case "COMMIT_FAILED":
+      // The commit did NOT land — clear the pending flag and record the error, but
+      // KEEP the edit dirty so the chip stays gold and Commit is retryable.
+      return { ...state, committing: false, commitError: action.error };
     // ── 14a publish wizard (two-step bump, D-PUBLISH-SEMANTICS) ───────────────
     case "OPEN_PUBLISH":
       return { ...state, publishFlow: "review", versionMenuOpen: false };
@@ -273,4 +288,18 @@ export function studioReducer(
     default:
       return state;
   }
+}
+
+/**
+ * Map a POLLED terminal commit ProjectJob (or a null job = a POST failure / poll
+ * timeout) to the reducer action that settles the commit. This is the real
+ * replacement for the mocked `setTimeout(COMMIT_DONE)` — the transition is now
+ * driven by the job's actual terminal status. `succeeded` → COMMIT_DONE (clean);
+ * anything else (`failed`/`canceled`/timeout) → COMMIT_FAILED (stays dirty).
+ */
+export function commitOutcome(job: JobLike | null): StudioAction {
+  if (job && job.status === "succeeded") return { type: "COMMIT_DONE" };
+  const error =
+    job && job.error ? job.error : job ? "commit_failed" : "commit_timeout";
+  return { type: "COMMIT_FAILED", error };
 }

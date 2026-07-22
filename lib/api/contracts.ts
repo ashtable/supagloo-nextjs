@@ -320,3 +320,111 @@ export type CreateRepoRequest = z.infer<typeof CreateRepoRequestSchema>;
  *  user-authorization URL the wizard opens in the JIT hop. */
 export const RepoAuthorizeUrlResponseSchema = z.object({ url: z.string().min(1) });
 export type RepoAuthorizeUrlResponse = z.infer<typeof RepoAuthorizeUrlResponseSchema>;
+
+/** `GET /v1/projects/:id` response — the single-project envelope the studio
+ *  resolver reads after matching the URL slug in the `GET /v1/projects` list. */
+export const ProjectResponseSchema = z.object({ project: ProjectDtoSchema });
+export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
+
+// ── Studio hydration + commit wire DTOs (Task #27 — design-delta §5.3/§2.11/§8) ──
+//
+// Hand-rolled mirrors of the API's manifest read + commit contracts (db-lib
+// `schemas.ts` — `ProjectManifestSchema` + subschemas, `ManifestResponseSchema`,
+// `CommitVersionRequest/ResponseSchema`). Same rationale as above: this repo's
+// db-lib submodule predates these DTOs and a BFF needs only the wire shapes. The
+// `supagloo.project.json` manifest is the SOLE source of truth for a project's
+// composition (§2.11) — read from the repo at a ref, Zod-parsed, and hydrated into
+// the studio reducer; commit writes the edited manifest back. `translation` is the
+// KJV/BSB public-domain generation enum (a non-KJV/BSB manifest is rejected at the
+// wire boundary, exactly as the API validates it).
+
+/** The generation translation enum (mirrors db-lib `TranslationSchema`). */
+export const TranslationSchema = z.enum(["KJV", "BSB"]);
+export type Translation = z.infer<typeof TranslationSchema>;
+
+/** Composition metadata: pixel size, frame rate, aspect-ratio hint (mirrors db-lib
+ *  `CompositionSpecSchema`). `aspectRatio` is a `"W:H"` display hint. */
+export const CompositionSpecSchema = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fps: z.number().int().positive(),
+  aspectRatio: z.string().regex(/^\d+:\d+$/, 'expected a "W:H" ratio like "9:16"'),
+});
+export type CompositionSpec = z.infer<typeof CompositionSpecSchema>;
+
+/** Narrator voice descriptor (mirrors db-lib `VoiceDescriptorSchema`). */
+export const VoiceDescriptorSchema = z.object({
+  description: z.string().min(1),
+  label: z.string().min(1).optional(),
+});
+export type VoiceDescriptor = z.infer<typeof VoiceDescriptorSchema>;
+
+/** The manifest's music bed (mirrors db-lib `MusicBedSchema`). */
+export const MusicBedSchema = z.object({
+  style: z.string().min(1),
+  assetKey: z.string().min(1).nullable().optional(),
+});
+export type MusicBed = z.infer<typeof MusicBedSchema>;
+
+/** The closing end card (mirrors db-lib `EndCardSchema`). */
+export const EndCardSchema = z.object({
+  headline: z.string().min(1),
+  subtext: z.string().min(1).optional(),
+});
+export type EndCard = z.infer<typeof EndCardSchema>;
+
+/** One ordered scene in the persisted composition (mirrors db-lib
+ *  `ManifestSceneSchema`). Carries the fields the studio does NOT edit directly
+ *  (`reference`, `translation`, `visualAssetKey`) — the adapter preserves these
+ *  across the hydrate→edit→serialize round trip. */
+export const ManifestSceneSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  scriptText: z.string().min(1),
+  reference: z.string().min(1),
+  translation: TranslationSchema,
+  visualPrompt: z.string().min(1),
+  durationSeconds: z.number().positive(),
+  captions: z.boolean(),
+  visualAssetKey: z.string().min(1).nullable().optional(),
+});
+export type ManifestScene = z.infer<typeof ManifestSceneSchema>;
+
+/** The `supagloo.project.json` manifest (mirrors db-lib `ProjectManifestSchema`) —
+ *  the sole source of truth for a project's composition. `scenes` MAY be empty (a
+ *  freshly-scaffolded project); `narratorVoice` is required; `music`/`endCard` are
+ *  optional. */
+export const ProjectManifestSchema = z.object({
+  manifestVersion: z.literal(1),
+  composition: CompositionSpecSchema,
+  scenes: z.array(ManifestSceneSchema),
+  narratorVoice: VoiceDescriptorSchema,
+  music: MusicBedSchema.optional(),
+  endCard: EndCardSchema.optional(),
+});
+export type ProjectManifest = z.infer<typeof ProjectManifestSchema>;
+
+/** `GET /v1/projects/:id/manifest` query (mirrors db-lib `ManifestRefQuerySchema`).
+ *  The git ref to read at; omitted → the API defaults to `currentBranch`. */
+export const ManifestRefQuerySchema = z.object({
+  ref: z.string().min(1).optional(),
+});
+export type ManifestRefQuery = z.infer<typeof ManifestRefQuerySchema>;
+
+/** `GET /v1/projects/:id/manifest` response — the Zod-parsed manifest that hydrates
+ *  the studio reducer (mirrors db-lib `ManifestResponseSchema`). */
+export const ManifestResponseSchema = z.object({ manifest: ProjectManifestSchema });
+export type ManifestResponse = z.infer<typeof ManifestResponseSchema>;
+
+/** `POST /v1/projects/:id/commit` request (mirrors db-lib `CommitVersionRequestSchema`):
+ *  the edited manifest to persist + the (non-empty) commit message. */
+export const CommitVersionRequestSchema = z.object({
+  manifest: ProjectManifestSchema,
+  message: z.string().min(1),
+});
+export type CommitVersionRequest = z.infer<typeof CommitVersionRequestSchema>;
+
+/** `POST /v1/projects/:id/commit` response (mirrors db-lib `CommitVersionResponseSchema`):
+ *  the commit job id the studio polls via the shared `GET .../jobs/:jobId`. */
+export const CommitVersionResponseSchema = z.object({ jobId: z.string() });
+export type CommitVersionResponse = z.infer<typeof CommitVersionResponseSchema>;
