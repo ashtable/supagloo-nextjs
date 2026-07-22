@@ -215,3 +215,20 @@ Also: render exact-copy strings via JS expressions `{"…"}` (not JSX text) to d
 `react/no-unescaped-entities` on apostrophes AND to avoid JSX whitespace-collapsing — guarantees
 byte-exact anchors. `<img>` for a runtime avatar URL trips `@next/next/no-img-element` (a warning, but
 disable-line it to keep output clean rather than add next/image remotePatterns for one dynamic src).
+
+## Flaky click race — `-32000 Node does not have a layout object` (2026-07-21)
+
+The Stagehand v3 understudy's `page.locator(sel).click()` runs `DOM.getBoxModel` BEFORE dispatching the
+synthetic mouse event. A freshly-rendered/just-transitioned subtree can intermittently reject that with
+CDP **`-32000 Node does not have a layout object`** — e.g. `waitForText()`/a presence-poll resolves the
+instant a node attaches, before it has painted a box model. **NOT a scroll/viewport bug** — the driver
+already `scrollIntoViewIfNeeded`s before every click, and raising viewport height does NOT fix it (both
+empirically verified). Because `getBoxModel` fails BEFORE the mouse dispatch, a rejected click performed
+NO action, so retrying is safe (cannot double-fire).
+- **Fix (the standard here):** a per-spec `clickTestId(testid)` helper that retries up to ~3× on
+  `/layout object|not (found|visible)/i`, waiting `page.waitForTimeout(150)` between tries, then rethrows.
+  It lives inline in `tests/e2e/studio-publish.e2e.ts` and `tests/e2e/landing-start-cards.e2e.ts`
+  (Task #26 Step-11 fix ported it to the latter — 5/5 back-to-back green after). NOT in the shared
+  `tests/e2e/helpers.ts` (that helper closes over each spec's module-level `page`); if a spec already has
+  a compatible `clickTestId`, reuse it rather than adding a second.
+- Because it's PROBABILISTIC, prove a fix by running the spec 3–5× back-to-back, never once.

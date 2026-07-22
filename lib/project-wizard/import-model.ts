@@ -37,3 +37,23 @@ export function verifyOutcome(repo: MockRepo): "success" | "failure" {
 export function deriveProjectId(repo: MockRepo): string {
   return repo.shortName;
 }
+
+/** The import-job stage key whose failure genuinely means "this repo isn't a
+ *  Supagloo project". It is the ONLY failure that should surface the "NOT A
+ *  SUPAGLOO PROJECT" card. Mirrors the real import job's `verifySupaglooProject`
+ *  stage (see `lib/project-wizard/job-log.ts` / the API import workflow). */
+export const VERIFY_STAGE_KEY = "verifySupaglooProject";
+
+/** Which error card the wizard should render on a terminal import failure. */
+export type ImportErrorKind = "not-a-project" | "generic";
+
+/**
+ * Decide which error card to show from the stage that failed. Only a
+ * `verifySupaglooProject` failure means the repo genuinely isn't a Supagloo
+ * project ("not-a-project"); ANY other failed stage — or `null` (e.g. a poll
+ * timeout / network blip with no job) — is a "generic" import failure that must
+ * NOT be mislabeled as "not a Supagloo project".
+ */
+export function importErrorKind(failedStage: string | null): ImportErrorKind {
+  return failedStage === VERIFY_STAGE_KEY ? "not-a-project" : "generic";
+}

@@ -111,3 +111,55 @@ export async function completeOpenRouterConnectViaCallback(
     await cb.close();
   }
 }
+
+/**
+ * Simulate GitHub's redirect-back for the create-new-repo JIT hop (§2.3/§6b). Mirrors
+ * `completeOpenRouterConnectViaCallback`: after the New-project wizard clicks
+ * "Create & scaffold →" it stashes its form params in localStorage under a random
+ * `state` nonce and opens the authorize popup (fire-and-forget). Here we (1) read that
+ * nonce back out of the MAIN page's localStorage (shared same-origin), then (2) drive a
+ * throwaway page to the client callback with `?code=&state=<nonce>`. That page reads the
+ * stashed params, POSTs `/api/projects/create-repo` (the API runs the real user-token
+ * dance against the github-stub and delegates to the scaffold create path), and writes
+ * the `{ projectId, jobId, slug }` result back under the nonce — which the main tab's
+ * poll picks up to start rendering the real scaffold log.
+ */
+export async function completeCreateRepoViaCallback(
+  page: { evaluate: <T>(fn: () => T) => Promise<T> },
+  context: Stagehand["context"],
+  opts: { code?: string } = {},
+): Promise<void> {
+  const code = opts.code ?? "e2e-create-repo-code";
+  // Read the nonce the wizard just stashed (key `sg_createrepo_params_<nonce>`).
+  const nonce = await page.evaluate<string | null>(() => {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith("sg_createrepo_params_")) {
+        return k.slice("sg_createrepo_params_".length);
+      }
+    }
+    return null;
+  });
+  if (!nonce) throw new Error("create-repo params were not stashed by the wizard");
+
+  const cb = await context.newPage();
+  try {
+    await cb.goto(
+      `${BASE_URL}/connect/github/create-repo/callback?code=${code}&state=${nonce}`,
+      { waitUntil: "load" },
+    );
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const status = await cb.evaluate(() => {
+        const el = document.querySelector<HTMLElement>(
+          '[data-testid="create-repo-callback-status"]',
+        );
+        return el?.getAttribute("data-state") ?? "";
+      });
+      if (status === "done" || status === "error") break;
+      await cb.waitForTimeout(150);
+    }
+  } finally {
+    await cb.close();
+  }
+}

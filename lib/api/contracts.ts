@@ -203,3 +203,120 @@ export const ConnectionsResponseSchema = z.object({
   gloo: GlooConnectionStatusSchema.nullable(),
 });
 export type ConnectionsResponse = z.infer<typeof ConnectionsResponseSchema>;
+
+// ── Project + wizard wire DTOs (Task #26 — design-delta §5.3/§6b/§2.9/§8) ──────
+//
+// Hand-rolled mirrors of the API's project-create + job-polling + list contracts
+// (db-lib `schemas.ts` CreateProject/ImportProject/ProjectJob/ProjectDto, and the
+// Task #26 create-new-repo JIT hop) + `job-stages.ts`. Same rationale as above: this
+// repo's db-lib submodule predates these DTOs and a BFF needs only the wire shapes.
+// The wizards render the provisioning log from the polled `stages` and land in
+// `/studio/:slug`. Dates are ISO strings.
+
+/** Repo visibility toggle (mirrors db-lib `RepoVisibilitySchema`). */
+export const RepoVisibilitySchema = z.enum(["private", "public"]);
+export type RepoVisibility = z.infer<typeof RepoVisibilitySchema>;
+
+/** Project creation origin (mirrors db-lib `ProjectCreatedFromSchema`). v1 ships
+ *  only `blank` + `import` as functional; the rest are reserved "coming soon". */
+export const ProjectCreatedFromSchema = z.enum([
+  "votd",
+  "passage",
+  "blank",
+  "demo",
+  "import",
+]);
+export type ProjectCreatedFrom = z.infer<typeof ProjectCreatedFromSchema>;
+
+/** One `ProjectJob` stage row (mirrors db-lib `JobStageSchema`). The provisioning
+ *  log renders `state` → ✓ / spinner / ○ / ✕ per row. */
+export const ProjectJobStageSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  state: z.enum(["pending", "running", "done", "failed"]),
+});
+export type ProjectJobStage = z.infer<typeof ProjectJobStageSchema>;
+
+/** A `ProjectJob` on the wire (design-delta §2.9) — the scaffold/import progress
+ *  poll shape. `stages` is the shared progress log the provisioning UI renders. */
+export const ProjectJobDtoSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  kind: z.enum(["scaffold", "import_verify", "commit", "publish"]),
+  status: z.enum(["queued", "running", "succeeded", "failed", "canceled"]),
+  stages: z.array(ProjectJobStageSchema),
+  error: z.string().nullable(),
+  createdAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+export type ProjectJobDto = z.infer<typeof ProjectJobDtoSchema>;
+
+/** `GET /v1/projects/:id/jobs/:jobId` response (the `{ job }` envelope). */
+export const ProjectJobResponseSchema = z.object({ job: ProjectJobDtoSchema });
+export type ProjectJobResponse = z.infer<typeof ProjectJobResponseSchema>;
+
+/** A `Project` on the wire (design-delta §2.6) — the workspace grid row. */
+export const ProjectDtoSchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  repoOwner: z.string(),
+  repoName: z.string(),
+  repoVisibility: RepoVisibilitySchema,
+  createdFrom: ProjectCreatedFromSchema,
+  currentBranch: z.string(),
+  thumbnailAssetKey: z.string().nullable(),
+  lastRenderJobId: z.string().nullable(),
+  lastOpenedAt: z.string(),
+  createdAt: z.string(),
+});
+export type ProjectDto = z.infer<typeof ProjectDtoSchema>;
+
+/** `GET /v1/projects` response — the workspace grid list. */
+export const ProjectListResponseSchema = z.object({
+  projects: z.array(ProjectDtoSchema),
+});
+export type ProjectListResponse = z.infer<typeof ProjectListResponseSchema>;
+
+/** `POST /v1/projects` request (use-existing-empty path — the repo already exists). */
+export const CreateProjectRequestSchema = z.object({
+  name: z.string().min(1).optional(),
+  repoOwner: z.string().min(1),
+  repoName: z.string().min(1),
+  visibility: RepoVisibilitySchema,
+  createdFrom: ProjectCreatedFromSchema,
+});
+export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
+
+/** `POST /v1/projects` / `.../import` / `.../create-repo` response — the new
+ *  project id + the job id the wizard polls. */
+export const CreateProjectResponseSchema = z.object({
+  projectId: z.string(),
+  jobId: z.string(),
+});
+export type CreateProjectResponse = z.infer<typeof CreateProjectResponseSchema>;
+
+/** `POST /v1/projects/import` request (12b — an existing Supagloo repo). */
+export const ImportProjectRequestSchema = z.object({
+  name: z.string().min(1).optional(),
+  repoOwner: z.string().min(1),
+  repoName: z.string().min(1),
+  visibility: RepoVisibilitySchema,
+});
+export type ImportProjectRequest = z.infer<typeof ImportProjectRequestSchema>;
+
+/** `POST /v1/projects/create-repo` request (the create-new-repo JIT hop, §2.3/§6b).
+ *  The user-authorization `code` + the new repo's name/visibility + the origin. */
+export const CreateRepoRequestSchema = z.object({
+  code: z.string().min(1),
+  name: z.string().min(1).optional(),
+  repoName: z.string().min(1),
+  visibility: RepoVisibilitySchema,
+  createdFrom: ProjectCreatedFromSchema,
+});
+export type CreateRepoRequest = z.infer<typeof CreateRepoRequestSchema>;
+
+/** `GET /v1/projects/repo-authorize-url` response — the hosted GitHub
+ *  user-authorization URL the wizard opens in the JIT hop. */
+export const RepoAuthorizeUrlResponseSchema = z.object({ url: z.string().min(1) });
+export type RepoAuthorizeUrlResponse = z.infer<typeof RepoAuthorizeUrlResponseSchema>;

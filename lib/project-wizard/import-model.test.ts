@@ -4,8 +4,10 @@ import { describe, expect, it } from "vitest";
 // (Step 9 → GREEN). The pure 2-step Import state machine + its error branch.
 import {
   IMPORT_FAILED_EYEBROW,
+  VERIFY_STAGE_KEY,
   canImport,
   deriveProjectId,
+  importErrorKind,
   progressFill,
   stepEyebrow,
   verifyOutcome,
@@ -66,5 +68,28 @@ describe("verifyOutcome", () => {
 describe("deriveProjectId", () => {
   it("U-IM5: the id is the selected repo's short name", () => {
     expect(deriveProjectId(SUPAGLOO_REPO)).toBe("exodus-red-sea");
+  });
+});
+
+describe("importErrorKind", () => {
+  it("U-IM6: only a verifySupaglooProject failure is 'not-a-project'", () => {
+    expect(VERIFY_STAGE_KEY).toBe("verifySupaglooProject");
+    expect(importErrorKind(VERIFY_STAGE_KEY)).toBe("not-a-project");
+    expect(importErrorKind("verifySupaglooProject")).toBe("not-a-project");
+  });
+
+  it("U-IM7: any OTHER failed stage is a 'generic' failure (not mislabeled)", () => {
+    for (const stage of [
+      "cloneRepo",
+      "resolveLatestVersionBranch",
+      "parseManifest",
+      "finalizeRecords",
+    ]) {
+      expect(importErrorKind(stage), stage).toBe("generic");
+    }
+  });
+
+  it("U-IM8: a null failed stage (e.g. poll timeout, no job) is 'generic'", () => {
+    expect(importErrorKind(null)).toBe("generic");
   });
 });

@@ -212,10 +212,11 @@ const ANCHORS_10A: readonly string[] = [
   // new-project card
   "New project",
   "Start from a verse or a demo",
-  // info bar (pieces)
+  // info bar (pieces) — §9-Q4 honest copy (Task #26)
   "Projects live in",
   "your GitHub repos",
-  "Nothing is stored on our servers.",
+  "Your Remotion code lives in your GitHub repo, not our database.",
+  "Rendered videos are stored in Supagloo's S3 bucket.",
 ];
 
 const ANCHORS_10B: readonly string[] = [

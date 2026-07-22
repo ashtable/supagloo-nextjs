@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "../session-provider";
 import WorkspaceNav from "./workspace-nav";
@@ -11,6 +11,8 @@ import OctocatIcon from "../octocat-icon";
 import NewProjectWizard from "../project-wizard/new-project-wizard";
 import ImportWizard from "../project-wizard/import-wizard";
 import { studioUrl } from "@/lib/studio/project";
+import { fetchProjectCards } from "@/lib/workspace/projects-real";
+import type { DemoProject } from "@/lib/workspace/projects-model";
 
 type WizardOpen = "none" | "new" | "import";
 
@@ -23,9 +25,30 @@ type WizardOpen = "none" | "new" | "import";
  * against a direct/hard nav render before the swap settles).
  */
 export default function WorkspaceHome() {
-  const { mounted, session, firstSignIn } = useSession();
+  const { mounted, session, firstSignIn, isMock } = useSession();
   const router = useRouter();
   const [wizard, setWizard] = useState<WizardOpen>("none");
+  const [realProjects, setRealProjects] = useState<DemoProject[] | null>(null);
+
+  // Landing "Blank canvas" (7a) → `/?newproject=blank` opens the SAME New-project
+  // wizard as the "＋ New project" header + dashed card (create-new tab, createdFrom
+  // blank). Runs once on mount, before the authed early-return guard is reached.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("newproject") === "blank") setWizard("new");
+  }, []);
+
+  // Real/seed mode: hydrate the grid from `GET /api/projects` (mock mode keeps the
+  // DEMO_PROJECTS fallback inside RecentProjects).
+  useEffect(() => {
+    if (!mounted || isMock) return;
+    let active = true;
+    void fetchProjectCards().then((cards) => {
+      if (active) setRealProjects(cards);
+    });
+    return () => void (active = false);
+  }, [mounted, isMock]);
 
   if (!mounted || !session.isAuthed) return null;
 
@@ -116,6 +139,7 @@ export default function WorkspaceHome() {
         <RecentProjects
           onNewProject={() => setWizard("new")}
           onOpenProject={openProject}
+          projects={isMock ? undefined : realProjects ?? []}
         />
       </div>
 

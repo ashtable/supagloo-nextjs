@@ -96,6 +96,10 @@ interface SessionContextValue {
   mounted: boolean;
   session: Session;
   firstSignIn: boolean;
+  /** True only in the pure-client `?mock=` demo mode (`NEXT_PUBLIC_SUPAGLOO_DEMO=1`).
+   *  The project wizards branch on this: mock → the fake ticker + mock repos; real/
+   *  seed → the real BFF endpoints + polled job stages (Task #26). */
+  isMock: boolean;
   connections: ConnectionsState;
   /** Begin a connect. In real/seed mode github/openrouter/gloo run their real BFF
    *  flows; in mock mode (or as a fallback) it's the `MOCK_OAUTH_DELAY_MS` timer.
@@ -511,6 +515,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     mounted,
     session,
     firstSignIn: computeFirstSignIn(session) && onboardingResolved,
+    isMock: mounted && parseMockSession(search, DEMO_FLAG) !== null,
     connections,
     connectProvider,
     disconnectProvider,
