@@ -13,6 +13,7 @@ import {
   updateSceneVisualPrompt,
 } from "./storyboard";
 import {
+  nextVersion,
   postPublishBranch,
   publishedVersion,
   type StudioProject,
@@ -28,7 +29,7 @@ import {
   initRender,
   type RenderState,
 } from "./render-model";
-import type { JobLike } from "../project-wizard/job-log";
+import type { JobLike, LogRow } from "../project-wizard/job-log";
 
 export type PostingKey =
   | "tiktok"
@@ -63,8 +64,17 @@ export interface StudioState {
   // ── Turn 14 overlays (all pure; timers live in the components) ──────────────
   /** 14a: which step of the publish wizard is open. */
   publishFlow: PublishFlow;
-  /** 14a: the publishing-log sequence, seeded on PUBLISH_BEGIN. */
+  /** 14a MOCK: the publishing-log sequence, seeded on PUBLISH_BEGIN (mock two-step
+   *  PR dance). Null in real mode — the real path renders `publishStages` instead. */
   publishLog: LogSequence | null;
+  /** 14a REAL (Task 28): the polled publish-job stage rows (from `stagesToLogRows`),
+   *  or null in mock mode. Its presence (with a null `publishLog`) is what the wizard
+   *  renders on the publishing step in real mode. */
+  publishStages: LogRow[] | null;
+  /** 14a REAL (Task 28): the last publish's terminal error (a real network / ProjectJob
+   *  failure), or null. Set by PUBLISH_FAILED; cleared by a fresh real begin / OPEN /
+   *  CLOSE. Mirrors `commitError` — the mocked publish never had a failure path. */
+  publishError: string | null;
   /** 14a/14b/14c: the tag that last went live on main (null until published). */
   lastPublishedVersion: string | null;
   /** 14b: the version dropdown (joins the reroll/ship mutual-exclusion family). */
@@ -90,12 +100,17 @@ export type StudioAction =
   | { type: "COMMIT_BEGIN" }
   | { type: "COMMIT_DONE" }
   | { type: "COMMIT_FAILED"; error: string }
-  // 14a publish wizard
+  // 14a publish wizard — MOCK (two-step)
   | { type: "OPEN_PUBLISH" }
   | { type: "PUBLISH_BEGIN" }
   | { type: "ADVANCE_PUBLISH_LOG" }
   | { type: "PUBLISH_DONE" }
   | { type: "CLOSE_PUBLISH" }
+  // 14a publish wizard — REAL (Task 28, one-step; driven by the polled publish job)
+  | { type: "PUBLISH_REAL_BEGIN" }
+  | { type: "PUBLISH_STAGES"; rows: LogRow[] }
+  | { type: "PUBLISH_REAL_DONE"; publishedTag: string; nextBranch: string }
+  | { type: "PUBLISH_FAILED"; error: string }
   // 14c render overlay
   | { type: "OPEN_RENDER" }
   | { type: "ADVANCE_RENDER" }
@@ -145,6 +160,8 @@ export function initialStudioState(project: StudioProject): StudioState {
     commitError: null,
     publishFlow: "closed",
     publishLog: null,
+    publishStages: null,
+    publishError: null,
     lastPublishedVersion: null,
     versionMenuOpen: false,
     render: null,
@@ -235,7 +252,14 @@ export function studioReducer(
       return { ...state, committing: false, commitError: action.error };
     // ── 14a publish wizard (two-step bump, D-PUBLISH-SEMANTICS) ───────────────
     case "OPEN_PUBLISH":
-      return { ...state, publishFlow: "review", versionMenuOpen: false };
+      return {
+        ...state,
+        publishFlow: "review",
+        versionMenuOpen: false,
+        // clear any stale real-publish error/log so a re-open starts clean
+        publishError: null,
+        publishStages: null,
+      };
     case "PUBLISH_BEGIN":
       return {
         ...state,
@@ -264,7 +288,48 @@ export function studioReducer(
         publishLog: null,
       };
     case "CLOSE_PUBLISH":
-      return { ...state, publishFlow: "closed" };
+      return {
+        ...state,
+        publishFlow: "closed",
+        publishError: null,
+        publishStages: null,
+      };
+    // ── 14a publish wizard — REAL one-step (Task 28); mock cases above untouched ──
+    case "PUBLISH_REAL_BEGIN":
+      // Open the publishing step WITHOUT seeding the mock `publishLog` — the real
+      // path renders `publishStages` (polled) instead, and a null `publishLog` also
+      // keeps the wizard's mock ticker `useEffect` a no-op in real mode.
+      return {
+        ...state,
+        publishFlow: "publishing",
+        publishing: true,
+        publishError: null,
+        publishStages: null,
+        publishLog: null,
+      };
+    case "PUBLISH_STAGES":
+      // Only while a real publish is in flight (ignore a late poll after terminal).
+      return state.publishFlow === "publishing"
+        ? { ...state, publishStages: action.rows }
+        : state;
+    case "PUBLISH_REAL_DONE":
+      // The authoritative bump rides the payload (Model A one-step): the published tag
+      // went live on main, and the editor now sits on the next working branch.
+      return {
+        ...state,
+        publishFlow: "published",
+        publishing: false,
+        dirty: false,
+        lastPublishedVersion: action.publishedTag,
+        versionBranch: action.nextBranch,
+        publishStages: null,
+        publishError: null,
+        publishLog: null,
+      };
+    case "PUBLISH_FAILED":
+      // The publish did NOT land — clear the pending flag + record the error, but STAY
+      // on the publishing step so the wizard can surface the error + a close/retry.
+      return { ...state, publishing: false, publishError: action.error };
     // ── 14c render overlay ────────────────────────────────────────────────────
     case "OPEN_RENDER":
       return {
@@ -302,4 +367,30 @@ export function commitOutcome(job: JobLike | null): StudioAction {
   const error =
     job && job.error ? job.error : job ? "commit_failed" : "commit_timeout";
   return { type: "COMMIT_FAILED", error };
+}
+
+/**
+ * Map a POLLED terminal publish ProjectJob (or a null job = a POST failure / poll
+ * timeout) to the action that settles the real publish. Mirrors `commitOutcome`.
+ * On success this is the Model-A ONE-step bump: the CURRENT working `versionBranch` is
+ * the version that went live, and the editor lands on `nextVersion(versionBranch)` (at
+ * publish time the working branch is always the highest existing semver, so this equals
+ * the server's next branch; the dropdown re-reads authoritatively regardless).
+ * `succeeded` → PUBLISH_REAL_DONE; anything else (`failed`/`canceled`/timeout) →
+ * PUBLISH_FAILED (the wizard stays open to surface the error).
+ */
+export function publishOutcome(
+  job: JobLike | null,
+  versionBranch: string,
+): StudioAction {
+  if (job && job.status === "succeeded") {
+    return {
+      type: "PUBLISH_REAL_DONE",
+      publishedTag: versionBranch,
+      nextBranch: nextVersion(versionBranch),
+    };
+  }
+  const error =
+    job && job.error ? job.error : job ? "publish_failed" : "publish_timeout";
+  return { type: "PUBLISH_FAILED", error };
 }

@@ -33,6 +33,10 @@ import {
   ManifestResponseSchema,
   CommitVersionRequestSchema,
   CommitVersionResponseSchema,
+  ProjectVersionDtoSchema,
+  ProjectVersionListResponseSchema,
+  PublishVersionRequestSchema,
+  PublishVersionResponseSchema,
 } from "./contracts";
 
 const validAuthUser = {
@@ -450,5 +454,82 @@ describe("CommitVersionRequestSchema + CommitVersionResponseSchema", () => {
   it("CommitVersionResponseSchema returns just the jobId", () => {
     expect(CommitVersionResponseSchema.parse({ jobId: "job_1" }).jobId).toBe("job_1");
     expect(CommitVersionResponseSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+// ── Task 28: version list + publish wire DTOs ────────────────────────────────
+
+const validVersion = {
+  id: "ver_1",
+  projectId: "prj_1",
+  semver: "0.0.1",
+  branchName: "v0.0.1",
+  state: "published",
+  commitMessage: "Refine scene visuals & enable captions",
+  autoSummary: null,
+  changedFiles: ["M src/Composition.tsx", "M captions/psalm-121.json"],
+  headCommitSha: "deadbeef",
+  prNumber: 7,
+  prUrl: "https://example.test/pull/7",
+  publishedAt: "2026-07-21T00:00:00.000Z",
+};
+
+describe("ProjectVersionDtoSchema", () => {
+  it("parses a full version row (all the 14b dropdown fields)", () => {
+    const v = ProjectVersionDtoSchema.parse(validVersion);
+    expect(v.state).toBe("published");
+    expect(v.branchName).toBe("v0.0.1");
+    expect(v.changedFiles).toHaveLength(2);
+    expect(v.prNumber).toBe(7);
+  });
+
+  it("accepts the null-heavy working/base rows (no commit/pr/publishedAt yet)", () => {
+    expect(
+      ProjectVersionDtoSchema.safeParse({
+        ...validVersion,
+        state: "working",
+        commitMessage: null,
+        headCommitSha: null,
+        prNumber: null,
+        prUrl: null,
+        publishedAt: null,
+        changedFiles: [],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an out-of-enum state", () => {
+    expect(
+      ProjectVersionDtoSchema.safeParse({ ...validVersion, state: "live" }).success,
+    ).toBe(false);
+  });
+});
+
+describe("ProjectVersionListResponseSchema", () => {
+  it("parses the { versions } envelope (GET /v1/projects/:id/versions)", () => {
+    const parsed = ProjectVersionListResponseSchema.parse({
+      versions: [
+        { ...validVersion, semver: "0.0.2", branchName: "v0.0.2", state: "working" },
+        validVersion,
+        { ...validVersion, semver: "0.0.0", branchName: "v0.0.0", state: "base" },
+      ],
+    });
+    expect(parsed.versions).toHaveLength(3);
+    expect(parsed.versions[0].state).toBe("working");
+  });
+});
+
+describe("PublishVersionRequestSchema + PublishVersionResponseSchema", () => {
+  it("requires a non-empty message (no manifest — unlike commit)", () => {
+    expect(PublishVersionRequestSchema.safeParse({ message: "Release v0.0.1" }).success).toBe(
+      true,
+    );
+    expect(PublishVersionRequestSchema.safeParse({ message: "" }).success).toBe(false);
+    expect(PublishVersionRequestSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("PublishVersionResponseSchema returns just the jobId", () => {
+    expect(PublishVersionResponseSchema.parse({ jobId: "job_9" }).jobId).toBe("job_9");
+    expect(PublishVersionResponseSchema.safeParse({}).success).toBe(false);
   });
 });

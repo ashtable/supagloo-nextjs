@@ -17,8 +17,11 @@ import {
   ProjectResponseSchema,
   ManifestResponseSchema,
   CommitVersionResponseSchema,
+  PublishVersionResponseSchema,
+  ProjectVersionListResponseSchema,
   type ProjectDto,
   type ProjectManifest,
+  type ProjectVersionDto,
 } from "../api/contracts";
 import { hydrateStoryboard } from "./manifest-adapter";
 import type { StudioProject } from "./project";
@@ -148,6 +151,51 @@ export async function commitVersion(
     if (!res.ok) return null;
     const parsed = CommitVersionResponseSchema.safeParse(await res.json());
     return parsed.success ? parsed.data.jobId : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `POST /api/projects/:id/publish { message }` → the publish job id (no manifest —
+ *  unlike commit; the working manifest was already committed). Null on any non-2xx
+ *  (e.g. 409 `github_not_connected` / `no_working_version` / `git_ops_in_flight`) or
+ *  failure. The studio polls the returned job via `pollJobUntilTerminal` (publish jobs
+ *  are kind-agnostic). */
+export async function publishVersion(
+  projectId: string,
+  message: string,
+  deps: FetchDep = {},
+): Promise<string | null> {
+  const doFetch = doFetchOf(deps);
+  try {
+    const res = await doFetch(`/api/projects/${projectId}/publish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    if (!res.ok) return null;
+    const parsed = PublishVersionResponseSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data.jobId : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `GET /api/projects/:id/versions` → the project's versions (already ordered by real
+ *  semver descending — the 14b dropdown order). Null on any non-2xx / parse failure.
+ *  The version dropdown maps these to its rows via `versionRowsFromDtos`. */
+export async function fetchVersions(
+  projectId: string,
+  deps: FetchDep = {},
+): Promise<ProjectVersionDto[] | null> {
+  const doFetch = doFetchOf(deps);
+  try {
+    const res = await doFetch(`/api/projects/${projectId}/versions`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const parsed = ProjectVersionListResponseSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data.versions : null;
   } catch {
     return null;
   }

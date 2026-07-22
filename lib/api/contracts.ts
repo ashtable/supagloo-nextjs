@@ -428,3 +428,69 @@ export type CommitVersionRequest = z.infer<typeof CommitVersionRequestSchema>;
  *  the commit job id the studio polls via the shared `GET .../jobs/:jobId`. */
 export const CommitVersionResponseSchema = z.object({ jobId: z.string() });
 export type CommitVersionResponse = z.infer<typeof CommitVersionResponseSchema>;
+
+// ── Version list + publish wire DTOs (Task #28 — design-delta §5.3 row 7/§8) ──
+//
+// Hand-rolled mirrors of the API's version-list + publish contracts (db-lib
+// `schemas.ts` — `ProjectVersionStateSchema`, `ProjectVersionDtoSchema`,
+// `ProjectVersionListResponseSchema`, `PublishVersion{Request,Response}Schema`). Same
+// rationale as above: this repo's db-lib submodule predates these DTOs and a BFF needs
+// only the wire shapes. The 14b dropdown is DERIVED from the versions list (real states
+// → LIVE ON MAIN / restore); publish carries only `{ message }` (no manifest — unlike
+// commit; the working manifest was already committed) and returns the publish job id the
+// studio polls via the shared `GET .../jobs/:jobId` (kind: "publish"). Dates are ISO
+// strings; the version-bump is Model A (the CURRENT working version is the one published).
+
+/** A `ProjectVersion`'s lifecycle state on the wire (mirrors db-lib
+ *  `ProjectVersionStateSchema`). The 14b dropdown maps these UI-side: the highest-semver
+ *  `published` row is LIVE ON MAIN, later `published`/`archived` rows are restorable
+ *  history, `base` is the empty template floor. */
+export const ProjectVersionStateSchema = z.enum([
+  "base",
+  "working",
+  "published",
+  "archived",
+]);
+export type ProjectVersionState = z.infer<typeof ProjectVersionStateSchema>;
+
+/** A `ProjectVersion` on the wire (mirrors db-lib `ProjectVersionDtoSchema`) — one row
+ *  of the 14b version dropdown. `commitMessage`/`autoSummary`/`headCommitSha`/`prNumber`/
+ *  `prUrl`/`publishedAt` are null until a commit/publish populates them; `changedFiles`
+ *  is the persisted change-descriptor array. */
+export const ProjectVersionDtoSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  semver: z.string(),
+  branchName: z.string(),
+  state: ProjectVersionStateSchema,
+  commitMessage: z.string().nullable(),
+  autoSummary: z.string().nullable(),
+  changedFiles: z.array(z.string()),
+  headCommitSha: z.string().nullable(),
+  prNumber: z.number().int().nullable(),
+  prUrl: z.string().nullable(),
+  publishedAt: z.string().nullable(),
+});
+export type ProjectVersionDto = z.infer<typeof ProjectVersionDtoSchema>;
+
+/** `GET /v1/projects/:id/versions` response (mirrors db-lib
+ *  `ProjectVersionListResponseSchema`) — the project's versions ordered by real semver
+ *  DESCENDING (newest first; already the 14b dropdown order, no client reordering). */
+export const ProjectVersionListResponseSchema = z.object({
+  versions: z.array(ProjectVersionDtoSchema),
+});
+export type ProjectVersionListResponse = z.infer<
+  typeof ProjectVersionListResponseSchema
+>;
+
+/** `POST /v1/projects/:id/publish` request (mirrors db-lib `PublishVersionRequestSchema`):
+ *  the (non-empty) release message ONLY — no manifest (unlike commit). */
+export const PublishVersionRequestSchema = z.object({
+  message: z.string().min(1),
+});
+export type PublishVersionRequest = z.infer<typeof PublishVersionRequestSchema>;
+
+/** `POST /v1/projects/:id/publish` response (mirrors db-lib `PublishVersionResponseSchema`):
+ *  the publish job id the studio polls via the shared `GET .../jobs/:jobId`. */
+export const PublishVersionResponseSchema = z.object({ jobId: z.string() });
+export type PublishVersionResponse = z.infer<typeof PublishVersionResponseSchema>;
