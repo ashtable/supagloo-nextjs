@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   initialStudioState,
   studioReducer,
+  commitOutcome,
   type StudioState,
 } from "./reducer";
 import { DEMO_STORYBOARD, totalFrames } from "./storyboard";
@@ -296,5 +297,52 @@ describe("studioReducer", () => {
     expect(s.render).toBeNull();
     expect(s.lastPublishedVersion).toBeNull();
     expect(s.publishLog).toBeNull();
+  });
+
+  // ── Task 27: the REAL commit can FAIL (network / a failed ProjectJob), so the
+  // reducer needs a terminal failure state the mocked setTimeout never had. ──────
+
+  it("U-R21: initialStudioState seeds a clean commitError (null)", () => {
+    expect(init().commitError).toBeNull();
+  });
+
+  it("U-R22: COMMIT_FAILED clears `committing`, records the error, and KEEPS the edit dirty", () => {
+    const dirty = studioReducer(init(), { type: "EDIT_SCRIPT", script: "x" });
+    const committing = studioReducer(dirty, { type: "COMMIT_BEGIN" });
+    expect(committing.committing).toBe(true);
+
+    const failed = studioReducer(committing, {
+      type: "COMMIT_FAILED",
+      error: "commit_failed",
+    });
+    expect(failed.committing).toBe(false);
+    expect(failed.commitError).toBe("commit_failed");
+    // the edit is NOT saved, so the project stays dirty and Commit is retryable
+    expect(failed.dirty).toBe(true);
+  });
+
+  it("U-R23: a fresh COMMIT_BEGIN clears a prior commitError; COMMIT_DONE also clears it", () => {
+    const failed = studioReducer(
+      studioReducer(init(), { type: "EDIT_SCRIPT", script: "x" }),
+      { type: "COMMIT_FAILED", error: "boom" },
+    );
+    expect(failed.commitError).toBe("boom");
+
+    expect(studioReducer(failed, { type: "COMMIT_BEGIN" }).commitError).toBeNull();
+    expect(studioReducer(failed, { type: "COMMIT_DONE" }).commitError).toBeNull();
+  });
+
+  it("U-R24: commitOutcome maps a polled terminal job to the right action (replaces the setTimeout)", () => {
+    expect(commitOutcome({ status: "succeeded", stages: [] })).toEqual({
+      type: "COMMIT_DONE",
+    });
+    expect(commitOutcome({ status: "failed", stages: [] })).toMatchObject({
+      type: "COMMIT_FAILED",
+    });
+    expect(commitOutcome({ status: "canceled", stages: [] })).toMatchObject({
+      type: "COMMIT_FAILED",
+    });
+    // a null job (poll timeout / POST failure) is also a failure
+    expect(commitOutcome(null)).toMatchObject({ type: "COMMIT_FAILED" });
   });
 });

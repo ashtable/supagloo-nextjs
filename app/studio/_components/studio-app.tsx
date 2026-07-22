@@ -108,12 +108,18 @@ function StudioFrame() {
         }}
       >
         <TopBar />
-        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-          <SceneTree />
-          <PlayerPanel />
-          <SceneInspector />
-        </div>
-        <Timeline />
+        {state.storyboard.scenes.length === 0 ? (
+          <StudioEmpty />
+        ) : (
+          <>
+            <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+              <SceneTree />
+              <PlayerPanel />
+              <SceneInspector />
+            </div>
+            <Timeline />
+          </>
+        )}
       </div>
 
       {state.rerollMenuOpen ? <RerollMenu /> : null}
@@ -121,6 +127,54 @@ function StudioFrame() {
       {state.versionMenuOpen ? <VersionMenu /> : null}
       {state.publishFlow !== "closed" ? <PublishWizard /> : null}
       {state.render && !state.render.backgrounded ? <RenderOverlay /> : null}
+    </div>
+  );
+}
+
+/**
+ * A freshly-scaffolded real project has an EMPTY manifest (`scenes: []`) until the
+ * generation flow populates it, so the scene panels (which assume ≥1 scene) can't
+ * render. Rather than crash, show a themed empty state that keeps the TopBar (identity
+ * / back / version chip) live. The generation UI is a separate, not-yet-built flow;
+ * this is the honest interim state so opening a brand-new project works.
+ */
+function StudioEmpty() {
+  return (
+    <div
+      data-testid="studio-empty"
+      style={{
+        flex: 1,
+        display: "grid",
+        placeItems: "center",
+        padding: 40,
+        textAlign: "center",
+      }}
+    >
+      <div style={{ maxWidth: 460 }}>
+        <div
+          style={{
+            fontFamily: "var(--font-anton), sans-serif",
+            fontSize: 32,
+            lineHeight: 1.05,
+            color: "var(--ws-ink)",
+          }}
+        >
+          {"NO SCENES YET"}
+        </div>
+        <div
+          style={{
+            fontFamily: "var(--font-zilla), 'Zilla Slab', Georgia, serif",
+            fontSize: 15,
+            lineHeight: 1.55,
+            color: "var(--ws-dim)",
+            marginTop: 12,
+          }}
+        >
+          {
+            "This project's storyboard is empty. Generate your scenes to start editing, then commit them to your version branch."
+          }
+        </div>
+      </div>
     </div>
   );
 }

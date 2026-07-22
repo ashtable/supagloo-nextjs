@@ -8,10 +8,16 @@
  * branch. Unknown ids resolve to null → `notFound()` (A6).
  */
 import { DEMO_STORYBOARD, type Storyboard } from "./storyboard";
+import type { ProjectManifest } from "../api/contracts";
 
 export interface StudioProject {
-  /** the `/studio/[id]` route id. */
+  /** The API project identity used for commit / job-polling. In MOCK mode this is
+   *  the catalog id (== the URL slug); in REAL mode it is the cuid `Project.id`
+   *  resolved from the URL slug via `GET /api/projects`. */
   id: string;
+  /** The URL slug (`/studio/[slug]`). Defaults to `id` for the mock catalog; in real
+   *  mode it is `ProjectDto.slug`. Used for display URLs, not the API. */
+  slug?: string;
   /** display name in the top bar (= the repo short name). */
   projectName: string;
   /** owner/name of the backing GitHub repo. */
@@ -19,6 +25,12 @@ export interface StudioProject {
   /** the version branch the editor loads on (Publish bumps its patch). */
   versionBranch: string;
   storyboard: Storyboard;
+  /** The SOURCE `supagloo.project.json` manifest (REAL mode only; absent for the
+   *  mock catalog). Its presence is the studio's mode signal: `commit()` runs the
+   *  real POST+poll iff a manifest is present, else the mocked timer. It is also the
+   *  merge base for `serializeManifest` (preserves the non-UI fields the studio can't
+   *  edit). */
+  manifest?: ProjectManifest;
 }
 
 function project(
@@ -27,10 +39,13 @@ function project(
 ): StudioProject {
   return {
     id,
+    slug: id,
     projectName: id,
     repo: `ashsrinivas/${id}`,
     versionBranch,
     storyboard: DEMO_STORYBOARD,
+    // No `manifest` — the mock catalog uses the mocked commit timer, not the real
+    // POST+poll (the manifest's PRESENCE is the studio's real-vs-mock mode signal).
   };
 }
 

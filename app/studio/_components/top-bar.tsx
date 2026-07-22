@@ -29,7 +29,8 @@ export default function TopBar() {
   const router = useRouter();
   const { state, dispatch, project, commit, openPublish, toggleVersionMenu } =
     useStudio();
-  const { aspect, versionBranch, dirty, committing, publishing } = state;
+  const { aspect, versionBranch, dirty, committing, publishing, commitError } =
+    state;
 
   return (
     <div
@@ -217,6 +218,18 @@ export default function TopBar() {
       >
         {committing ? "Committing…" : "⤓ Commit"}
       </button>
+
+      {/* Commit failure (real mode) — the edit stayed dirty; surface it so the user
+          knows the commit didn't land and can click Commit again to retry. */}
+      {commitError ? (
+        <span
+          data-testid="commit-error"
+          title={commitError}
+          style={{ fontSize: 11.5, color: "#e0745a", flex: "none" }}
+        >
+          {"Commit failed — retry"}
+        </span>
+      ) : null}
 
       {/* Publish — opens the 14a wizard (no direct bump); label = next version */}
       <button
