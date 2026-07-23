@@ -35,6 +35,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# …but the checked-in template MUST be committable (task 34-E2, design-delta §10.8).
+!.env.example
 
 # vercel
 .vercel
