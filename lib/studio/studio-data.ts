@@ -24,12 +24,46 @@ import {
   type ProjectVersionDto,
 } from "../api/contracts";
 import { hydrateStoryboard } from "./manifest-adapter";
+import { setSceneVisualUrl, type Storyboard } from "./storyboard";
+import { presignDownload } from "./ai-generation-data";
 import type { StudioProject } from "./project";
 
 interface FetchDep {
   fetchImpl?: typeof fetch;
 }
 const doFetchOf = (deps: FetchDep) => deps.fetchImpl ?? fetch;
+
+/**
+ * Task #35: presign every already-persisted generated asset in a hydrated storyboard
+ * for preview — each scene's `visualAssetKey` → `visualUrl`, and the whole-project
+ * `narrationAssetKey`/`musicAssetKey` → `narrationUrl`/`musicUrl`. Keys with no
+ * presign (denied/expired/absent) simply stay without a preview URL (the composition
+ * falls back to the gradient / no audio). Injectable fetch; never throws.
+ */
+export async function presignStoryboardAssets(
+  input: Storyboard,
+  deps: FetchDep = {},
+): Promise<Storyboard> {
+  let sb = input;
+  const scenePresigns = await Promise.all(
+    sb.scenes.map(async (s) =>
+      s.visualAssetKey
+        ? { id: s.id, url: await presignDownload(s.visualAssetKey, deps) }
+        : null,
+    ),
+  );
+  for (const p of scenePresigns) if (p?.url) sb = setSceneVisualUrl(sb, p.id, p.url);
+
+  if (sb.narrationAssetKey) {
+    const url = await presignDownload(sb.narrationAssetKey, deps);
+    if (url) sb = { ...sb, narrationUrl: url };
+  }
+  if (sb.musicAssetKey) {
+    const url = await presignDownload(sb.musicAssetKey, deps);
+    if (url) sb = { ...sb, musicUrl: url };
+  }
+  return sb;
+}
 
 /** `GET /api/projects` → the `ProjectDto` whose slug matches. Null on miss / any
  *  failure (never throws). This is the slug→cuid resolution. */
@@ -121,13 +155,17 @@ export async function loadStudioProject(
   const manifest = await fetchManifest(dto.id, dto.currentBranch, deps);
   if (!manifest.ok) return { status: "error", reason: manifest.reason };
 
+  const storyboard = await presignStoryboardAssets(
+    hydrateStoryboard(manifest.manifest),
+    deps,
+  );
   const project: StudioProject = {
     id: dto.id,
     slug: dto.slug,
     projectName: dto.name,
     repo: `${dto.repoOwner}/${dto.repoName}`,
     versionBranch: dto.currentBranch,
-    storyboard: hydrateStoryboard(manifest.manifest),
+    storyboard,
     manifest: manifest.manifest,
   };
   return { status: "ready", project };

@@ -159,6 +159,28 @@ describe("loadStudioProject", () => {
     const result = await loadStudioProject("psalm-121", { fetchImpl });
     expect(result).toEqual({ status: "error", reason: "manifest_invalid" });
   });
+
+  it("U-D13: presigns existing generated visual keys into preview URLs on load", async () => {
+    const withVisual: ProjectManifest = {
+      ...MANIFEST,
+      scenes: [{ ...MANIFEST.scenes[0], visualAssetKey: "projects/clabc123/assets/gen-1" }],
+    };
+    const fetchImpl = fakeFetch((url) => {
+      if (url.includes("/presign-download"))
+        return jsonResponse(200, { url: "http://minio/signed", expiresAt: "2026-07-24T01:00:00Z" });
+      if (url.includes("/manifest")) return jsonResponse(200, { manifest: withVisual });
+      if (/\/api\/projects\/clabc123(\?|$)/.test(url)) return jsonResponse(200, { project: DTO });
+      return jsonResponse(200, { projects: [DTO] });
+    });
+    const result = await loadStudioProject("psalm-121", { fetchImpl });
+    expect(result.status).toBe("ready");
+    if (result.status === "ready") {
+      expect(result.project.storyboard.scenes[0].visualAssetKey).toBe(
+        "projects/clabc123/assets/gen-1",
+      );
+      expect(result.project.storyboard.scenes[0].visualUrl).toBe("http://minio/signed");
+    }
+  });
 });
 
 describe("commitVersion", () => {

@@ -6,7 +6,13 @@ import {
   commitMessage,
 } from "./manifest-adapter";
 import { ProjectManifestSchema, type ProjectManifest } from "../api/contracts";
-import { updateSceneScript, setMusicMood } from "./storyboard";
+import {
+  updateSceneScript,
+  setMusicMood,
+  setSceneVisual,
+  setNarrationAsset,
+  setMusicAsset,
+} from "./storyboard";
 
 /** A full, schema-valid wire manifest exercising every optional slot (music,
  *  endCard, a null visualAssetKey, a scene with captions off). */
@@ -40,6 +46,7 @@ const MANIFEST: ProjectManifest = {
   narratorVoice: {
     description: "warm, weathered, resonant baritone",
     label: "JAMES EARL JONES-STYLE",
+    assetKey: "projects/p1/narration/track.mp3",
   },
   music: { style: "Swelling strings", assetKey: null },
   endCard: { headline: "JOHN 1:23 · KJV", subtext: "Verse of the day" },
@@ -119,6 +126,37 @@ describe("serializeManifest", () => {
     const sb = setMusicMood(hydrateStoryboard(MANIFEST), "Ambient pads");
     const back = serializeManifest(sb, MANIFEST);
     expect(back.music).toEqual({ style: "Ambient pads", assetKey: null });
+  });
+
+  // ── Task #35: generated asset refs hydrate + serialize ─────────────────────
+  it("U-A11: hydrate reads the persisted asset keys into the storyboard (scene visual + whole-project narration/music)", () => {
+    const sb = hydrateStoryboard(MANIFEST);
+    expect(sb.scenes[0].visualAssetKey).toBe("projects/p1/scenes/s1.mp4");
+    expect(sb.scenes[1].visualAssetKey).toBeNull();
+    expect(sb.narrationAssetKey).toBe("projects/p1/narration/track.mp3");
+    expect(sb.musicAssetKey).toBeNull();
+  });
+
+  it("U-A12: a rerolled scene visualAssetKey is written back (the reroll → commit persistence path)", () => {
+    const sb = setSceneVisual(hydrateStoryboard(MANIFEST), "s2", {
+      assetKey: "projects/p1/assets/gen-new",
+      url: "http://minio/signed",
+    });
+    const back = serializeManifest(sb, MANIFEST);
+    expect(back.scenes[1].visualAssetKey).toBe("projects/p1/assets/gen-new");
+    // the ephemeral preview url never crosses the wire
+    expect((back.scenes[1] as Record<string, unknown>).visualUrl).toBeUndefined();
+    expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
+  });
+
+  it("U-A13: regenerated narration/music asset keys write narratorVoice.assetKey + music.assetKey", () => {
+    let sb = hydrateStoryboard(MANIFEST);
+    sb = setNarrationAsset(sb, "projects/p1/narration/new.mp3");
+    sb = setMusicAsset(sb, "projects/p1/music/new.mp3");
+    const back = serializeManifest(sb, MANIFEST);
+    expect(back.narratorVoice.assetKey).toBe("projects/p1/narration/new.mp3");
+    expect(back.music?.assetKey).toBe("projects/p1/music/new.mp3");
+    expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
   });
 });
 

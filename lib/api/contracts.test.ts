@@ -37,6 +37,15 @@ import {
   ProjectVersionListResponseSchema,
   PublishVersionRequestSchema,
   PublishVersionResponseSchema,
+  VoiceDescriptorSchema,
+  AiGenerationKindSchema,
+  AiProviderSchema,
+  JobStatusSchema,
+  CreateAiGenerationRequestSchema,
+  CreateAiGenerationResponseSchema,
+  AiGenerationDtoSchema,
+  AiGenerationResponseSchema,
+  FilePresignDownloadResponseSchema,
 } from "./contracts";
 
 const validAuthUser = {
@@ -531,5 +540,112 @@ describe("PublishVersionRequestSchema + PublishVersionResponseSchema", () => {
   it("PublishVersionResponseSchema returns just the jobId", () => {
     expect(PublishVersionResponseSchema.parse({ jobId: "job_9" }).jobId).toBe("job_9");
     expect(PublishVersionResponseSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+// ── Task #35: AI-generation + presign wire DTOs (mirror db-lib) ───────────────
+describe("AI-generation contracts", () => {
+  it("VoiceDescriptorSchema now accepts the whole-project narration assetKey", () => {
+    expect(
+      VoiceDescriptorSchema.parse({ description: "warm", assetKey: "projects/p/narration/t.mp3" })
+        .assetKey,
+    ).toBe("projects/p/narration/t.mp3");
+    expect(VoiceDescriptorSchema.parse({ description: "warm" }).assetKey).toBeUndefined();
+    expect(VoiceDescriptorSchema.safeParse({ description: "warm", assetKey: "" }).success).toBe(false);
+  });
+
+  it("enum mirrors match the API (kind, provider, status)", () => {
+    expect(AiGenerationKindSchema.options).toEqual([
+      "storyboard",
+      "script",
+      "image",
+      "narration",
+      "music",
+      "video",
+    ]);
+    expect(AiProviderSchema.options).toEqual(["gloo", "openrouter"]);
+    expect(JobStatusSchema.options).toEqual(["queued", "running", "succeeded", "failed", "canceled"]);
+  });
+
+  it("CreateAiGenerationRequestSchema validates kind-specific input at the boundary", () => {
+    expect(
+      CreateAiGenerationRequestSchema.safeParse({
+        kind: "image",
+        provider: "openrouter",
+        model: "m",
+        projectId: "p1",
+        sceneId: "s1",
+        input: { prompt: "a lone figure at dawn" },
+      }).success,
+    ).toBe(true);
+    // image requires a prompt
+    expect(
+      CreateAiGenerationRequestSchema.safeParse({
+        kind: "image",
+        provider: "openrouter",
+        model: "m",
+        input: {},
+      }).success,
+    ).toBe(false);
+    // narration requires voice + scenes
+    expect(
+      CreateAiGenerationRequestSchema.safeParse({
+        kind: "narration",
+        provider: "openrouter",
+        model: "m",
+        input: { voice: { description: "warm" }, scenes: [{ sceneId: "s1", scriptText: "hi" }] },
+      }).success,
+    ).toBe(true);
+    // music requires style + duration
+    expect(
+      CreateAiGenerationRequestSchema.safeParse({
+        kind: "music",
+        provider: "openrouter",
+        model: "m",
+        input: { style: "Ambient", durationSeconds: 30 },
+      }).success,
+    ).toBe(true);
+    // storyboard/script require a brief
+    expect(
+      CreateAiGenerationRequestSchema.safeParse({
+        kind: "storyboard",
+        provider: "openrouter",
+        model: "m",
+        input: { brief: "Genesis 1 opening" },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("AiGenerationDtoSchema parses a succeeded image generation (raw resultAssetKey)", () => {
+    const dto = {
+      id: "gen-1",
+      projectId: "p1",
+      sceneId: "s1",
+      kind: "image",
+      provider: "openrouter",
+      model: "m",
+      status: "succeeded",
+      resultJson: null,
+      resultAssetKey: "projects/p1/assets/gen-1",
+      error: null,
+      tokenUsage: null,
+      createdAt: "2026-07-24T00:00:00.000Z",
+      completedAt: "2026-07-24T00:01:00.000Z",
+    };
+    expect(AiGenerationResponseSchema.parse({ generation: dto }).generation.resultAssetKey).toBe(
+      "projects/p1/assets/gen-1",
+    );
+    expect(AiGenerationDtoSchema.safeParse({ ...dto, status: "bogus" }).success).toBe(false);
+  });
+
+  it("CreateAiGenerationResponseSchema + FilePresignDownloadResponseSchema", () => {
+    expect(CreateAiGenerationResponseSchema.parse({ generationId: "g1" }).generationId).toBe("g1");
+    expect(
+      FilePresignDownloadResponseSchema.parse({
+        url: "http://minio/signed",
+        expiresAt: "2026-07-24T01:00:00.000Z",
+      }).url,
+    ).toBe("http://minio/signed");
+    expect(FilePresignDownloadResponseSchema.safeParse({ url: "x" }).success).toBe(false);
   });
 });

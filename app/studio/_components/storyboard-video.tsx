@@ -2,6 +2,8 @@
 
 import {
   AbsoluteFill,
+  Audio,
+  Img,
   Sequence,
   interpolate,
   useCurrentFrame,
@@ -27,6 +29,10 @@ export type StoryboardVideoProps = {
   scenes: Scene[];
   reference: string;
   fps: number;
+  /** Task #35: presigned preview URLs for the whole-project generated audio (null
+   *  until generated). Rendered as Remotion `<Audio>` so the preview plays them. */
+  narrationUrl?: string | null;
+  musicUrl?: string | null;
 };
 
 const SCENE_BACKDROP: Record<string, string> = {
@@ -54,6 +60,17 @@ function SceneContent({
 
   return (
     <AbsoluteFill style={{ background: SCENE_BACKDROP[scene.id] ?? "#221a34" }}>
+      {/* Task #35: the generated scene visual (presigned preview URL) as the
+          backdrop, replacing the gradient once a reroll lands. Falls back to the
+          gradient above when no visual has been generated. */}
+      {scene.visualUrl ? (
+        <Img
+          data-testid="scene-visual"
+          src={scene.visualUrl}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      ) : null}
+
       {/* vignette */}
       <AbsoluteFill
         style={{ boxShadow: `inset 0 0 ${base * 0.22}px rgba(20,10,4,.75)` }}
@@ -114,6 +131,8 @@ export function StoryboardVideo({
   scenes,
   reference,
   fps,
+  narrationUrl,
+  musicUrl,
 }: StoryboardVideoProps) {
   const starts: number[] = [];
   let acc = 0;
@@ -124,6 +143,9 @@ export function StoryboardVideo({
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#160f14" }}>
+      {/* Task #35: whole-project generated audio, played across the composition. */}
+      {narrationUrl ? <Audio src={narrationUrl} /> : null}
+      {musicUrl ? <Audio src={musicUrl} volume={0.4} /> : null}
       {scenes.map((scene, i) => (
         <Sequence
           key={scene.id}

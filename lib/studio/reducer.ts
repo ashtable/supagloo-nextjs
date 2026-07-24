@@ -8,10 +8,21 @@ import type { OnScreenText, Storyboard } from "./storyboard";
 import {
   setMusicMood,
   setSceneOnScreenText,
+  setSceneVisual,
+  setSceneVisualUrl,
+  setVoiceDescription,
+  setNarrationAsset,
+  setMusicAsset,
+  storyboardFromGenerated,
   totalFrames,
   updateSceneScript,
   updateSceneVisualPrompt,
 } from "./storyboard";
+import {
+  GeneratedScriptSchema,
+  GeneratedStoryboardSchema,
+  type AiGenerationDto,
+} from "../api/contracts";
 import {
   nextVersion,
   postPublishBranch,
@@ -40,6 +51,23 @@ export type PostingKey =
 
 /** The 14a publish wizard's step. */
 export type PublishFlow = "closed" | "review" | "publishing" | "published";
+
+// ── Task #35: AI-generation slots + state ────────────────────────────────────
+
+/** A generation "slot" keys an in-flight/failed generation in `StudioState.generations`.
+ *  Scene-scoped kinds (image/script) are keyed per scene; whole-project kinds
+ *  (storyboard/narration/music) have a single fixed slot. */
+export const imageSlot = (sceneId: string): string => `image:${sceneId}`;
+export const scriptSlot = (sceneId: string): string => `script:${sceneId}`;
+export const STORYBOARD_SLOT = "storyboard" as const;
+export const NARRATION_SLOT = "narration" as const;
+export const MUSIC_SLOT = "music" as const;
+
+/** The pending/failed state of one generation slot (success clears the slot). */
+export interface GenerationEntry {
+  status: "running" | "failed";
+  error?: string;
+}
 
 export interface StudioState {
   storyboard: Storyboard;
@@ -81,6 +109,10 @@ export interface StudioState {
   versionMenuOpen: boolean;
   /** 14c: the render-progress overlay state (null when no render is running). */
   render: RenderState | null;
+  /** Task #35: in-flight/failed AI generations, keyed by slot (see `imageSlot`
+   *  etc.). A slot is added on GENERATION_BEGIN and removed on success; a failure
+   *  leaves a `{status:"failed"}` entry so the inspector can offer a retry. */
+  generations: Record<string, GenerationEntry>;
 }
 
 export type StudioAction =
@@ -115,7 +147,17 @@ export type StudioAction =
   | { type: "OPEN_RENDER" }
   | { type: "ADVANCE_RENDER" }
   | { type: "RENDER_BACKGROUND" }
-  | { type: "CANCEL_RENDER" };
+  | { type: "CANCEL_RENDER" }
+  // Task #35 AI generation
+  | { type: "GENERATION_BEGIN"; slot: string }
+  | { type: "GENERATION_FAILED"; slot: string; error: string }
+  | { type: "IMAGE_GENERATED"; sceneId: string; assetKey: string; url: string | null }
+  | { type: "SET_SCENE_VISUAL_URL"; sceneId: string; url: string | null }
+  | { type: "SCRIPT_GENERATED"; sceneId: string; scriptText: string }
+  | { type: "NARRATION_GENERATED"; assetKey: string; url: string | null }
+  | { type: "MUSIC_GENERATED"; assetKey: string; url: string | null }
+  | { type: "STORYBOARD_GENERATED"; storyboard: Storyboard }
+  | { type: "EDIT_VOICE_DESCRIPTION"; description: string };
 
 /** Mocked-async delay for the 13b Commit transition (ms). (Publish no longer has
  *  a single direct-bump delay — 14a's log ticks the mocked PR dance instead.) */
@@ -165,7 +207,18 @@ export function initialStudioState(project: StudioProject): StudioState {
     lastPublishedVersion: null,
     versionMenuOpen: false,
     render: null,
+    generations: {},
   };
+}
+
+/** Immutably drop one generation slot (a success clears the slot). */
+function clearSlot(
+  generations: Record<string, GenerationEntry>,
+  slot: string,
+): Record<string, GenerationEntry> {
+  const next = { ...generations };
+  delete next[slot];
+  return next;
 }
 
 export function studioReducer(
@@ -350,6 +403,84 @@ export function studioReducer(
         : state;
     case "CANCEL_RENDER":
       return { ...state, render: null };
+    // ── Task #35 AI generation ────────────────────────────────────────────────
+    case "GENERATION_BEGIN":
+      // A fresh begin clears any prior failure on that slot; storyboard/dirty
+      // untouched (nothing has changed yet).
+      return {
+        ...state,
+        generations: { ...state.generations, [action.slot]: { status: "running" } },
+      };
+    case "GENERATION_FAILED":
+      // The generation did NOT land — record the error on the slot so the inspector
+      // can surface a retry. No storyboard/dirty change.
+      return {
+        ...state,
+        generations: {
+          ...state.generations,
+          [action.slot]: { status: "failed", error: action.error },
+        },
+      };
+    case "IMAGE_GENERATED":
+      // A reroll landed: set the scene's persisted key + ephemeral preview URL,
+      // clear the slot, and dirty so the new ref is committed.
+      return {
+        ...edited(
+          state,
+          setSceneVisual(state.storyboard, action.sceneId, {
+            assetKey: action.assetKey,
+            url: action.url,
+          }),
+        ),
+        generations: clearSlot(state.generations, imageSlot(action.sceneId)),
+      };
+    case "SET_SCENE_VISUAL_URL":
+      // Hydrate-time presign of an already-persisted key — a display-only URL, NOT
+      // an edit (dirty must stay as-is).
+      return {
+        ...state,
+        storyboard: setSceneVisualUrl(state.storyboard, action.sceneId, action.url),
+      };
+    case "SCRIPT_GENERATED":
+      return {
+        ...edited(
+          state,
+          updateSceneScript(state.storyboard, action.sceneId, action.scriptText),
+        ),
+        generations: clearSlot(state.generations, scriptSlot(action.sceneId)),
+      };
+    case "NARRATION_GENERATED":
+      return {
+        ...edited(
+          state,
+          setNarrationAsset(state.storyboard, action.assetKey, action.url),
+        ),
+        generations: clearSlot(state.generations, NARRATION_SLOT),
+      };
+    case "MUSIC_GENERATED":
+      return {
+        ...edited(
+          state,
+          setMusicAsset(state.storyboard, action.assetKey, action.url),
+        ),
+        generations: clearSlot(state.generations, MUSIC_SLOT),
+      };
+    case "STORYBOARD_GENERATED":
+      // A (re)planned storyboard replaces the scenes wholesale; select the first,
+      // dirty, and clear the whole-project slot.
+      return {
+        ...state,
+        storyboard: action.storyboard,
+        selectedSceneId: action.storyboard.scenes[0]?.id ?? "",
+        dirty: true,
+        versionMenuOpen: false,
+        generations: clearSlot(state.generations, STORYBOARD_SLOT),
+      };
+    case "EDIT_VOICE_DESCRIPTION":
+      return edited(
+        state,
+        setVoiceDescription(state.storyboard, action.description),
+      );
     default:
       return state;
   }
@@ -393,4 +524,82 @@ export function publishOutcome(
   const error =
     job && job.error ? job.error : job ? "publish_failed" : "publish_timeout";
   return { type: "PUBLISH_FAILED", error };
+}
+
+// ── Task #35: generation outcome mappers (polled terminal generation → action) ──
+// Pure, like commitOutcome/publishOutcome. Each maps a POLLED terminal AiGeneration
+// (or null = a POST failure / poll timeout) — plus the presigned preview URL (media)
+// or a parsed resultJson (text) — to the settling action.
+
+/** Error string for a non-succeeded (or absent) generation. */
+function genError(gen: AiGenerationDto | null): string {
+  if (gen && gen.error) return gen.error;
+  return gen ? "generation_failed" : "generation_timeout";
+}
+
+/** image reroll → IMAGE_GENERATED (needs a resultAssetKey), else GENERATION_FAILED. */
+export function imageGenerationOutcome(
+  sceneId: string,
+  gen: AiGenerationDto | null,
+  url: string | null,
+): StudioAction {
+  if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
+    return { type: "IMAGE_GENERATED", sceneId, assetKey: gen.resultAssetKey, url };
+  }
+  return { type: "GENERATION_FAILED", slot: imageSlot(sceneId), error: genError(gen) };
+}
+
+/** script rewrite → SCRIPT_GENERATED (parses GeneratedScript from resultJson), else
+ *  GENERATION_FAILED (a malformed result is a failure, never a crash). */
+export function scriptGenerationOutcome(
+  sceneId: string,
+  gen: AiGenerationDto | null,
+): StudioAction {
+  if (gen && gen.status === "succeeded") {
+    const parsed = GeneratedScriptSchema.safeParse(gen.resultJson);
+    if (parsed.success) {
+      return { type: "SCRIPT_GENERATED", sceneId, scriptText: parsed.data.scriptText };
+    }
+  }
+  return { type: "GENERATION_FAILED", slot: scriptSlot(sceneId), error: genError(gen) };
+}
+
+/** narration synth → NARRATION_GENERATED (needs a resultAssetKey; url optional). */
+export function narrationGenerationOutcome(
+  gen: AiGenerationDto | null,
+  url: string | null,
+): StudioAction {
+  if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
+    return { type: "NARRATION_GENERATED", assetKey: gen.resultAssetKey, url };
+  }
+  return { type: "GENERATION_FAILED", slot: NARRATION_SLOT, error: genError(gen) };
+}
+
+/** music synth → MUSIC_GENERATED (needs a resultAssetKey; url optional). */
+export function musicGenerationOutcome(
+  gen: AiGenerationDto | null,
+  url: string | null,
+): StudioAction {
+  if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
+    return { type: "MUSIC_GENERATED", assetKey: gen.resultAssetKey, url };
+  }
+  return { type: "GENERATION_FAILED", slot: MUSIC_SLOT, error: genError(gen) };
+}
+
+/** storyboard (re)plan → STORYBOARD_GENERATED (parses GeneratedStoryboard from
+ *  resultJson, projected onto the base composition frame), else GENERATION_FAILED. */
+export function storyboardGenerationOutcome(
+  gen: AiGenerationDto | null,
+  base: Storyboard,
+): StudioAction {
+  if (gen && gen.status === "succeeded") {
+    const parsed = GeneratedStoryboardSchema.safeParse(gen.resultJson);
+    if (parsed.success) {
+      return {
+        type: "STORYBOARD_GENERATED",
+        storyboard: storyboardFromGenerated(parsed.data, base),
+      };
+    }
+  }
+  return { type: "GENERATION_FAILED", slot: STORYBOARD_SLOT, error: genError(gen) };
 }

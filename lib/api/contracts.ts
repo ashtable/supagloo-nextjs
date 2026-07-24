@@ -352,10 +352,14 @@ export const CompositionSpecSchema = z.object({
 });
 export type CompositionSpec = z.infer<typeof CompositionSpecSchema>;
 
-/** Narrator voice descriptor (mirrors db-lib `VoiceDescriptorSchema`). */
+/** Narrator voice descriptor (mirrors db-lib `VoiceDescriptorSchema`). Task #35:
+ *  `assetKey` caches the WHOLE-PROJECT synthesized narration track (one asset for
+ *  all scenes' narration concatenated) — absent/null until generated, mirrors
+ *  `MusicBed.assetKey`. */
 export const VoiceDescriptorSchema = z.object({
   description: z.string().min(1),
   label: z.string().min(1).optional(),
+  assetKey: z.string().min(1).nullable().optional(),
 });
 export type VoiceDescriptor = z.infer<typeof VoiceDescriptorSchema>;
 
@@ -494,3 +498,194 @@ export type PublishVersionRequest = z.infer<typeof PublishVersionRequestSchema>;
  *  the publish job id the studio polls via the shared `GET .../jobs/:jobId`. */
 export const PublishVersionResponseSchema = z.object({ jobId: z.string() });
 export type PublishVersionResponse = z.infer<typeof PublishVersionResponseSchema>;
+
+// ── AI generation + presign wire DTOs (Task #35 — design-delta §2.8/§6b/§8) ────
+//
+// Hand-rolled mirrors of the API's AI-generation + files-presign contracts (db-lib
+// `schemas.ts` AiGeneration* + `workflows.ts` matrix, `FilePresignDownload*`). Same
+// rationale as every block above: this repo's db-lib submodule predates these DTOs
+// and a BFF needs only the wire shapes. The studio posts a generation, polls
+// `GET /api/ai/generations/:id`, and presigns the raw `resultAssetKey` via
+// `GET /api/files/presign-download?key=` for the scene preview. Dates are ISO strings.
+
+/** The AI-generation kinds (mirrors db-lib `AiGenerationKindSchema`). */
+export const AiGenerationKindSchema = z.enum([
+  "storyboard",
+  "script",
+  "image",
+  "narration",
+  "music",
+  "video",
+]);
+export type AiGenerationKind = z.infer<typeof AiGenerationKindSchema>;
+
+/** The AI providers (mirrors db-lib `AiProviderSchema`). */
+export const AiProviderSchema = z.enum(["gloo", "openrouter"]);
+export type AiProvider = z.infer<typeof AiProviderSchema>;
+
+/** Shared job/generation lifecycle status (mirrors db-lib `JobStatusSchema`). */
+export const JobStatusSchema = z.enum([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "canceled",
+]);
+export type JobStatus = z.infer<typeof JobStatusSchema>;
+
+/** The scripture a generation is based on (mirrors db-lib `ScripturePassageRequestSchema`). */
+export const ScripturePassageRequestSchema = z.object({
+  reference: z.string().min(1),
+  translation: z.string().min(1),
+  language: z.string().min(1).default("eng"),
+});
+export type ScripturePassageRequest = z.infer<typeof ScripturePassageRequestSchema>;
+
+/** `AiGeneration.input` for the storyboard/script kinds (mirrors db-lib
+ *  `GenerateScriptInputSchema`): a `brief` + optional scripture. */
+export const GenerateScriptInputSchema = z.object({
+  brief: z.string().min(1),
+  scripture: ScripturePassageRequestSchema.optional(),
+});
+export type GenerateScriptInput = z.infer<typeof GenerateScriptInputSchema>;
+
+/** `AiGeneration.input` for the `image` kind (mirrors db-lib `GenerateImageInputSchema`). */
+export const GenerateImageInputSchema = z.object({
+  prompt: z.string().min(1),
+});
+export type GenerateImageInput = z.infer<typeof GenerateImageInputSchema>;
+
+/** One per-scene narration script (mirrors db-lib `NarrationSceneSchema`). */
+export const NarrationSceneSchema = z.object({
+  sceneId: z.string().min(1),
+  scriptText: z.string().min(1),
+});
+export type NarrationScene = z.infer<typeof NarrationSceneSchema>;
+
+/** `AiGeneration.input` for the `narration` kind — the WHOLE-PROJECT spec (mirrors
+ *  db-lib `NarrationSpecSchema`/`GenerateNarrationInputSchema`): one voice + every
+ *  scene's script (synthesized into one concatenated track, §7 workflow 7 D5). */
+export const NarrationSpecSchema = z.object({
+  voice: VoiceDescriptorSchema,
+  scenes: z.array(NarrationSceneSchema).min(1),
+});
+export type NarrationSpec = z.infer<typeof NarrationSpecSchema>;
+
+/** `AiGeneration.input` for the `music` kind (mirrors db-lib `MusicSpecSchema`/
+ *  `GenerateMusicInputSchema`): a style label + target duration. */
+export const MusicSpecSchema = z.object({
+  style: z.string().min(1),
+  durationSeconds: z.number().positive(),
+});
+export type MusicSpec = z.infer<typeof MusicSpecSchema>;
+
+/** `AiGeneration.input` for the `video` kind (mirrors db-lib `GenerateVideoInputSchema`). */
+export const GenerateVideoInputSchema = z.object({
+  prompt: z.string().min(1),
+  durationSeconds: z.number().positive().optional(),
+  resolution: z.string().min(1).optional(),
+  aspectRatio: z.string().regex(/^\d+:\d+$/).optional(),
+  frameImages: z.array(z.string().min(1)).min(1).optional(),
+  generateAudio: z.boolean().optional(),
+  seed: z.number().int().optional(),
+});
+export type GenerateVideoInput = z.infer<typeof GenerateVideoInputSchema>;
+
+/** `LLM structured output for the `script` kind (mirrors db-lib `GeneratedScriptSchema`) —
+ *  what `AiGenerationDto.resultJson` carries for a script generation. */
+export const GeneratedScriptSchema = z.object({
+  scriptText: z.string().min(1),
+  reference: z.string().min(1),
+  translation: z.string().min(1),
+});
+export type GeneratedScript = z.infer<typeof GeneratedScriptSchema>;
+
+/** One LLM-suggested scene (mirrors db-lib `StoryboardSceneSchema`). */
+export const StoryboardSceneSchema = z.object({
+  name: z.string().min(1),
+  scriptText: z.string().min(1),
+  reference: z.string().min(1),
+  translation: z.string().min(1),
+  visualPrompt: z.string().min(1),
+  suggestedDurationSeconds: z.number().positive(),
+});
+export type StoryboardSceneSuggestion = z.infer<typeof StoryboardSceneSchema>;
+
+/** LLM structured output for the `storyboard` kind (mirrors db-lib
+ *  `GeneratedStoryboardSchema`) — what `AiGenerationDto.resultJson` carries. */
+export const GeneratedStoryboardSchema = z.object({
+  scenes: z.array(StoryboardSceneSchema).min(1),
+  narratorVoice: VoiceDescriptorSchema,
+  musicStyle: z.string().min(1),
+});
+export type GeneratedStoryboard = z.infer<typeof GeneratedStoryboardSchema>;
+
+const aiGenerationCreateBase = {
+  provider: AiProviderSchema,
+  model: z.string().min(1),
+  projectId: z.string().min(1).optional(),
+  sceneId: z.string().min(1).optional(),
+} as const;
+
+/** `POST /v1/ai/generations` request (mirrors db-lib `CreateAiGenerationRequestSchema`) —
+ *  discriminated on `kind` so the kind-specific `input` is validated at the wire boundary.
+ *  The studio client posts `{kind, projectId?, sceneId?, input}`; the BFF enriches with
+ *  `{provider, model}` (see `lib/api/ai-config.ts`) before forwarding to this shape. */
+export const CreateAiGenerationRequestSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("storyboard"), ...aiGenerationCreateBase, input: GenerateScriptInputSchema }),
+  z.object({ kind: z.literal("script"), ...aiGenerationCreateBase, input: GenerateScriptInputSchema }),
+  z.object({ kind: z.literal("image"), ...aiGenerationCreateBase, input: GenerateImageInputSchema }),
+  z.object({ kind: z.literal("narration"), ...aiGenerationCreateBase, input: NarrationSpecSchema }),
+  z.object({ kind: z.literal("music"), ...aiGenerationCreateBase, input: MusicSpecSchema }),
+  z.object({ kind: z.literal("video"), ...aiGenerationCreateBase, input: GenerateVideoInputSchema }),
+]);
+export type CreateAiGenerationRequest = z.infer<typeof CreateAiGenerationRequestSchema>;
+
+/** `POST /v1/ai/generations` 201 response (mirrors db-lib
+ *  `CreateAiGenerationResponseSchema`) — the new generation id (= workflow id). */
+export const CreateAiGenerationResponseSchema = z.object({
+  generationId: z.string(),
+});
+export type CreateAiGenerationResponse = z.infer<typeof CreateAiGenerationResponseSchema>;
+
+/** An `AiGeneration` on the wire (mirrors db-lib `AiGenerationDtoSchema`) — the poll shape.
+ *  `resultAssetKey` is the RAW S3 key; the client presigns it via `presign-download`.
+ *  `resultJson`/`tokenUsage` are pass-through JSON (shape varies by kind). */
+export const AiGenerationDtoSchema = z.object({
+  id: z.string(),
+  projectId: z.string().nullable(),
+  sceneId: z.string().nullable(),
+  kind: AiGenerationKindSchema,
+  provider: AiProviderSchema,
+  model: z.string(),
+  status: JobStatusSchema,
+  resultJson: z.unknown().nullable(),
+  resultAssetKey: z.string().nullable(),
+  error: z.string().nullable(),
+  tokenUsage: z.unknown().nullable(),
+  createdAt: z.string(),
+  completedAt: z.string().nullable(),
+});
+export type AiGenerationDto = z.infer<typeof AiGenerationDtoSchema>;
+
+/** `GET /v1/ai/generations/:id` (and cancel) response (mirrors db-lib
+ *  `AiGenerationResponseSchema`). */
+export const AiGenerationResponseSchema = z.object({
+  generation: AiGenerationDtoSchema,
+});
+export type AiGenerationResponse = z.infer<typeof AiGenerationResponseSchema>;
+
+/** `GET /v1/projects/:id/generations` response (mirrors db-lib
+ *  `AiGenerationListResponseSchema`). */
+export const AiGenerationListResponseSchema = z.object({
+  generations: z.array(AiGenerationDtoSchema),
+});
+export type AiGenerationListResponse = z.infer<typeof AiGenerationListResponseSchema>;
+
+/** `GET /v1/files/presign-download?key=` response (mirrors db-lib
+ *  `FilePresignDownloadResponseSchema`): a short-lived presigned GET url + expiry. */
+export const FilePresignDownloadResponseSchema = z.object({
+  url: z.string(),
+  expiresAt: z.string(),
+});
+export type FilePresignDownloadResponse = z.infer<typeof FilePresignDownloadResponseSchema>;

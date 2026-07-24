@@ -13,6 +13,14 @@ import {
   updateSceneScript,
   setSceneOnScreenText,
   updateSceneVisualPrompt,
+  // Task #35 — AI-generation transforms (RED until added to storyboard.ts).
+  setSceneVisual,
+  setSceneVisualUrl,
+  setVoiceDescription,
+  setNarrationAsset,
+  setMusicAsset,
+  storyboardFromGenerated,
+  narrationScenesOf,
   // §7 scene-tree — RED until Step 9 adds `sceneTreeLabel` to `storyboard.ts`.
   // The module already exists, so this resolves to `undefined` and only the
   // U-ST-TREE test below fails ("sceneTreeLabel is not a function"); every other
@@ -203,5 +211,98 @@ describe("sceneTreeLabel (§7 scene-tree row label)", () => {
     expect(sceneTreeLabel(DEMO_STORYBOARD.scenes[3])).toBe(
       "Scene 04 · verse card",
     );
+  });
+});
+
+// ── Task #35: AI-generation transforms (pure, immutable) ─────────────────────
+describe("AI-generation transforms", () => {
+  it("U-AI-S1: setSceneVisual sets the persisted assetKey AND the ephemeral url on one scene", () => {
+    const next = setSceneVisual(DEMO_STORYBOARD, "s2", {
+      assetKey: "projects/p1/assets/gen-1",
+      url: "http://minio/signed",
+    });
+    const s2 = next.scenes.find((s) => s.id === "s2")!;
+    expect(s2.visualAssetKey).toBe("projects/p1/assets/gen-1");
+    expect(s2.visualUrl).toBe("http://minio/signed");
+    // other scenes + original untouched
+    expect(next.scenes.find((s) => s.id === "s1")!.visualAssetKey).toBeUndefined();
+    expect(DEMO_STORYBOARD.scenes.find((s) => s.id === "s2")!.visualAssetKey).toBeUndefined();
+  });
+
+  it("U-AI-S2: setSceneVisualUrl sets only the ephemeral preview url (hydrate-time presign, no assetKey change)", () => {
+    const seeded = setSceneVisual(DEMO_STORYBOARD, "s1", {
+      assetKey: "projects/p1/assets/existing",
+      url: null,
+    });
+    const next = setSceneVisualUrl(seeded, "s1", "http://minio/existing");
+    const s1 = next.scenes.find((s) => s.id === "s1")!;
+    expect(s1.visualUrl).toBe("http://minio/existing");
+    expect(s1.visualAssetKey).toBe("projects/p1/assets/existing");
+  });
+
+  it("U-AI-S3: setVoiceDescription replaces the whole-video narrator description", () => {
+    const next = setVoiceDescription(DEMO_STORYBOARD, "new gentle voice");
+    expect(next.voiceDescription).toBe("new gentle voice");
+    expect(DEMO_STORYBOARD.voiceDescription).not.toBe("new gentle voice");
+  });
+
+  it("U-AI-S4: setNarrationAsset / setMusicAsset set the project-scoped asset keys", () => {
+    const withNarration = setNarrationAsset(DEMO_STORYBOARD, "projects/p1/narration/track.mp3");
+    expect(withNarration.narrationAssetKey).toBe("projects/p1/narration/track.mp3");
+    const withMusic = setMusicAsset(withNarration, "projects/p1/music/bed.mp3");
+    expect(withMusic.musicAssetKey).toBe("projects/p1/music/bed.mp3");
+    expect(withMusic.narrationAssetKey).toBe("projects/p1/narration/track.mp3");
+  });
+
+  it("U-AI-S5: storyboardFromGenerated builds new id/index/captions scenes, resetting audio assets", () => {
+    const gen = {
+      scenes: [
+        {
+          name: "opening",
+          scriptText: "In the beginning",
+          reference: "GEN 1:1",
+          translation: "KJV",
+          visualPrompt: "cosmic dawn",
+          suggestedDurationSeconds: 6,
+        },
+        {
+          name: "light",
+          scriptText: "let there be light",
+          reference: "GEN 1:3",
+          translation: "KJV",
+          visualPrompt: "first light",
+          suggestedDurationSeconds: 4,
+        },
+      ],
+      narratorVoice: { description: "deep resonant voice", label: "NARRATOR" },
+      musicStyle: "Ambient swell",
+    };
+    // seed the base with stale audio assets to prove they reset
+    const base = setNarrationAsset(setMusicAsset(DEMO_STORYBOARD, "old/music"), "old/narration");
+    const next = storyboardFromGenerated(gen, base);
+    expect(next.scenes.map((s) => s.id)).toEqual(["s1", "s2"]);
+    expect(next.scenes.map((s) => s.index)).toEqual([1, 2]);
+    expect(next.scenes[0]).toMatchObject({
+      script: "In the beginning",
+      visualPrompt: "cosmic dawn",
+      durationSeconds: 6,
+      onScreenText: "text",
+    });
+    expect(next.voiceDescription).toBe("deep resonant voice");
+    expect(next.musicMood).toBe("Ambient swell");
+    // a fresh storyboard means the old whole-project audio no longer matches
+    expect(next.narrationAssetKey).toBeNull();
+    expect(next.musicAssetKey).toBeNull();
+    // base fps preserved
+    expect(next.fps).toBe(base.fps);
+  });
+
+  it("U-AI-S6: narrationScenesOf projects every scene to {sceneId, scriptText}", () => {
+    expect(narrationScenesOf(DEMO_STORYBOARD)).toEqual([
+      { sceneId: "s1", scriptText: "I am the voice of one" },
+      { sceneId: "s2", scriptText: "of one crying in the wilderness," },
+      { sceneId: "s3", scriptText: "Make straight the way of the Lord." },
+      { sceneId: "s4", scriptText: "John 1:23 · KJV" },
+    ]);
   });
 });

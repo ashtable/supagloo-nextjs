@@ -26,6 +26,9 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     visualPrompt: s.visualPrompt,
     script: s.scriptText,
     onScreenText: s.captions ? "text" : "voice-only",
+    // Task #35: carry the persisted generated-visual key (undefined stays
+    // undefined so the round trip is exact); the preview URL is presigned later.
+    visualAssetKey: s.visualAssetKey,
   }));
 
   const reference =
@@ -39,6 +42,9 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     voiceDescription: manifest.narratorVoice.description,
     voiceLabel: manifest.narratorVoice.label ?? "",
     musicMood: manifest.music?.style ?? "",
+    // Task #35: the persisted whole-project audio keys (↔ narratorVoice/music).
+    narrationAssetKey: manifest.narratorVoice.assetKey,
+    musicAssetKey: manifest.music?.assetKey,
     scenes,
   };
 }
@@ -58,13 +64,18 @@ export function serializeManifest(
     ...(base.narratorVoice.label !== undefined
       ? { label: base.narratorVoice.label }
       : {}),
+    // Task #35: the generated whole-project narration key comes from the storyboard
+    // (a regeneration updates it), preserving absent/null/string exactly.
+    ...(storyboard.narrationAssetKey !== undefined
+      ? { assetKey: storyboard.narrationAssetKey }
+      : {}),
   };
 
   const music = storyboard.musicMood
     ? {
         style: storyboard.musicMood,
-        ...(base.music?.assetKey !== undefined
-          ? { assetKey: base.music.assetKey }
+        ...(storyboard.musicAssetKey !== undefined
+          ? { assetKey: storyboard.musicAssetKey }
           : {}),
       }
     : base.music;
@@ -89,6 +100,12 @@ export function serializeManifest(
         visualPrompt: s.visualPrompt,
         durationSeconds: s.durationSeconds,
         captions: s.onScreenText === "text",
+        // Task #35: write the (possibly rerolled) generated-visual key from the UI
+        // scene, preserving absent/null/string exactly (the ephemeral preview URL
+        // is deliberately NOT serialized).
+        ...(s.visualAssetKey !== undefined
+          ? { visualAssetKey: s.visualAssetKey }
+          : {}),
       };
     }),
   };

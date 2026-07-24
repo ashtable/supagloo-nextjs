@@ -38,6 +38,8 @@
     ".next/dev/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "supagloo-database-lib",
+    "supagloo-prompts"
   ]
 }

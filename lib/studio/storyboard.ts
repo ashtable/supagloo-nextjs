@@ -4,6 +4,7 @@
  * em dash `—` U+2014).
  */
 import { secondsToFrames } from "./time";
+import type { GeneratedStoryboard } from "../api/contracts";
 
 export type OnScreenText = "text" | "voice-only";
 
@@ -16,6 +17,14 @@ export interface Scene {
   visualPrompt: string;
   script: string;
   onScreenText: OnScreenText;
+  /** Task #35: the PERSISTED S3 key of the generated scene visual (image/clip),
+   *  round-tripped to/from `ManifestScene.visualAssetKey`. Absent/null until a
+   *  reroll generates one. */
+  visualAssetKey?: string | null;
+  /** Task #35: the EPHEMERAL presigned preview URL derived from `visualAssetKey`.
+   *  Never serialized to the manifest — it's a display-only signed URL that the
+   *  composition renders as an `<Img>`; it is re-derived on load / after a reroll. */
+  visualUrl?: string | null;
 }
 
 export interface Storyboard {
@@ -27,6 +36,14 @@ export interface Storyboard {
   voiceLabel: string;
   musicMood: string;
   scenes: Scene[];
+  /** Task #35: PERSISTED whole-project asset keys (↔ `narratorVoice.assetKey` /
+   *  `music.assetKey`). Absent/null until narration/music is generated. */
+  narrationAssetKey?: string | null;
+  musicAssetKey?: string | null;
+  /** Task #35: EPHEMERAL presigned preview URLs for narration/music (never
+   *  serialized) — the composition plays them as `<Audio>` when present. */
+  narrationUrl?: string | null;
+  musicUrl?: string | null;
 }
 
 /** Verse of the Day · John 1:23 · KJV — 4 scenes, 0:30, 30fps. */
@@ -218,4 +235,100 @@ export function updateSceneVisualPrompt(
 /** Immutably set the whole-video music mood. */
 export function setMusicMood(sb: Storyboard, musicMood: string): Storyboard {
   return { ...sb, musicMood };
+}
+
+// ── Task #35: AI-generation transforms (pure, immutable) ─────────────────────
+
+/** Set a scene's generated visual: the persisted `visualAssetKey` AND the
+ *  ephemeral presigned preview `visualUrl` (a reroll landing). */
+export function setSceneVisual(
+  sb: Storyboard,
+  id: string,
+  visual: { assetKey: string; url: string | null },
+): Storyboard {
+  return mapScene(sb, id, (s) => ({
+    ...s,
+    visualAssetKey: visual.assetKey,
+    visualUrl: visual.url,
+  }));
+}
+
+/** Set only a scene's ephemeral preview `visualUrl` (hydrate-time presign of an
+ *  already-persisted `visualAssetKey`) — NOT an edit. */
+export function setSceneVisualUrl(
+  sb: Storyboard,
+  id: string,
+  url: string | null,
+): Storyboard {
+  return mapScene(sb, id, (s) => ({ ...s, visualUrl: url }));
+}
+
+/** Immutably replace the whole-video narrator voice description. */
+export function setVoiceDescription(
+  sb: Storyboard,
+  description: string,
+): Storyboard {
+  return { ...sb, voiceDescription: description };
+}
+
+/** Set the persisted whole-project narration asset key + its ephemeral preview url. */
+export function setNarrationAsset(
+  sb: Storyboard,
+  assetKey: string,
+  url: string | null = null,
+): Storyboard {
+  return { ...sb, narrationAssetKey: assetKey, narrationUrl: url };
+}
+
+/** Set the persisted whole-project music asset key + its ephemeral preview url. */
+export function setMusicAsset(
+  sb: Storyboard,
+  assetKey: string,
+  url: string | null = null,
+): Storyboard {
+  return { ...sb, musicAssetKey: assetKey, musicUrl: url };
+}
+
+/** Every scene projected to the narration synthesis input `{sceneId, scriptText}`
+ *  — narration is a WHOLE-PROJECT synthesis over all scenes' scripts. */
+export function narrationScenesOf(
+  sb: Storyboard,
+): { sceneId: string; scriptText: string }[] {
+  return sb.scenes.map((s) => ({ sceneId: s.id, scriptText: s.script }));
+}
+
+/**
+ * Build a fresh UI storyboard from a `storyboard`-kind LLM result, keeping the
+ * base composition frame (fps / reference / title / voice label). The generated
+ * scenes have no ids/captions/assetKeys, so those are assigned here: stable
+ * `s1…sN` ids, 1-based index, captions ON by default, `durationSeconds` from the
+ * suggested value. Whole-video voice/music descriptors come from the result; the
+ * old whole-project narration/music assets no longer match a brand-new storyboard,
+ * so they RESET to null (a re-generate must be re-synthesized).
+ */
+export function storyboardFromGenerated(
+  gen: GeneratedStoryboard,
+  base: Storyboard,
+): Storyboard {
+  return {
+    ...base,
+    voiceDescription: gen.narratorVoice.description,
+    voiceLabel: gen.narratorVoice.label ?? base.voiceLabel,
+    musicMood: gen.musicStyle,
+    narrationAssetKey: null,
+    musicAssetKey: null,
+    narrationUrl: null,
+    musicUrl: null,
+    scenes: gen.scenes.map((s, i) => ({
+      id: `s${i + 1}`,
+      index: i + 1,
+      durationSeconds: s.suggestedDurationSeconds,
+      visualLabel: s.name,
+      visualPrompt: s.visualPrompt,
+      script: s.scriptText,
+      onScreenText: "text" as OnScreenText,
+      visualAssetKey: null,
+      visualUrl: null,
+    })),
+  };
 }

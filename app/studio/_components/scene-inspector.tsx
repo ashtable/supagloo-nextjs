@@ -2,6 +2,7 @@
 
 import styles from "../studio.module.css";
 import { useStudio } from "./studio-context";
+import { imageSlot, NARRATION_SLOT, MUSIC_SLOT } from "@/lib/studio/reducer";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
 const MONO = "ui-monospace, Menlo, monospace";
@@ -38,16 +39,35 @@ const STAT_ROW: React.CSSProperties = {
  * (inert) and `scene-duration` are added.
  */
 export default function SceneInspector() {
-  const { state, dispatch } = useStudio();
-  const { storyboard, selectedSceneId } = state;
+  const {
+    state,
+    dispatch,
+    project,
+    rerollVisual,
+    regenerateNarration,
+    regenerateMusic,
+  } = useStudio();
+  const { storyboard, selectedSceneId, generations } = state;
   const scene =
     storyboard.scenes.find((s) => s.id === selectedSceneId) ??
     storyboard.scenes[0];
   const showCaptions = scene.onScreenText === "text";
 
+  // AI controls (editable voice, music bed, regenerate triggers) render only for a
+  // REAL project (a source manifest is present). The mock catalog keeps the
+  // canonical 13b read-only inspector byte-for-byte, so the mock studio regression
+  // specs stay green. Signal = `project.manifest`, the same one commit()/publish()
+  // branch on.
+  const aiEnabled = Boolean(project.manifest);
+
+  const visualStatus = generations[imageSlot(scene.id)]?.status;
+  const narrationStatus = generations[NARRATION_SLOT]?.status;
+  const musicStatus = generations[MUSIC_SLOT]?.status;
+
   return (
     <div
       data-testid="scene-inspector"
+      data-visual-asset-key={scene.visualAssetKey ?? ""}
       style={{
         width: 300,
         flex: "none",
@@ -169,7 +189,9 @@ export default function SceneInspector() {
           <button
             type="button"
             data-testid="reroll-visual"
-            onClick={() => {}}
+            data-state={visualStatus ?? "idle"}
+            disabled={visualStatus === "running"}
+            onClick={() => rerollVisual(scene.id)}
             className={styles.hoverable}
             style={{
               display: "inline-flex",
@@ -183,13 +205,25 @@ export default function SceneInspector() {
               fontSize: 12,
               color: "#f1e7d6",
               background: "transparent",
+              opacity: visualStatus === "running" ? 0.6 : 1,
+              cursor: visualStatus === "running" ? "default" : "pointer",
             }}
           >
-            {"↻ Reroll visual"}
+            {visualStatus === "running" ? "Rerolling…" : "↻ Reroll visual"}
           </button>
+          {visualStatus === "failed" ? (
+            <span
+              data-testid="reroll-error"
+              style={{ display: "block", marginTop: 6, fontSize: 11, color: "#e0745a" }}
+            >
+              {"Generation failed — retry"}
+            </span>
+          ) : null}
         </div>
 
-        {/* NARRATOR VOICE · whole video — static box (voice preview removed) */}
+        {/* NARRATOR VOICE · whole video. Mock catalog → the canonical 13b read-only
+            box (keeps the exact-copy regression anchors in textContent). Real
+            project → an editable descriptor + a real "↻ Regenerate narration". */}
         <div>
           <div style={{ marginBottom: 7 }}>
             <span style={GOLD_LABEL}>{"NARRATOR VOICE"}</span>
@@ -197,21 +231,143 @@ export default function SceneInspector() {
               {" · whole video"}
             </span>
           </div>
-          <div
-            style={{
-              border: "1px solid rgba(230,180,120,.18)",
-              borderRadius: 10,
-              background: "#0f0b07",
-              padding: "11px 12px",
-              fontFamily: MONO,
-              fontSize: 11.5,
-              lineHeight: 1.5,
-              color: "#a99b85",
-            }}
-          >
-            {storyboard.voiceDescription}
-          </div>
+          {aiEnabled ? (
+            <>
+              <textarea
+                data-testid="voice-input"
+                aria-label="Narrator voice description"
+                value={storyboard.voiceDescription}
+                onChange={(e) =>
+                  dispatch({ type: "EDIT_VOICE_DESCRIPTION", description: e.target.value })
+                }
+                rows={3}
+                style={{
+                  width: "100%",
+                  resize: "none",
+                  border: "1px solid rgba(230,180,120,.18)",
+                  borderRadius: 10,
+                  background: "#0f0b07",
+                  padding: "11px 12px",
+                  fontFamily: MONO,
+                  fontSize: 11.5,
+                  lineHeight: 1.5,
+                  color: "#e8dcc6",
+                  outline: "none",
+                }}
+              />
+              <button
+                type="button"
+                data-testid="regenerate-narration"
+                data-state={narrationStatus ?? "idle"}
+                disabled={narrationStatus === "running" || storyboard.scenes.length === 0}
+                onClick={regenerateNarration}
+                className={styles.hoverable}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  marginTop: 9,
+                  padding: "7px 12px",
+                  border: "1px solid rgba(230,180,120,.24)",
+                  borderRadius: 8,
+                  fontWeight: 700,
+                  fontSize: 12,
+                  color: "#f1e7d6",
+                  background: "transparent",
+                  opacity: narrationStatus === "running" ? 0.6 : 1,
+                }}
+              >
+                {narrationStatus === "running" ? "Generating…" : "↻ Regenerate narration"}
+              </button>
+              {narrationStatus === "failed" ? (
+                <span
+                  data-testid="narration-error"
+                  style={{ display: "block", marginTop: 6, fontSize: 11, color: "#e0745a" }}
+                >
+                  {"Generation failed — retry"}
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <div
+              style={{
+                border: "1px solid rgba(230,180,120,.18)",
+                borderRadius: 10,
+                background: "#0f0b07",
+                padding: "11px 12px",
+                fontFamily: MONO,
+                fontSize: 11.5,
+                lineHeight: 1.5,
+                color: "#a99b85",
+              }}
+            >
+              {storyboard.voiceDescription}
+            </div>
+          )}
         </div>
+
+        {/* MUSIC BED · whole video — editable style + regenerate (real projects only;
+            the 13b mock inspector has no music control). */}
+        {aiEnabled ? (
+          <div>
+            <div style={{ marginBottom: 7 }}>
+              <span style={GOLD_LABEL}>{"MUSIC BED"}</span>
+              <span style={{ fontFamily: SEMI, fontWeight: 600, fontSize: 10, color: "#a99b85" }}>
+                {" · whole video"}
+              </span>
+            </div>
+            <input
+              data-testid="music-input"
+              aria-label="Music style"
+              value={storyboard.musicMood}
+              onChange={(e) => dispatch({ type: "SET_MUSIC_MOOD", mood: e.target.value })}
+              placeholder="e.g. Swelling strings"
+              style={{
+                width: "100%",
+                border: "1px solid rgba(230,180,120,.18)",
+                borderRadius: 10,
+                background: "#0f0b07",
+                padding: "10px 12px",
+                fontFamily: MONO,
+                fontSize: 11.5,
+                color: "#e8dcc6",
+                outline: "none",
+              }}
+            />
+            <button
+              type="button"
+              data-testid="regenerate-music"
+              data-state={musicStatus ?? "idle"}
+              disabled={musicStatus === "running"}
+              onClick={regenerateMusic}
+              className={styles.hoverable}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                marginTop: 9,
+                padding: "7px 12px",
+                border: "1px solid rgba(230,180,120,.24)",
+                borderRadius: 8,
+                fontWeight: 700,
+                fontSize: 12,
+                color: "#f1e7d6",
+                background: "transparent",
+                opacity: musicStatus === "running" ? 0.6 : 1,
+              }}
+            >
+              {musicStatus === "running" ? "Generating…" : "↻ Regenerate music"}
+            </button>
+            {musicStatus === "failed" ? (
+              <span
+                data-testid="music-error"
+                style={{ display: "block", marginTop: 6, fontSize: 11, color: "#e0745a" }}
+              >
+                {"Generation failed — retry"}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* On-screen captions — single switch (SET_ON_SCREEN_TEXT) */}
         <div style={STAT_ROW}>
