@@ -35,10 +35,11 @@ import {
   narrationScenesOf,
   totalDurationSeconds,
 } from "@/lib/studio/storyboard";
-import type { StudioProject } from "@/lib/studio/project";
+import { projectWithManifest, type StudioProject } from "@/lib/studio/project";
 import {
   serializeManifest,
   commitMessage,
+  sceneScriptureContext,
 } from "@/lib/studio/manifest-adapter";
 import { commitVersion, publishVersion } from "@/lib/studio/studio-data";
 import {
@@ -95,15 +96,20 @@ interface StudioContextValue {
 const StudioContext = createContext<StudioContextValue | null>(null);
 
 export function StudioProvider({
-  project,
+  project: initialProject,
   children,
 }: {
   project: StudioProject;
   children: ReactNode;
 }) {
+  // Task #57: `project` lives in state (init from the prop) so a successful commit can
+  // REFRESH `project.manifest` to the just-committed one. The prop was never refreshed,
+  // so `rewriteScript`/`generateStoryboard` (which read `project.manifest` for scripture)
+  // and the next commit's merge base kept reading the stale pre-commit manifest.
+  const [project, setProject] = useState(initialProject);
   const [state, dispatch] = useReducer(
     studioReducer,
-    project,
+    initialProject,
     initialStudioState,
   );
   const playerRef = useRef<PlayerRef>(null);
@@ -157,6 +163,12 @@ export function StudioProvider({
       }
       const job = await pollJobUntilTerminal(project.id, jobId);
       if (!aliveRef.current) return;
+      // Task #57: on a landed commit, refresh `project.manifest` to what we just
+      // committed so subsequent scripture reads (rewriteScript / generateStoryboard /
+      // the next commit's merge base) see the new scenes, not the stale prop.
+      if (job?.status === "succeeded") {
+        setProject((p) => projectWithManifest(p, manifest));
+      }
       dispatch(commitOutcome(job));
     })();
   };
@@ -259,17 +271,13 @@ export function StudioProvider({
     const id = sceneId ?? state.selectedSceneId;
     const scene = state.storyboard.scenes.find((s) => s.id === id);
     if (!scene) return;
-    const baseScene = project.manifest.scenes.find((x) => x.id === id);
+    // Task #57: read the scene's scripture from the CURRENT (post-commit-refreshed)
+    // manifest, not the never-refreshed prop that used to reattach a stale reference.
+    const scripture = sceneScriptureContext(project.manifest, id);
     const input: { brief: string; scripture?: { reference: string; translation: string; language: string } } = {
       brief: `Rewrite the narration line for this scene, staying faithful to the scripture. Current line: "${scene.script}".`,
     };
-    if (baseScene) {
-      input.scripture = {
-        reference: baseScene.reference,
-        translation: baseScene.translation,
-        language: "eng",
-      };
-    }
+    if (scripture) input.scripture = scripture;
     runGeneration(
       scriptSlot(id),
       { kind: "script", projectId: project.id, sceneId: id, input },
@@ -286,13 +294,11 @@ export function StudioProvider({
         ? `Plan a short scripture-video storyboard for ${state.storyboard.reference}.`
         : `Plan a short scripture-video storyboard for ${project.projectName}.`,
     };
-    if (firstScene) {
-      input.scripture = {
-        reference: firstScene.reference,
-        translation: firstScene.translation,
-        language: "eng",
-      };
-    }
+    // Task #57: seed from the current manifest's first scene (refreshed post-commit).
+    const scripture = firstScene
+      ? sceneScriptureContext(project.manifest, firstScene.id)
+      : undefined;
+    if (scripture) input.scripture = scripture;
     runGeneration(
       STORYBOARD_SLOT,
       { kind: "storyboard", projectId: project.id, input },

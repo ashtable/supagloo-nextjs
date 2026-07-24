@@ -62,17 +62,51 @@ const DEFAULT_GENERATION_PROVIDERS: Record<GenerationKind, string> = {
 const nonEmpty = (v: string | undefined): string | undefined =>
   v && v.length > 0 ? v : undefined;
 
+/** Greppable prefix for the first (and only) `console.*` in the codebase — kept a
+ *  plain string, no logger abstraction, so `grep '\[supagloo:ai-config\]'` surfaces
+ *  every model/provider resolution and which path (override vs. fallback) was taken. */
+const LOG_PREFIX = "[supagloo:ai-config]";
+
+/** Emit one distinguishable line naming the resolution path for `what` (model/provider):
+ *  the `SUPAGLOO_AI_..._<KIND>` override, or the built-in fallback (which also names the
+ *  var to set). This is the observability the task-35 review flagged as missing. */
+function logResolution(
+  what: "model" | "provider",
+  kind: GenerationKind,
+  envKey: string,
+  overridden: boolean,
+  value: string,
+): void {
+  if (overridden) {
+    console.info(
+      `${LOG_PREFIX} ${what} for kind "${kind}" resolved via ${envKey} override -> ${value}`,
+    );
+  } else {
+    console.info(
+      `${LOG_PREFIX} ${what} for kind "${kind}" resolved via built-in fallback -> ${value} (set ${envKey} to use a different one)`,
+    );
+  }
+}
+
 /** Resolve `{provider, model}` for a generation kind: env override wins, else the
- *  documented default. Pure — injectable env (default `process.env`). */
+ *  documented default. Pure result (injectable env, default `process.env`); as a side
+ *  effect it logs which PATH (override vs. fallback) produced each value so a
+ *  deployment can see whether its `SUPAGLOO_AI_*_<KIND>` overrides actually took. */
 export function resolveGenerationTarget(
   kind: GenerationKind,
   env: EnvSource = process.env,
 ): GenerationTarget {
   const key = kind.toUpperCase();
-  const provider =
-    nonEmpty(env[`SUPAGLOO_AI_PROVIDER_${key}`]) ??
-    DEFAULT_GENERATION_PROVIDERS[kind];
-  const model =
-    nonEmpty(env[`SUPAGLOO_AI_MODEL_${key}`]) ?? DEFAULT_GENERATION_MODELS[kind];
+
+  const providerKey = `SUPAGLOO_AI_PROVIDER_${key}`;
+  const providerOverride = nonEmpty(env[providerKey]);
+  const provider = providerOverride ?? DEFAULT_GENERATION_PROVIDERS[kind];
+  logResolution("provider", kind, providerKey, providerOverride !== undefined, provider);
+
+  const modelKey = `SUPAGLOO_AI_MODEL_${key}`;
+  const modelOverride = nonEmpty(env[modelKey]);
+  const model = modelOverride ?? DEFAULT_GENERATION_MODELS[kind];
+  logResolution("model", kind, modelKey, modelOverride !== undefined, model);
+
   return { provider, model };
 }

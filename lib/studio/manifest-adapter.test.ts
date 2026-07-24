@@ -4,6 +4,7 @@ import {
   hydrateStoryboard,
   serializeManifest,
   commitMessage,
+  sceneScriptureContext,
 } from "./manifest-adapter";
 import { ProjectManifestSchema, type ProjectManifest } from "../api/contracts";
 import {
@@ -12,7 +13,9 @@ import {
   setSceneVisual,
   setNarrationAsset,
   setMusicAsset,
+  storyboardFromGenerated,
 } from "./storyboard";
+import { projectWithManifest } from "./project";
 
 /** A full, schema-valid wire manifest exercising every optional slot (music,
  *  endCard, a null visualAssetKey, a scene with captions off). */
@@ -157,6 +160,99 @@ describe("serializeManifest", () => {
     expect(back.narratorVoice.assetKey).toBe("projects/p1/narration/new.mp3");
     expect(back.music?.assetKey).toBe("projects/p1/music/new.mp3");
     expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
+  });
+});
+
+// ── Task #57: per-scene scripture carry-through (item 1, the reattachment bug) ──
+describe("task 57 — per-scene scripture carry-through + post-commit refresh", () => {
+  /** A re-plan's LLM output whose ids overlap the base by construction (s1…sN),
+   *  with per-scene scripture DELIBERATELY different from the base's id-matched
+   *  scenes so a reattachment bug is detectable. */
+  const REPLAN = {
+    scenes: [
+      {
+        name: "still waters",
+        scriptText: "he leadeth me beside the still waters",
+        reference: "PSALM 23:2",
+        translation: "BSB",
+        visualPrompt: "calm river at dusk",
+        suggestedDurationSeconds: 6,
+      },
+      {
+        name: "shadow",
+        scriptText: "though I walk through the valley",
+        reference: "PSALM 23:4",
+        translation: "BSB",
+        visualPrompt: "narrow canyon in shadow",
+        suggestedDurationSeconds: 7,
+      },
+    ],
+    narratorVoice: { description: "gentle shepherd voice" },
+    musicStyle: "Soft strings",
+  };
+
+  it("U-A14: hydrate reads each scene's reference/translation onto the UI Scene", () => {
+    const sb = hydrateStoryboard(MANIFEST);
+    expect(sb.scenes[0].reference).toBe("JOHN 1:23");
+    expect(sb.scenes[0].translation).toBe("KJV");
+    expect(sb.scenes[1].reference).toBe("JOHN 1:23");
+    expect(sb.scenes[1].translation).toBe("KJV");
+  });
+
+  it("U-A15 (flagship): a re-plan whose ids overlap the base serializes the FRESH per-scene scripture, not the id-matched base's stale value", () => {
+    // base s1/s2 both hold JOHN 1:23 / KJV; the re-plan's s1/s2 hold Psalm scripture.
+    const replanned = storyboardFromGenerated(REPLAN, hydrateStoryboard(MANIFEST));
+    // ids overlap the base by construction (proves the id-rematch would have fired)
+    expect(replanned.scenes.map((s) => s.id)).toEqual(["s1", "s2"]);
+
+    const back = serializeManifest(replanned, MANIFEST);
+    // the committed manifest carries the re-plan's OWN scripture, NOT JOHN 1:23/KJV
+    expect(back.scenes[0].reference).toBe("PSALM 23:2");
+    expect(back.scenes[0].translation).toBe("BSB");
+    expect(back.scenes[1].reference).toBe("PSALM 23:4");
+    expect(back.scenes[1].translation).toBe("BSB");
+    // and it is still a valid wire manifest
+    expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
+  });
+
+  it("U-A16: sceneScriptureContext + projectWithManifest — rewriteScript reads the post-commit-refreshed manifest, not the stale pre-commit one", () => {
+    // The stale (pre-replan) project manifest: s1 = JOHN 1:23 / KJV.
+    const staleProject = {
+      id: "p1",
+      projectName: "p1",
+      repo: "o/r",
+      versionBranch: "v0.0.1",
+      storyboard: hydrateStoryboard(MANIFEST),
+      manifest: MANIFEST,
+    };
+    expect(sceneScriptureContext(staleProject.manifest, "s1")).toEqual({
+      reference: "JOHN 1:23",
+      translation: "KJV",
+      language: "eng",
+    });
+
+    // A commit of a re-planned manifest (s1 now PSALM 23:2 / BSB) refreshes the project.
+    const committed = serializeManifest(
+      storyboardFromGenerated(REPLAN, hydrateStoryboard(MANIFEST)),
+      MANIFEST,
+    );
+    const refreshed = projectWithManifest(staleProject, committed);
+
+    // rewriteScript now sends the NEW scripture (from the refreshed manifest), not the
+    // stale JOHN 1:23 the un-refreshed prop still holds.
+    expect(sceneScriptureContext(refreshed.manifest!, "s1")).toEqual({
+      reference: "PSALM 23:2",
+      translation: "BSB",
+      language: "eng",
+    });
+    // the original stale project is untouched (immutability)
+    expect(sceneScriptureContext(staleProject.manifest, "s1")?.reference).toBe(
+      "JOHN 1:23",
+    );
+  });
+
+  it("U-A17: sceneScriptureContext returns undefined for an unknown scene id", () => {
+    expect(sceneScriptureContext(MANIFEST, "nope")).toBeUndefined();
   });
 });
 

@@ -64,6 +64,19 @@ export function findStudioProject(id: string): StudioProject | null {
   return STUDIO_PROJECTS[id] ?? null;
 }
 
+/**
+ * Task #57: the project with its source `manifest` replaced by a just-committed one.
+ * `StudioProvider` calls this on a successful commit so post-commit reads of
+ * `project.manifest` — `rewriteScript`'s scripture context, `generateStoryboard`'s
+ * seed scene, the next commit's merge base — see the committed scenes instead of the
+ * stale pre-commit manifest (the `project` prop was never refreshed before). Pure. */
+export function projectWithManifest(
+  project: StudioProject,
+  manifest: ProjectManifest,
+): StudioProject {
+  return { ...project, manifest };
+}
+
 /** Increment the patch of a `vMAJ.MIN.PATCH` branch, integer-wise
  *  (`v0.0.9 → v0.0.10`, not `v0.0.91`). Defensive: passes an unparseable
  *  string through unchanged. */

@@ -68,6 +68,13 @@ export default function SceneInspector() {
     <div
       data-testid="scene-inspector"
       data-visual-asset-key={scene.visualAssetKey ?? ""}
+      // Task #57: attribute-only test seam exposing the selected scene's PERSISTED
+      // scripture (carried on the UI Scene from hydrate / an LLM re-plan). Reflects
+      // the fresh re-plan value live and the committed value after reopen — the
+      // reattachment-bug regression target. Does NOT touch textContent, so the mock
+      // inspector's exact-copy anchor stays byte-for-byte.
+      data-scene-reference={scene.reference ?? ""}
+      data-scene-translation={scene.translation ?? ""}
       style={{
         width: 300,
         flex: "none",

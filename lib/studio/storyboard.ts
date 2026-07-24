@@ -25,6 +25,13 @@ export interface Scene {
    *  Never serialized to the manifest — it's a display-only signed URL that the
    *  composition renders as an `<Img>`; it is re-derived on load / after a reroll. */
   visualUrl?: string | null;
+  /** Task #57: the scene's OWN scripture reference/translation, carried on the UI
+   *  Scene so it survives a re-plan. Populated by `hydrateStoryboard` (from the
+   *  manifest) AND `storyboardFromGenerated` (from the LLM's authoritative per-scene
+   *  output). `serializeManifest` writes these back instead of id-rematching stale
+   *  values off the pre-replan manifest. Absent only on the mock `DEMO_STORYBOARD`. */
+  reference?: string;
+  translation?: string;
 }
 
 export interface Storyboard {
@@ -327,6 +334,10 @@ export function storyboardFromGenerated(
       visualPrompt: s.visualPrompt,
       script: s.scriptText,
       onScreenText: "text" as OnScreenText,
+      // Task #57: carry the LLM's OWN per-scene scripture so a re-plan persists the
+      // freshly-generated reference/translation, not the id-matched old scene's stale one.
+      reference: s.reference,
+      translation: s.translation,
       visualAssetKey: null,
       visualUrl: null,
     })),

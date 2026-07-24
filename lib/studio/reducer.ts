@@ -221,6 +221,20 @@ function clearSlot(
   return next;
 }
 
+/**
+ * Task #57 (item 3): whether an in-flight generation should scrim the preview with the
+ * "generating" overlay — the SELECTED scene's image reroll, or a whole-storyboard
+ * re-plan (both visibly change the composition). Narration/music change only audio, and
+ * a NON-selected scene's reroll doesn't change the visible frame, so neither scrims.
+ * Pure predicate — the overlay render in `player-panel.tsx` is thin glue over it.
+ */
+export function isPreviewGenerating(state: StudioState): boolean {
+  return (
+    state.generations[imageSlot(state.selectedSceneId)]?.status === "running" ||
+    state.generations[STORYBOARD_SLOT]?.status === "running"
+  );
+}
+
 export function studioReducer(
   state: StudioState,
   action: StudioAction,

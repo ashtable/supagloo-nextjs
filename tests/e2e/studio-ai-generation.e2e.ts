@@ -70,6 +70,16 @@ async function waitForTestId(id: string, timeoutMs = 30_000) {
   }
   throw new Error(`[data-testid="${id}"] never appeared within ${timeoutMs}ms`);
 }
+/** Task #57: the inverse — poll until an element is GONE (e.g. the generating scrim
+ *  clears once the generation settles). */
+async function waitForTestIdGone(id: string, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await countTestId(id)) === 0) return;
+    await page.waitForTimeout(200);
+  }
+  throw new Error(`[data-testid="${id}"] never disappeared within ${timeoutMs}ms`);
+}
 async function waitForDataAttr(id: string, attr: string, expected: string, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   let last: string | null = null;
@@ -189,9 +199,14 @@ describe("Reroll visual → preview updates from a real MinIO asset, and survive
     await clickTestId("reroll-visual");
     // pending state shows immediately
     await waitForDataAttr("reroll-visual", "data-state", "running", 10_000);
+    // Task #57 (item 3): the composition/preview itself shows an in-flight
+    // "generating" scrim for the DURATION of the request — not just the button text.
+    await waitForTestId("scene-generating", 10_000);
     // the real image generation lands: a real MinIO key + a rendered <Img> preview
     const assetKey = await waitForVisualAssetKey(240_000);
     expect(assetKey).toMatch(/^projects\/.+\/assets\/.+/);
+    // once the generation settles, the scrim is gone (the slot cleared on success)
+    await waitForTestIdGone("scene-generating", 15_000);
     await waitForTestId("scene-visual", 30_000);
     const src = await dataAttr("scene-visual", "src");
     expect(src && src.length > 0).toBe(true);

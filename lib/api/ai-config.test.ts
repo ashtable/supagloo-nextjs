@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveGenerationTarget, DEFAULT_GENERATION_MODELS } from "./ai-config";
 
@@ -52,5 +54,59 @@ describe("resolveGenerationTarget", () => {
     });
     expect(t.provider).toBe("openrouter");
     expect(t.model).toBe(DEFAULT_GENERATION_MODELS.script);
+  });
+});
+
+// ── Task #57 (item 2): make the override-vs-fallback path OBSERVABLE ───────────
+describe("resolveGenerationTarget — override/fallback logging", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("emits a distinguishable 'fallback' log line for the model when no override is set", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    resolveGenerationTarget("image", {});
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    // one line clearly names the MODEL path as a built-in fallback + the kind + value
+    const modelLine = lines.find((l) => /\bmodel\b/i.test(l));
+    expect(modelLine).toBeDefined();
+    expect(modelLine).toMatch(/fallback/i);
+    expect(modelLine).toContain("image");
+    expect(modelLine).toContain(DEFAULT_GENERATION_MODELS.image);
+    expect(modelLine).not.toMatch(/override/i);
+  });
+
+  it("emits a distinguishable 'override' log line for the model when SUPAGLOO_AI_MODEL_<KIND> wins", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    resolveGenerationTarget("image", { SUPAGLOO_AI_MODEL_IMAGE: "some/custom-image-model" });
+    const lines = info.mock.calls.map((c) => String(c[0]));
+    const modelLine = lines.find((l) => /\bmodel\b/i.test(l));
+    expect(modelLine).toBeDefined();
+    expect(modelLine).toMatch(/override/i);
+    expect(modelLine).toContain("image");
+    expect(modelLine).toContain("some/custom-image-model");
+    expect(modelLine).not.toMatch(/fallback/i);
+  });
+
+  it("uses a single greppable prefix on every line", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    resolveGenerationTarget("music", {});
+    expect(info).toHaveBeenCalled();
+    for (const call of info.mock.calls) {
+      expect(String(call[0])).toContain("[supagloo:ai-config]");
+    }
+  });
+});
+
+// ── Task #57 (item 2): the override vars are DOCUMENTED in .env.example ────────
+describe(".env.example documents the AI model/provider overrides", () => {
+  const env = readFileSync(new URL("../../.env.example", import.meta.url), "utf8");
+
+  it("lists every SUPAGLOO_AI_MODEL_<KIND> var", () => {
+    for (const kind of ["STORYBOARD", "SCRIPT", "IMAGE", "NARRATION", "MUSIC", "VIDEO"]) {
+      expect(env).toContain(`SUPAGLOO_AI_MODEL_${kind}`);
+    }
+  });
+
+  it("also lists the SUPAGLOO_AI_PROVIDER_<KIND> override", () => {
+    expect(env).toContain("SUPAGLOO_AI_PROVIDER_");
   });
 });
