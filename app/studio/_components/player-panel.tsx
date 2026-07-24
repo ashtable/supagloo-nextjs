@@ -46,8 +46,16 @@ export default function PlayerPanel() {
       scenes: storyboard.scenes,
       reference: storyboard.reference,
       fps,
+      narrationUrl: storyboard.narrationUrl,
+      musicUrl: storyboard.musicUrl,
     }),
-    [storyboard.scenes, storyboard.reference, fps],
+    [
+      storyboard.scenes,
+      storyboard.reference,
+      fps,
+      storyboard.narrationUrl,
+      storyboard.musicUrl,
+    ],
   );
 
   // Drive transport state (play/pause) and the local frame from Player events.

@@ -17,16 +17,37 @@ import {
   commitOutcome,
   publishOutcome,
   MOCK_COMMIT_DELAY_MS,
+  imageSlot,
+  scriptSlot,
+  STORYBOARD_SLOT,
+  NARRATION_SLOT,
+  MUSIC_SLOT,
+  imageGenerationOutcome,
+  scriptGenerationOutcome,
+  narrationGenerationOutcome,
+  musicGenerationOutcome,
+  storyboardGenerationOutcome,
   type StudioAction,
   type StudioState,
 } from "@/lib/studio/reducer";
-import { sceneEntryFrame } from "@/lib/studio/storyboard";
+import {
+  sceneEntryFrame,
+  narrationScenesOf,
+  totalDurationSeconds,
+} from "@/lib/studio/storyboard";
 import type { StudioProject } from "@/lib/studio/project";
 import {
   serializeManifest,
   commitMessage,
 } from "@/lib/studio/manifest-adapter";
 import { commitVersion, publishVersion } from "@/lib/studio/studio-data";
+import {
+  createGeneration,
+  pollGenerationUntilTerminal,
+  presignDownload,
+  type CreateGenerationBody,
+} from "@/lib/studio/ai-generation-data";
+import type { AiGenerationDto } from "@/lib/api/contracts";
 import { publishReview } from "@/lib/studio/publish-review";
 import { pollJobUntilTerminal } from "@/lib/project-wizard/provision-effects";
 import { stagesToLogRows } from "@/lib/project-wizard/job-log";
@@ -57,6 +78,18 @@ interface StudioContextValue {
   backgroundRender: () => void;
   /** 14c: abort + clear the render. */
   cancelRender: () => void;
+  // ── Task #35: AI generation triggers (real path when a manifest is present;
+  //    a no-op for the mock catalog, exactly like commit/publish) ─────────────
+  /** ↻ Reroll visual — POST kind `image` for a scene, poll, presign, update preview. */
+  rerollVisual: (sceneId?: string) => void;
+  /** ✍ Rewrite the script — POST kind `script` for a scene, poll, update the line. */
+  rewriteScript: (sceneId?: string) => void;
+  /** 🎬 Re-plan all scenes / first-time Generate — POST kind `storyboard`, replace scenes. */
+  generateStoryboard: () => void;
+  /** ↻ Regenerate narration — POST kind `narration` (whole-project), persist the asset. */
+  regenerateNarration: () => void;
+  /** ↻ Regenerate music — POST kind `music` (whole-project), persist the asset. */
+  regenerateMusic: () => void;
 }
 
 const StudioContext = createContext<StudioContextValue | null>(null);
@@ -172,6 +205,135 @@ export function StudioProvider({
   const backgroundRender = () => dispatch({ type: "RENDER_BACKGROUND" });
   const cancelRender = () => dispatch({ type: "CANCEL_RENDER" });
 
+  // ── AI generation (design-delta §6b) ────────────────────────────────────────
+  // Shared driver, mirroring commit()/confirmPublish(): dispatch GENERATION_BEGIN,
+  // then a guarded async POST → poll → (media: presign) → settle. Guarded by the
+  // mounted `aliveRef` so a late resolve never dispatches into a dead reducer. A
+  // media generation presigns the terminal `resultAssetKey` for the scene preview.
+  const runGeneration = (
+    slot: string,
+    body: CreateGenerationBody,
+    settle: (gen: AiGenerationDto | null, url: string | null) => StudioAction,
+    presignResult: boolean,
+  ) => {
+    if (state.generations[slot]?.status === "running") return;
+    dispatch({ type: "GENERATION_BEGIN", slot });
+    void (async () => {
+      const genId = await createGeneration(body);
+      if (!aliveRef.current) return;
+      if (!genId) {
+        dispatch(settle(null, null));
+        return;
+      }
+      const gen = await pollGenerationUntilTerminal(genId);
+      if (!aliveRef.current) return;
+      let url: string | null = null;
+      if (presignResult && gen?.status === "succeeded" && gen.resultAssetKey) {
+        url = await presignDownload(gen.resultAssetKey);
+        if (!aliveRef.current) return;
+      }
+      dispatch(settle(gen, url));
+    })();
+  };
+
+  const rerollVisual = (sceneId?: string) => {
+    if (!project.manifest) return; // mock catalog: no real generation
+    const id = sceneId ?? state.selectedSceneId;
+    const scene = state.storyboard.scenes.find((s) => s.id === id);
+    if (!scene) return;
+    runGeneration(
+      imageSlot(id),
+      {
+        kind: "image",
+        projectId: project.id,
+        sceneId: id,
+        input: { prompt: scene.visualPrompt },
+      },
+      (gen, url) => imageGenerationOutcome(id, gen, url),
+      true,
+    );
+  };
+
+  const rewriteScript = (sceneId?: string) => {
+    if (!project.manifest) return;
+    const id = sceneId ?? state.selectedSceneId;
+    const scene = state.storyboard.scenes.find((s) => s.id === id);
+    if (!scene) return;
+    const baseScene = project.manifest.scenes.find((x) => x.id === id);
+    const input: { brief: string; scripture?: { reference: string; translation: string; language: string } } = {
+      brief: `Rewrite the narration line for this scene, staying faithful to the scripture. Current line: "${scene.script}".`,
+    };
+    if (baseScene) {
+      input.scripture = {
+        reference: baseScene.reference,
+        translation: baseScene.translation,
+        language: "eng",
+      };
+    }
+    runGeneration(
+      scriptSlot(id),
+      { kind: "script", projectId: project.id, sceneId: id, input },
+      (gen) => scriptGenerationOutcome(id, gen),
+      false,
+    );
+  };
+
+  const generateStoryboard = () => {
+    if (!project.manifest) return;
+    const firstScene = project.manifest.scenes[0];
+    const input: { brief: string; scripture?: { reference: string; translation: string; language: string } } = {
+      brief: state.storyboard.reference
+        ? `Plan a short scripture-video storyboard for ${state.storyboard.reference}.`
+        : `Plan a short scripture-video storyboard for ${project.projectName}.`,
+    };
+    if (firstScene) {
+      input.scripture = {
+        reference: firstScene.reference,
+        translation: firstScene.translation,
+        language: "eng",
+      };
+    }
+    runGeneration(
+      STORYBOARD_SLOT,
+      { kind: "storyboard", projectId: project.id, input },
+      (gen) => storyboardGenerationOutcome(gen, state.storyboard),
+      false,
+    );
+  };
+
+  const regenerateNarration = () => {
+    if (!project.manifest) return;
+    const scenes = narrationScenesOf(state.storyboard);
+    if (scenes.length === 0) return;
+    const voice: { description: string; label?: string } = {
+      description: state.storyboard.voiceDescription,
+    };
+    if (state.storyboard.voiceLabel) voice.label = state.storyboard.voiceLabel;
+    runGeneration(
+      NARRATION_SLOT,
+      { kind: "narration", projectId: project.id, input: { voice, scenes } },
+      (gen, url) => narrationGenerationOutcome(gen, url),
+      true,
+    );
+  };
+
+  const regenerateMusic = () => {
+    if (!project.manifest) return;
+    runGeneration(
+      MUSIC_SLOT,
+      {
+        kind: "music",
+        projectId: project.id,
+        input: {
+          style: state.storyboard.musicMood || "Cinematic score",
+          durationSeconds: totalDurationSeconds(state.storyboard) || 30,
+        },
+      },
+      (gen, url) => musicGenerationOutcome(gen, url),
+      true,
+    );
+  };
+
   // A fresh value each render is fine: this provider re-renders only on editor
   // actions (select/edit/toggle/play-pause), never at the Player's 30Hz frame
   // rate — the current frame lives in local component state (see usePlayerFrame).
@@ -189,6 +351,11 @@ export function StudioProvider({
     startRender,
     backgroundRender,
     cancelRender,
+    rerollVisual,
+    rewriteScript,
+    generateStoryboard,
+    regenerateNarration,
+    regenerateMusic,
   };
 
   return (

@@ -5,9 +5,18 @@ import {
   studioReducer,
   commitOutcome,
   publishOutcome,
+  // Task #35 — generation state machine + outcome mappers (RED until added).
+  imageSlot,
+  scriptSlot,
+  STORYBOARD_SLOT,
+  imageGenerationOutcome,
+  scriptGenerationOutcome,
+  narrationGenerationOutcome,
+  musicGenerationOutcome,
+  storyboardGenerationOutcome,
   type StudioState,
 } from "./reducer";
-import { DEMO_STORYBOARD, totalFrames } from "./storyboard";
+import { DEMO_STORYBOARD, totalFrames, storyboardFromGenerated } from "./storyboard";
 import { visibleCaption } from "./captions";
 import { type StudioProject } from "./project";
 
@@ -458,5 +467,165 @@ describe("studioReducer", () => {
     const s = init();
     expect(s.publishStages).toBeNull();
     expect(s.publishError).toBeNull();
+  });
+});
+
+// ── Task #35: the AI-generation state machine (pending/failed/succeeded) ──────
+describe("generation state machine", () => {
+  it("U-G0: initialStudioState starts with no in-flight generations", () => {
+    expect(init().generations).toEqual({});
+  });
+
+  it("U-G1: GENERATION_BEGIN marks a slot running without touching the storyboard or dirty flag", () => {
+    const s = studioReducer(init(), { type: "GENERATION_BEGIN", slot: imageSlot("s2") });
+    expect(s.generations[imageSlot("s2")]).toEqual({ status: "running" });
+    expect(s.dirty).toBe(false);
+    expect(s.storyboard).toBe(init().storyboard);
+  });
+
+  it("U-G2: GENERATION_FAILED records the error on the slot (retryable), storyboard unchanged", () => {
+    let s = studioReducer(init(), { type: "GENERATION_BEGIN", slot: imageSlot("s2") });
+    s = studioReducer(s, { type: "GENERATION_FAILED", slot: imageSlot("s2"), error: "boom" });
+    expect(s.generations[imageSlot("s2")]).toEqual({ status: "failed", error: "boom" });
+    expect(s.dirty).toBe(false);
+  });
+
+  it("U-G3: IMAGE_GENERATED sets the scene's assetKey+url, clears the slot, and dirties for commit", () => {
+    let s = studioReducer(init(), { type: "GENERATION_BEGIN", slot: imageSlot("s2") });
+    s = studioReducer(s, {
+      type: "IMAGE_GENERATED",
+      sceneId: "s2",
+      assetKey: "projects/p1/assets/gen-1",
+      url: "http://minio/signed",
+    });
+    const s2 = s.storyboard.scenes.find((x) => x.id === "s2")!;
+    expect(s2.visualAssetKey).toBe("projects/p1/assets/gen-1");
+    expect(s2.visualUrl).toBe("http://minio/signed");
+    expect(s.generations[imageSlot("s2")]).toBeUndefined();
+    expect(s.dirty).toBe(true);
+  });
+
+  it("U-G4: SET_SCENE_VISUAL_URL (hydrate-time presign) sets only the url and does NOT dirty", () => {
+    const s = studioReducer(init(), {
+      type: "SET_SCENE_VISUAL_URL",
+      sceneId: "s2",
+      url: "http://minio/existing",
+    });
+    expect(s.storyboard.scenes.find((x) => x.id === "s2")!.visualUrl).toBe("http://minio/existing");
+    expect(s.dirty).toBe(false);
+  });
+
+  it("U-G5: SCRIPT_GENERATED replaces the scene script, clears the slot, dirties", () => {
+    let s = studioReducer(init(), { type: "GENERATION_BEGIN", slot: scriptSlot("s2") });
+    s = studioReducer(s, { type: "SCRIPT_GENERATED", sceneId: "s2", scriptText: "A new line" });
+    expect(s.storyboard.scenes.find((x) => x.id === "s2")!.script).toBe("A new line");
+    expect(s.generations[scriptSlot("s2")]).toBeUndefined();
+    expect(s.dirty).toBe(true);
+  });
+
+  it("U-G6: NARRATION_GENERATED / MUSIC_GENERATED persist the whole-project asset keys and dirty", () => {
+    let s = studioReducer(init(), {
+      type: "NARRATION_GENERATED",
+      assetKey: "projects/p1/narration/t.mp3",
+      url: "http://minio/n",
+    });
+    expect(s.storyboard.narrationAssetKey).toBe("projects/p1/narration/t.mp3");
+    expect(s.storyboard.narrationUrl).toBe("http://minio/n");
+    expect(s.dirty).toBe(true);
+    s = studioReducer(s, {
+      type: "MUSIC_GENERATED",
+      assetKey: "projects/p1/music/b.mp3",
+      url: "http://minio/m",
+    });
+    expect(s.storyboard.musicAssetKey).toBe("projects/p1/music/b.mp3");
+  });
+
+  it("U-G7: STORYBOARD_GENERATED replaces scenes, selects the first, clears the slot, dirties", () => {
+    const gen = {
+      scenes: [
+        { name: "a", scriptText: "one", reference: "GEN 1:1", translation: "KJV", visualPrompt: "p", suggestedDurationSeconds: 5 },
+      ],
+      narratorVoice: { description: "v" },
+      musicStyle: "m",
+    };
+    let s = studioReducer(init(), { type: "GENERATION_BEGIN", slot: STORYBOARD_SLOT });
+    s = studioReducer(s, { type: "STORYBOARD_GENERATED", storyboard: storyboardFromGenerated(gen, DEMO_STORYBOARD) });
+    expect(s.storyboard.scenes).toHaveLength(1);
+    expect(s.selectedSceneId).toBe("s1");
+    expect(s.generations[STORYBOARD_SLOT]).toBeUndefined();
+    expect(s.dirty).toBe(true);
+  });
+
+  it("U-G8: EDIT_VOICE_DESCRIPTION edits the narrator description and dirties", () => {
+    const s = studioReducer(init(), { type: "EDIT_VOICE_DESCRIPTION", description: "softer voice" });
+    expect(s.storyboard.voiceDescription).toBe("softer voice");
+    expect(s.dirty).toBe(true);
+  });
+});
+
+describe("generation outcome mappers (polled terminal generation → action)", () => {
+  const base = DEMO_STORYBOARD;
+
+  it("U-G9: imageGenerationOutcome maps succeeded+assetKey+url → IMAGE_GENERATED, else GENERATION_FAILED", () => {
+    expect(
+      imageGenerationOutcome("s2", { status: "succeeded", resultAssetKey: "k" } as never, "http://u"),
+    ).toEqual({ type: "IMAGE_GENERATED", sceneId: "s2", assetKey: "k", url: "http://u" });
+    expect(imageGenerationOutcome("s2", { status: "failed", error: "e" } as never, null)).toEqual({
+      type: "GENERATION_FAILED",
+      slot: imageSlot("s2"),
+      error: "e",
+    });
+    // null poll (timeout / POST failure) → failed
+    expect(imageGenerationOutcome("s2", null, null).type).toBe("GENERATION_FAILED");
+  });
+
+  it("U-G10: scriptGenerationOutcome parses resultJson (GeneratedScript) → SCRIPT_GENERATED", () => {
+    const gen = {
+      status: "succeeded",
+      resultJson: { scriptText: "regenerated", reference: "JOHN 1:23", translation: "KJV" },
+    };
+    expect(scriptGenerationOutcome("s2", gen as never)).toEqual({
+      type: "SCRIPT_GENERATED",
+      sceneId: "s2",
+      scriptText: "regenerated",
+    });
+    // malformed resultJson → failed (not a crash)
+    expect(
+      scriptGenerationOutcome("s2", { status: "succeeded", resultJson: { nope: 1 } } as never).type,
+    ).toBe("GENERATION_FAILED");
+  });
+
+  it("U-G11: narration/music outcome map succeeded+assetKey → *_GENERATED (url optional)", () => {
+    expect(
+      narrationGenerationOutcome({ status: "succeeded", resultAssetKey: "n" } as never, "http://n"),
+    ).toEqual({ type: "NARRATION_GENERATED", assetKey: "n", url: "http://n" });
+    expect(
+      musicGenerationOutcome({ status: "succeeded", resultAssetKey: "m" } as never, null),
+    ).toEqual({ type: "MUSIC_GENERATED", assetKey: "m", url: null });
+    expect(narrationGenerationOutcome({ status: "failed" } as never, null).type).toBe(
+      "GENERATION_FAILED",
+    );
+  });
+
+  it("U-G12: storyboardGenerationOutcome parses resultJson (GeneratedStoryboard) → STORYBOARD_GENERATED", () => {
+    const gen = {
+      status: "succeeded",
+      resultJson: {
+        scenes: [
+          { name: "a", scriptText: "one", reference: "GEN 1:1", translation: "KJV", visualPrompt: "p", suggestedDurationSeconds: 5 },
+        ],
+        narratorVoice: { description: "v" },
+        musicStyle: "m",
+      },
+    };
+    const action = storyboardGenerationOutcome(gen as never, base);
+    expect(action.type).toBe("STORYBOARD_GENERATED");
+    if (action.type === "STORYBOARD_GENERATED") {
+      expect(action.storyboard.scenes).toHaveLength(1);
+      expect(action.storyboard.scenes[0].script).toBe("one");
+    }
+    expect(storyboardGenerationOutcome({ status: "succeeded", resultJson: {} } as never, base).type).toBe(
+      "GENERATION_FAILED",
+    );
   });
 });

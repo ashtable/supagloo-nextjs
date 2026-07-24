@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import type { StudioProject } from "@/lib/studio/project";
 import { isRenderComplete, RENDER_TICK_MS } from "@/lib/studio/render-model";
+import { STORYBOARD_SLOT } from "@/lib/studio/reducer";
 import { StudioProvider, useStudio } from "./studio-context";
 import SceneTree from "./scene-tree";
 import TopBar from "./top-bar";
@@ -135,10 +136,15 @@ function StudioFrame() {
  * A freshly-scaffolded real project has an EMPTY manifest (`scenes: []`) until the
  * generation flow populates it, so the scene panels (which assume ≥1 scene) can't
  * render. Rather than crash, show a themed empty state that keeps the TopBar (identity
- * / back / version chip) live. The generation UI is a separate, not-yet-built flow;
- * this is the honest interim state so opening a brand-new project works.
+ * / back / version chip) live. Task #35 adds the FIRST-TIME generation entry point:
+ * "Generate storyboard" → kind `storyboard` (populates the scenes, then Commit
+ * persists them). A no-op for the mock catalog (no manifest).
  */
 function StudioEmpty() {
+  const { state, generateStoryboard, project } = useStudio();
+  const status = state.generations[STORYBOARD_SLOT]?.status;
+  const canGenerate = Boolean(project.manifest);
+
   return (
     <div
       data-testid="studio-empty"
@@ -174,6 +180,42 @@ function StudioEmpty() {
             "This project's storyboard is empty. Generate your scenes to start editing, then commit them to your version branch."
           }
         </div>
+        {canGenerate ? (
+          <div style={{ marginTop: 22 }}>
+            <button
+              type="button"
+              data-testid="generate-storyboard"
+              data-state={status ?? "idle"}
+              disabled={status === "running"}
+              onClick={generateStoryboard}
+              style={{
+                padding: "11px 22px",
+                borderRadius: 9,
+                fontFamily:
+                  "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif",
+                fontWeight: 700,
+                fontSize: 13,
+                letterSpacing: ".05em",
+                textTransform: "uppercase",
+                color: "#fff",
+                background: "linear-gradient(150deg,#d4a24c,#c0392b 55%,#6d3b26)",
+                border: "1px solid #e69a5a",
+                cursor: status === "running" ? "default" : "pointer",
+                opacity: status === "running" ? 0.7 : 1,
+              }}
+            >
+              {status === "running" ? "Generating…" : "✦ Generate storyboard"}
+            </button>
+            {status === "failed" ? (
+              <div
+                data-testid="generate-storyboard-error"
+                style={{ marginTop: 10, fontSize: 12, color: "#e0745a" }}
+              >
+                {"Generation failed — try again"}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
