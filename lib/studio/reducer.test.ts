@@ -14,6 +14,9 @@ import {
   narrationGenerationOutcome,
   musicGenerationOutcome,
   storyboardGenerationOutcome,
+  // Task #57 (item 3) — preview generating-overlay predicate (RED until added).
+  isPreviewGenerating,
+  NARRATION_SLOT,
   type StudioState,
 } from "./reducer";
 import { DEMO_STORYBOARD, totalFrames, storyboardFromGenerated } from "./storyboard";
@@ -627,5 +630,37 @@ describe("generation outcome mappers (polled terminal generation → action)", (
     expect(storyboardGenerationOutcome({ status: "succeeded", resultJson: {} } as never, base).type).toBe(
       "GENERATION_FAILED",
     );
+  });
+});
+
+// ── Task #57 (item 3): the in-flight preview-generating overlay predicate ──────
+describe("isPreviewGenerating (preview overlay predicate)", () => {
+  it("U-G13: is true while the SELECTED scene's image reroll is running", () => {
+    const s = studioReducer(init(), {
+      type: "GENERATION_BEGIN",
+      slot: imageSlot("s2"), // s2 is the initially-selected scene
+    });
+    expect(isPreviewGenerating(s)).toBe(true);
+  });
+
+  it("U-G14: is true while a whole-storyboard re-plan is running", () => {
+    const s = studioReducer(init(), { type: "GENERATION_BEGIN", slot: STORYBOARD_SLOT });
+    expect(isPreviewGenerating(s)).toBe(true);
+  });
+
+  it("U-G15: is false when idle, or when only a NON-preview generation (narration) runs, or a DIFFERENT scene's image runs", () => {
+    expect(isPreviewGenerating(init())).toBe(false);
+    // narration changes only audio → no preview scrim
+    expect(
+      isPreviewGenerating(
+        studioReducer(init(), { type: "GENERATION_BEGIN", slot: NARRATION_SLOT }),
+      ),
+    ).toBe(false);
+    // an image reroll for a scene that is NOT selected does not scrim the preview
+    expect(
+      isPreviewGenerating(
+        studioReducer(init(), { type: "GENERATION_BEGIN", slot: imageSlot("s4") }),
+      ),
+    ).toBe(false);
   });
 });

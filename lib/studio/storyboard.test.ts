@@ -297,6 +297,38 @@ describe("AI-generation transforms", () => {
     expect(next.fps).toBe(base.fps);
   });
 
+  it("U-AI-S7 (task 57): storyboardFromGenerated carries the LLM's OWN per-scene reference/translation onto each Scene", () => {
+    const gen = {
+      scenes: [
+        {
+          name: "still waters",
+          scriptText: "he leadeth me beside the still waters",
+          reference: "PSALM 23:2",
+          translation: "BSB",
+          visualPrompt: "calm river at dusk",
+          suggestedDurationSeconds: 6,
+        },
+        {
+          name: "shadow",
+          scriptText: "though I walk through the valley",
+          reference: "PSALM 23:4",
+          translation: "BSB",
+          visualPrompt: "narrow canyon in shadow",
+          suggestedDurationSeconds: 7,
+        },
+      ],
+      narratorVoice: { description: "gentle shepherd voice" },
+      musicStyle: "Soft strings",
+    };
+    const next = storyboardFromGenerated(gen, DEMO_STORYBOARD);
+    // the fresh per-scene scripture rides the UI Scene (NOT dropped) — so a later
+    // serialize persists it instead of reattaching an id-matched base scene's stale one.
+    expect(next.scenes[0].reference).toBe("PSALM 23:2");
+    expect(next.scenes[0].translation).toBe("BSB");
+    expect(next.scenes[1].reference).toBe("PSALM 23:4");
+    expect(next.scenes[1].translation).toBe("BSB");
+  });
+
   it("U-AI-S6: narrationScenesOf projects every scene to {sceneId, scriptText}", () => {
     expect(narrationScenesOf(DEMO_STORYBOARD)).toEqual([
       { sceneId: "s1", scriptText: "I am the voice of one" },

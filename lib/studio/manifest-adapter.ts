@@ -13,7 +13,7 @@
  * the manifest composition — it is deliberately never written back (design-delta §2:
  * preview and render are separate, non-parity paths in v1).
  */
-import type { ProjectManifest } from "../api/contracts";
+import type { ProjectManifest, Translation } from "../api/contracts";
 import type { Scene, Storyboard } from "./storyboard";
 
 /** Wire manifest → the UI storyboard the reducer/editor renders. */
@@ -29,6 +29,12 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     // Task #35: carry the persisted generated-visual key (undefined stays
     // undefined so the round trip is exact); the preview URL is presigned later.
     visualAssetKey: s.visualAssetKey,
+    // Task #57: carry the scene's own scripture onto the UI Scene so it is the single
+    // source of truth for serialize (survives a re-plan) — and so the inspector's
+    // data-scene-reference/-translation seam reflects it. Round trip stays exact:
+    // serialize writes these values straight back.
+    reference: s.reference,
+    translation: s.translation,
   }));
 
   const reference =
@@ -100,6 +106,14 @@ export function serializeManifest(
         visualPrompt: s.visualPrompt,
         durationSeconds: s.durationSeconds,
         captions: s.onScreenText === "text",
+        // Task #57: write the scene's OWN scripture (from hydrate or an LLM re-plan),
+        // falling back to the id-matched base ONLY when absent. This replaces the old
+        // id-rematch that silently reattached a different old scene's stale
+        // reference/translation onto brand-new re-planned content. The wire schema
+        // (and ultimately the API) validates the translation — an out-of-enum LLM
+        // value is rejected at commit exactly as before, never silently corrupted.
+        reference: s.reference ?? preserved.reference,
+        translation: (s.translation ?? preserved.translation) as Translation,
         // Task #35: write the (possibly rerolled) generated-visual key from the UI
         // scene, preserving absent/null/string exactly (the ephemeral preview URL
         // is deliberately NOT serialized).
@@ -140,4 +154,22 @@ export function commitMessage(
   if (musicChanged) return "Update music";
 
   return "Update storyboard";
+}
+
+/**
+ * Task #57: the scripture context a `script`/`storyboard` generation sends for a
+ * scene — read from the CURRENT manifest. `rewriteScript` calls this against the
+ * post-commit-REFRESHED `project.manifest` (see `projectWithManifest`), so after a
+ * re-plan + commit it sends the freshly-committed scripture, not the stale
+ * pre-commit prop it used to read. Undefined when the scene is not in the manifest
+ * (e.g. a re-planned scene that has not been committed yet). Pure.
+ */
+export function sceneScriptureContext(
+  manifest: ProjectManifest,
+  sceneId: string,
+): { reference: string; translation: string; language: string } | undefined {
+  const s = manifest.scenes.find((x) => x.id === sceneId);
+  return s
+    ? { reference: s.reference, translation: s.translation, language: "eng" }
+    : undefined;
 }

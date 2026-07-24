@@ -6,6 +6,7 @@ import styles from "../studio.module.css";
 import { useStudio } from "./studio-context";
 import { StoryboardVideo, type StoryboardVideoProps } from "./storyboard-video";
 import { aspectDimensions, fitDisplayBox } from "@/lib/studio/aspect";
+import { isPreviewGenerating } from "@/lib/studio/reducer";
 import {
   sceneAtFrame,
   sceneBoundaryFractions,
@@ -172,6 +173,57 @@ export default function PlayerPanel() {
           acknowledgeRemotionLicense
           style={{ width: "100%", height: "100%" }}
         />
+
+        {/* Task #57 (item 3): in-flight generating scrim. Shows while the selected
+            scene's visual reroll — or a whole-storyboard re-plan — is running, so the
+            preview visibly signals "this is generating", not just the button text.
+            Clears automatically when the slot settles (success clears it, failure
+            flips it out of "running"). Cosmetic — no data. */}
+        {isPreviewGenerating(state) ? (
+          <div
+            data-testid="scene-generating"
+            aria-live="polite"
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 6,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 12,
+              background:
+                "radial-gradient(120% 90% at 50% 40%,rgba(20,12,6,.55),rgba(12,7,4,.78))",
+              backdropFilter: "blur(2px)",
+            }}
+          >
+            <span
+              className={styles.spin}
+              aria-hidden
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: "50%",
+                border: "3px solid rgba(230,180,120,.25)",
+                borderTopColor: "#e6a43b",
+              }}
+            />
+            <span
+              style={{
+                fontFamily:
+                  "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif",
+                fontWeight: 700,
+                fontSize: 11,
+                letterSpacing: ".18em",
+                color: "#f1e7d6",
+                textTransform: "uppercase",
+                textShadow: "0 2px 6px rgba(0,0,0,.6)",
+              }}
+            >
+              {"Generating…"}
+            </span>
+          </div>
+        ) : null}
 
         {/* DOM overlay chrome (not part of the rendered video) */}
         <div
