@@ -161,6 +161,24 @@ describe("serializeManifest", () => {
     expect(back.music?.assetKey).toBe("projects/p1/music/new.mp3");
     expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
   });
+
+  // ── Task #58 (design-delta §2.11 / §9-Q10): a non-KJV/BSB translation ─────────
+  it("U-A18: a manifest scene with a non-KJV/BSB translation hydrates + serializes + still passes the wire schema", () => {
+    const withNiv: ProjectManifest = {
+      ...MANIFEST,
+      scenes: [{ ...MANIFEST.scenes[0], translation: "NIV" }],
+      endCard: { headline: "JOHN 1:23 · NIV" },
+    };
+    const sb = hydrateStoryboard(withNiv);
+    // the UI Scene carries the licensed abbreviation through (task #57 seam)
+    expect(sb.scenes[0].translation).toBe("NIV");
+
+    const back = serializeManifest(sb, withNiv);
+    expect(back.scenes[0].translation).toBe("NIV");
+    // the serialized manifest is a VALID wire manifest — before task #58 the narrow
+    // KJV/BSB enum would have rejected this, blocking commit/round-trip.
+    expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
+  });
 });
 
 // ── Task #57: per-scene scripture carry-through (item 1, the reattachment bug) ──

@@ -108,6 +108,22 @@ describe("fetchManifest", () => {
     if (res.ok) expect(res.manifest.scenes[0].scriptText).toBe("I am the voice of one");
   });
 
+  it("U-D4b: a manifest with a non-KJV/BSB translation parses successfully (not manifest_invalid)", async () => {
+    // Task #58 (design-delta §2.11 / §9-Q10): once a licensed non-KJV/BSB translation
+    // reaches a project's committed manifest, re-opening the studio re-reads it here.
+    // Before the fix, fetchManifest's ManifestResponseSchema.safeParse rejected it
+    // against nextjs's stale KJV/BSB enum → { ok:false, reason:"manifest_invalid" },
+    // permanently blocking hydration. It must parse the licensed abbreviation instead.
+    const nivManifest: ProjectManifest = {
+      ...MANIFEST,
+      scenes: [{ ...MANIFEST.scenes[0], translation: "NIV" }],
+    };
+    const fetchImpl = fakeFetch(() => jsonResponse(200, { manifest: nivManifest }));
+    const res = await fetchManifest("clabc123", "v0.0.1", { fetchImpl });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.manifest.scenes[0].translation).toBe("NIV");
+  });
+
   it("U-D5: maps the API error codes to distinct reasons", async () => {
     const notFound = fakeFetch(() => jsonResponse(404, { error: "manifest_not_found" }));
     const r1 = await fetchManifest("clabc123", "v0.0.1", { fetchImpl: notFound });
