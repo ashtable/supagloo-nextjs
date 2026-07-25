@@ -410,6 +410,82 @@ export function pickRenderVersion<T extends RenderVersionLike>(
  *  worker feeds `renderMedia`; the overlay renders it as "H.264" via {@link codecLabel}. */
 export const RENDER_CODEC = "h264";
 
+// ── the render RUN GATE ──────────────────────────────────────────────────────
+
+/**
+ * The in-flight guard for `startRender()`, as a pure value.
+ *
+ * WHY THIS IS NOT `state.render`. `startRender` is a plain function object created during
+ * a React render, closed over THAT render's immutable `state` snapshot. Dispatching
+ * (`closeRender()`, `cancelRender()`) schedules a new state — it cannot mutate the
+ * snapshot the already-created `startRender` will read. So a `if (state.render) return`
+ * guard latched permanently the moment a render existed: on the failure card — where
+ * `state.render` is non-null BY DEFINITION — the only recovery CTA ("Try again ▸") did
+ * nothing, and no amount of `flushSync`/unbatching could have helped, because the
+ * problem is closure capture, not batching.
+ *
+ * The gate therefore lives in a REF (`useRef<RenderRunGate>`), which every closure sees
+ * the current value of, and these functions hold all of its rules:
+ *
+ *   - `active` is the token of the run currently allowed to WRITE — null means idle, and
+ *     idle is the only state a new render may start from.
+ *   - `lastIssued` only ever grows, so every run gets a strictly newer token. An async
+ *     driver checks `isActiveRenderRun(gate, myRun)` alongside the mounted guard before
+ *     every dispatch: an abandoned driver (cancelled, or superseded by a retry) can never
+ *     write into a NEWER render. The reducer's `RENDER_POLLED` id guard already covers
+ *     that one action; the run token is what extends the same protection to
+ *     `renderOutcome`/`RENDER_FAILED` and `RENDER_DOWNLOAD_READY`, which have none.
+ */
+export interface RenderRunGate {
+  /** Token of the run allowed to write, or null when no render is in flight. */
+  active: number | null;
+  /** Monotonic counter — every start mints a strictly larger token. Never rewinds. */
+  lastIssued: number;
+}
+
+/** No render in flight: the only gate a new render may start from. */
+export const IDLE_RENDER_RUN_GATE: RenderRunGate = { active: null, lastIssued: 0 };
+
+/** Whether `startRender()` may begin. One render at a time — but keyed on the gate, so a
+ *  finished/cancelled render leaves it open (which is the whole retry fix). */
+export function canStartRender(gate: RenderRunGate): boolean {
+  return gate.active === null;
+}
+
+/** Mint the next run token and make it the active one. */
+export function startRenderRun(gate: RenderRunGate): {
+  gate: RenderRunGate;
+  run: number;
+} {
+  const run = gate.lastIssued + 1;
+  return { gate: { active: run, lastIssued: run }, run };
+}
+
+/** Whether the driver holding `run` is still the one allowed to dispatch. */
+export function isActiveRenderRun(gate: RenderRunGate, run: number): boolean {
+  return gate.active === run;
+}
+
+/**
+ * A driver releasing its OWN run (every exit path: `no_version`, `render_start_failed`,
+ * a terminal outcome, or a throw). CONDITIONAL on purpose: a late `finally` from a run
+ * the user already abandoned must not clear the gate of the render that replaced it.
+ */
+export function finishRenderRun(gate: RenderRunGate, run: number): RenderRunGate {
+  return gate.active === run ? { ...gate, active: null } : gate;
+}
+
+/**
+ * Release whatever run is in flight — what `cancelRender()` / `closeRender()` do. Both
+ * drop the render from state while its async driver keeps running (a cancelled poll loop
+ * can live for the full 30-minute poll budget), so without this the gate would stay held
+ * and "start another render" would be dead for that whole window — trading one dead
+ * button for another. `lastIssued` is preserved, so tokens never get reissued.
+ */
+export function abandonRenderRun(gate: RenderRunGate): RenderRunGate {
+  return gate.active === null ? gate : { ...gate, active: null };
+}
+
 /**
  * Build the output spec to SEND (D12): resolution from the studio's aspect toggle, fps
  * from the composition, and the codec we support. What the overlay DISPLAYS is the

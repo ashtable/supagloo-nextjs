@@ -41,12 +41,30 @@ import {
  * `render.render.e2e.ts` (the real Remotion render itself, task 36).
  *
  * ── COST / LATENCY (design-delta §10.9, plan §6 note 4) ──────────────────────
- * This is the SLOW/HEAVY lane: a real Chromium + Remotion encode takes minutes, hence
- * the 900 s timeouts below. It is deliberately ZERO-provider-egress: the fixture is
- * rendered at a MINIMAL resolution/duration, and the manifest it renders already carries
- * cached narration + music asset refs, so the worker's `ensureNarrationAudio` /
- * `ensureMusicAudio` steps take their "cached" branch and never call OpenRouter. The git
- * path stays on github-stub + git-server (§10 — GitHub is still stubbed).
+ * This is the SLOW/HEAVY lane: a real Chromium install + Remotion bundle takes minutes,
+ * hence the 900 s timeouts below.
+ *
+ * It is ZERO-provider-egress, but NOT because anything is cached. Every test here builds
+ * a FRESH project through the create-repo wizard (`createProjectAndOpenStudio`), so the
+ * manifest the worker renders is db-lib's `buildBlankManifest()`: `scenes: []`, a
+ * `narratorVoice` with NO `assetKey`, and no `music` key at all. Both of the worker's
+ * audio plans therefore resolve to `skipped` in dbos `render/audio.ts` `planAudioTrack`
+ * — narration because the per-scene `scriptText` concatenation over zero scenes is empty
+ * ("no narration script text in the manifest"), music because `manifest.music?.style` is
+ * undefined ("the manifest has no music bed") — and a `skipped` plan issues no
+ * `requestSpeech`. (If `RENDER_NARRATION_MODEL`/`RENDER_MUSIC_MODEL` are unset, or the
+ * seeded owner has no OpenRouter connection, both plans skip even earlier, at those
+ * gates. Every path through a blank manifest is `skipped`.) The git path stays on
+ * github-stub + git-server (§10 — GitHub is still stubbed).
+ *
+ * ── WHAT THAT COSTS US IN COVERAGE ───────────────────────────────────────────
+ * The same blank fixture is the limit of this spec. A zero-scene manifest generates a
+ * composition whose `durationInFrames` is clamped to 1, so what these tests prove is the
+ * PLUMBING — clone → install → bundle → encode → upload → presign, and the overlay
+ * tracking whatever the server reports — over an essentially empty 1080×1920 frame. They
+ * do NOT exercise the `cached` audio branch, a multi-scene composition, or a frame count
+ * large enough for the progress math to be interesting. Covering those needs a fixture
+ * that generates and commits scene content first; tracked as a follow-up plan row.
  *
  * ── NO PARITY ASSERTIONS ─────────────────────────────────────────────────────
  * Per design-delta §2 v1-limitation #2 (restated as a hard rule at plan.md:122), nothing

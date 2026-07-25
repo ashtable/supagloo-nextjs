@@ -6,14 +6,20 @@ import { initLog, isLogComplete } from "../project-wizard/provisioning-log";
 // a 4-stage checklist (reusing the LogSequence sequencer), and the derived spec
 // line. Missing module → clean "Cannot find module './render-model'" RED.
 import {
+  IDLE_RENDER_RUN_GATE,
   RENDER_FRAMES_PER_TICK,
   RENDER_STAGE_ROWS,
   RENDER_TICK_MS,
+  abandonRenderRun,
   advanceRender,
+  canStartRender,
+  finishRenderRun,
   initRender,
+  isActiveRenderRun,
   isRenderComplete,
   renderPercent,
   renderSpecLine,
+  startRenderRun,
   type RenderState,
 } from "./render-model";
 
@@ -457,5 +463,65 @@ describe("applyRenderJob — failure phase + background handoff", () => {
     expect(s.backgrounded).toBe(true); // still hidden while it works
     s = applyRenderJob(s, { ...base, status: "completed", framesDone: 900 } as never, 2);
     expect(s.backgrounded).toBe(false);
+  });
+});
+
+// ── the render RUN GATE (the "Try again ▸" dead-button fix) ──────────────────
+describe("render run gate", () => {
+  it("U-RM20: a finished run releases the gate, so the failure card's retry can start again", () => {
+    // THE BUG THIS PINS: `startRender` used to open with `if (state.render) return`.
+    // `startRender` is a function object closed over the `state` snapshot of the render
+    // that created it, and the retry handler's `onClose()` only DISPATCHES — it cannot
+    // mutate that captured snapshot. So on a failure card (where `state.render` is
+    // necessarily non-null) the guard always fired and "Try again ▸" did nothing. The
+    // gate lives in a ref instead, and the driver releases it on every exit path.
+    let gate = IDLE_RENDER_RUN_GATE;
+    expect(canStartRender(gate)).toBe(true);
+
+    const first = startRenderRun(gate);
+    gate = first.gate;
+    expect(canStartRender(gate)).toBe(false); // one render at a time, still
+
+    // the driver's terminal exit (RENDER_FAILED / renderOutcome / the finally)
+    gate = finishRenderRun(gate, first.run);
+    expect(canStartRender(gate)).toBe(true);
+
+    const second = startRenderRun(gate);
+    expect(second.run).toBeGreaterThan(first.run); // monotonic run tokens
+  });
+
+  it("U-RM21: only the ACTIVE run may write — an abandoned driver is gated out", () => {
+    const first = startRenderRun(IDLE_RENDER_RUN_GATE);
+    // user cancels: the gate is released even though first's poll loop is still running
+    // (it can live for the full 30-minute poll budget)
+    const idle = abandonRenderRun(first.gate);
+    expect(canStartRender(idle)).toBe(true);
+
+    const second = startRenderRun(idle);
+    // the abandoned driver can no longer dispatch into the NEW render — this is what
+    // protects `renderOutcome` and RENDER_DOWNLOAD_READY, which carry no id guard of
+    // their own (RENDER_POLLED has one in the reducer).
+    expect(isActiveRenderRun(second.gate, first.run)).toBe(false);
+    expect(isActiveRenderRun(second.gate, second.run)).toBe(true);
+  });
+
+  it("U-RM22: an abandoned driver's own release cannot clear a NEWER run's gate", () => {
+    const first = startRenderRun(IDLE_RENDER_RUN_GATE);
+    const second = startRenderRun(abandonRenderRun(first.gate));
+    // first's `finally` fires late, after the user already started `second`
+    const after = finishRenderRun(second.gate, first.run);
+    expect(isActiveRenderRun(after, second.run)).toBe(true);
+    expect(canStartRender(after)).toBe(false); // second is still in flight
+  });
+
+  it("U-RM23: releasing an already-idle gate is a no-op that preserves run numbering", () => {
+    // `closeRender` runs on a TERMINAL card, whose driver has usually already released
+    // the gate. Releasing twice must not rewind `lastIssued`, or a late dispatch from an
+    // old run could match a reissued token.
+    const first = startRenderRun(IDLE_RENDER_RUN_GATE);
+    const settled = finishRenderRun(first.gate, first.run);
+    const closed = abandonRenderRun(settled);
+    expect(canStartRender(closed)).toBe(true);
+    expect(startRenderRun(closed).run).toBeGreaterThan(first.run);
   });
 });

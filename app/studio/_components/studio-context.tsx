@@ -42,8 +42,15 @@ import {
   type StudioProject,
 } from "@/lib/studio/project";
 import {
+  IDLE_RENDER_RUN_GATE,
+  abandonRenderRun,
+  canStartRender,
+  finishRenderRun,
+  isActiveRenderRun,
   pickRenderVersion,
   renderOutputSpecFor,
+  startRenderRun,
+  type RenderRunGate,
 } from "@/lib/studio/render-model";
 import {
   startRenderJob,
@@ -144,6 +151,15 @@ export function StudioProvider({
       aliveRef.current = false;
     };
   }, []);
+  // The render in-flight guard. It CANNOT live in `state`: `startRender` is a function
+  // object closed over the `state` snapshot of the render that created it, so
+  // `closeRender()`/`cancelRender()` — which only dispatch — can never clear a
+  // `if (state.render) return` guard for the closure that reads it next. That is what
+  // made the failure card's "Try again ▸" a dead button. See `RenderRunGate` in
+  // lib/studio/render-model.ts for the full rules; they are pure and unit-tested there
+  // (U-RM20..23) because this provider is not component-testable (the vitest unit config
+  // is `environment: "node"` — no jsdom).
+  const renderRunRef = useRef<RenderRunGate>(IDLE_RENDER_RUN_GATE);
 
   const selectScene = (id: string) => {
     dispatch({ type: "SELECT_SCENE", id });
@@ -245,12 +261,33 @@ export function StudioProvider({
   // hides the overlay) cannot interrupt polling. Same `aliveRef` guard as every other
   // async flow: a late resolve must never dispatch into a dead reducer.
   const startRender = () => {
-    if (state.render) return; // one render overlay at a time
+    // One render at a time — read off the REF, never `state` (see `renderRunRef` above:
+    // a `state`-based guard is permanently latched for the failure card's retry, whose
+    // whole job is to start a render while `state.render` is non-null). `OPEN_RENDER_REAL`
+    // reseeds `render` wholesale, so retrying needs no CLOSE_RENDER first.
+    if (!canStartRender(renderRunRef.current)) return;
+    const started = startRenderRun(renderRunRef.current);
+    const myRun = started.run;
+    renderRunRef.current = started.gate;
+
+    /** May THIS driver still write? Mounted AND still the active run — an abandoned
+     *  driver (cancelled, or superseded by a retry) must never dispatch into a newer
+     *  render. `RENDER_POLLED` has an id guard in the reducer; `renderOutcome`,
+     *  `RENDER_FAILED` and `RENDER_DOWNLOAD_READY` have none, so this is theirs. */
+    const mine = () =>
+      aliveRef.current && isActiveRenderRun(renderRunRef.current, myRun);
+    /** Release the gate — conditional, so a late release from an abandoned run cannot
+     *  clear the gate of the render that replaced it. */
+    const release = () => {
+      renderRunRef.current = finishRenderRun(renderRunRef.current, myRun);
+    };
 
     const tag =
       state.lastPublishedVersion ?? publishedVersion(state.versionBranch);
 
     if (!project.manifest) {
+      // MOCK: the fake ticker in StudioFrame owns the lifecycle, so nothing async holds
+      // the gate — `cancelRender`/`closeRender` release it.
       dispatch({ type: "OPEN_RENDER" });
       return;
     }
@@ -259,49 +296,56 @@ export function StudioProvider({
     const outputSpec = renderOutputSpecFor(state.aspect, state.storyboard.fps);
     dispatch({ type: "OPEN_RENDER_REAL", publishedVersion: tag });
     void (async () => {
-      // The studio holds a branch name and a tag, never a ProjectVersion cuid — the id
-      // comes from the same versions list the 14b dropdown reads.
-      const versions = await fetchVersions(project.id);
-      if (!aliveRef.current) return;
-      const version = pickRenderVersion(versions, state.lastPublishedVersion, branch);
-      if (!version) {
-        dispatch({ type: "RENDER_FAILED", error: "no_version" });
-        return;
-      }
-
-      const renderJobId = await startRenderJob(project.id, {
-        versionId: version.id,
-        outputSpec,
-        runInBackground: false,
-      });
-      if (!aliveRef.current) return;
-      if (!renderJobId) {
-        dispatch({ type: "RENDER_FAILED", error: "render_start_failed" });
-        return;
-      }
-      dispatch({ type: "RENDER_STARTED", renderJobId });
-
-      const job = await pollRenderUntilTerminal(renderJobId, {
-        onUpdate: (j) => {
-          if (aliveRef.current) {
-            dispatch({
-              type: "RENDER_POLLED",
-              renderJobId,
-              job: j,
-              atMs: Date.now(),
-            });
-          }
-        },
-      });
-      if (!aliveRef.current) return;
-      dispatch(renderOutcome(renderJobId, job, Date.now()));
-
-      // The download link is a separate presign (the API is the only S3 signer).
-      if (job?.status === "completed") {
-        const url = await fetchRenderDownloadUrl(renderJobId);
-        if (aliveRef.current && url) {
-          dispatch({ type: "RENDER_DOWNLOAD_READY", url });
+      try {
+        // The studio holds a branch name and a tag, never a ProjectVersion cuid — the id
+        // comes from the same versions list the 14b dropdown reads.
+        const versions = await fetchVersions(project.id);
+        if (!mine()) return;
+        const version = pickRenderVersion(versions, state.lastPublishedVersion, branch);
+        if (!version) {
+          dispatch({ type: "RENDER_FAILED", error: "no_version" });
+          return;
         }
+
+        const renderJobId = await startRenderJob(project.id, {
+          versionId: version.id,
+          outputSpec,
+          runInBackground: false,
+        });
+        if (!mine()) return;
+        if (!renderJobId) {
+          dispatch({ type: "RENDER_FAILED", error: "render_start_failed" });
+          return;
+        }
+        dispatch({ type: "RENDER_STARTED", renderJobId });
+
+        const job = await pollRenderUntilTerminal(renderJobId, {
+          onUpdate: (j) => {
+            if (mine()) {
+              dispatch({
+                type: "RENDER_POLLED",
+                renderJobId,
+                job: j,
+                atMs: Date.now(),
+              });
+            }
+          },
+        });
+        if (!mine()) return;
+        dispatch(renderOutcome(renderJobId, job, Date.now()));
+
+        // The download link is a separate presign (the API is the only S3 signer).
+        if (job?.status === "completed") {
+          const url = await fetchRenderDownloadUrl(renderJobId);
+          if (mine() && url) {
+            dispatch({ type: "RENDER_DOWNLOAD_READY", url });
+          }
+        }
+      } finally {
+        // EVERY exit path releases the gate — the two RENDER_FAILED returns, the terminal
+        // outcome, an early `!mine()` bail (a no-op there, by design), and a throw. A
+        // driver that dies without releasing would make the retry CTA dead all over again.
+        release();
       }
     })();
   };
@@ -314,11 +358,23 @@ export function StudioProvider({
   // poll still in flight is absorbed by the reducer's RENDER_POLLED guard.
   const cancelRender = () => {
     const id = state.render?.renderJobId ?? null;
+    // Release the run gate here, not just in the driver: the abandoned poll loop keeps
+    // running until it observes a terminal status or exhausts its 30-MINUTE budget, and a
+    // gate held for that long would make "start another render" dead — trading one dead
+    // button for another. The abandoned driver's own dispatches are already fenced off by
+    // its run token, so releasing early is safe.
+    renderRunRef.current = abandonRenderRun(renderRunRef.current);
     dispatch({ type: "CANCEL_RENDER" });
     if (id) void cancelRenderJob(id);
   };
 
-  const closeRender = () => dispatch({ type: "CLOSE_RENDER" });
+  const closeRender = () => {
+    // Same reason. A terminal card's driver has usually released already (this is then a
+    // no-op), but "Back to studio" must leave the studio able to render again in every
+    // case — including a driver still fetching the download presign.
+    renderRunRef.current = abandonRenderRun(renderRunRef.current);
+    dispatch({ type: "CLOSE_RENDER" });
+  };
 
   // ── AI generation (design-delta §6b) ────────────────────────────────────────
   // Shared driver, mirroring commit()/confirmPublish(): dispatch GENERATION_BEGIN,

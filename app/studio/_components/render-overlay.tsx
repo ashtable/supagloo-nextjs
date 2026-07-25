@@ -450,10 +450,13 @@ function TerminalCard({
             <button
               type="button"
               data-testid="render-retry"
-              onClick={() => {
-                onClose();
-                onRetry();
-              }}
+              // Just retry. The `onClose()` that used to precede this was worse than
+              // redundant: `startRender`'s in-flight guard reads a REF now (it used to
+              // read the `state` snapshot this very closure was built from, which
+              // `onClose()` could not clear — that is what made this button dead), and
+              // OPEN_RENDER_REAL reseeds the overlay wholesale, so there is nothing to
+              // close first.
+              onClick={onRetry}
               className={styles.hoverable}
               style={{
                 flex: 1,
