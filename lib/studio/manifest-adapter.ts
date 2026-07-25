@@ -13,7 +13,7 @@
  * the manifest composition — it is deliberately never written back (design-delta §2:
  * preview and render are separate, non-parity paths in v1).
  */
-import type { ProjectManifest, Translation } from "../api/contracts";
+import type { ProjectManifest } from "../api/contracts";
 import type { Scene, Storyboard } from "./storyboard";
 
 /** Wire manifest → the UI storyboard the reducer/editor renders. */
@@ -109,11 +109,12 @@ export function serializeManifest(
         // Task #57: write the scene's OWN scripture (from hydrate or an LLM re-plan),
         // falling back to the id-matched base ONLY when absent. This replaces the old
         // id-rematch that silently reattached a different old scene's stale
-        // reference/translation onto brand-new re-planned content. The wire schema
-        // (and ultimately the API) validates the translation — an out-of-enum LLM
-        // value is rejected at commit exactly as before, never silently corrupted.
+        // reference/translation onto brand-new re-planned content. Task #58: the
+        // translation is a free YouVersion-licensed abbreviation (§2.11 / §9-Q10),
+        // validated against the live collection at GENERATION time — carried through
+        // here verbatim, never enum-gated at commit or re-narrowed on the read.
         reference: s.reference ?? preserved.reference,
-        translation: (s.translation ?? preserved.translation) as Translation,
+        translation: s.translation ?? preserved.translation,
         // Task #35: write the (possibly rerolled) generated-visual key from the UI
         // scene, preserving absent/null/string exactly (the ephemeral preview URL
         // is deliberately NOT serialized).

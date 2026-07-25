@@ -426,15 +426,33 @@ describe("ManifestSceneSchema + ProjectManifestSchema", () => {
     ).toBe(true);
   });
 
-  it("rejects a non-KJV/BSB translation, a missing scriptText, and manifestVersion != 1", () => {
-    expect(
-      ManifestSceneSchema.safeParse({ ...validManifestScene, translation: "NIV" }).success,
-    ).toBe(false);
+  it("rejects a missing scriptText and manifestVersion != 1", () => {
     const { scriptText: _drop, ...noScript } = validManifestScene;
     void _drop;
     expect(ManifestSceneSchema.safeParse(noScript).success).toBe(false);
     expect(
       ProjectManifestSchema.safeParse({ ...validManifest, manifestVersion: 2 }).success,
+    ).toBe(false);
+  });
+
+  // Task #58 (design-delta §2.11 / §9-Q10): `translation` holds WHATEVER
+  // YouVersion-licensed abbreviation was selected — validated against the live
+  // collection at generation time, NOT a fixed KJV/BSB enum. KJV/BSB are only the
+  // default. The manifest schema must accept an arbitrary non-empty abbreviation.
+  it("accepts an arbitrary licensed translation abbreviation (not just KJV/BSB), but not an empty string", () => {
+    const scene = { ...validManifestScene, translation: "NIV" };
+    expect(ManifestSceneSchema.safeParse(scene).success).toBe(true);
+    expect(ManifestSceneSchema.parse(scene).translation).toBe("NIV");
+
+    // the whole-manifest + response envelope accept it too (this is what the
+    // studio read-side re-validates against on hydrate — see studio-data).
+    const manifest = { ...validManifest, scenes: [scene] };
+    expect(ProjectManifestSchema.safeParse(manifest).success).toBe(true);
+    expect(ManifestResponseSchema.safeParse({ manifest }).success).toBe(true);
+
+    // still a non-empty string, not `any` — an empty translation is rejected.
+    expect(
+      ManifestSceneSchema.safeParse({ ...validManifestScene, translation: "" }).success,
     ).toBe(false);
   });
 });

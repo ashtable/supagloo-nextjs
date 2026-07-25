@@ -334,12 +334,19 @@ export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
 // db-lib submodule predates these DTOs and a BFF needs only the wire shapes. The
 // `supagloo.project.json` manifest is the SOLE source of truth for a project's
 // composition (§2.11) — read from the repo at a ref, Zod-parsed, and hydrated into
-// the studio reducer; commit writes the edited manifest back. `translation` is the
-// KJV/BSB public-domain generation enum (a non-KJV/BSB manifest is rejected at the
-// wire boundary, exactly as the API validates it).
+// the studio reducer; commit writes the edited manifest back. `translation` holds
+// WHATEVER YouVersion-licensed abbreviation was selected for the scene (§2.11 /
+// §9-Q10) — validated against the live YouVersion collection at GENERATION time, not
+// a client-side enum gate here. KJV/BSB are only the pre-selected default, never a
+// type-level restriction; the read/hydrate boundary must accept any abbreviation the
+// API already committed (mirrors db-lib's broadened `TranslationSchema`).
 
-/** The generation translation enum (mirrors db-lib `TranslationSchema`). */
-export const TranslationSchema = z.enum(["KJV", "BSB"]);
+/** A scene's Bible translation abbreviation (mirrors db-lib `TranslationSchema`).
+ *  A free, non-empty string — e.g. "BSB" (the default), "KJV", "NIV", "NLT" — chosen
+ *  from the YouVersion collection licensed for the user's language (§9-Q10). NOT a
+ *  fixed KJV/BSB enum: broadening this is what lets the studio re-read a manifest
+ *  whose translation is anything the generation step legitimately selected. */
+export const TranslationSchema = z.string().min(1);
 export type Translation = z.infer<typeof TranslationSchema>;
 
 /** Composition metadata: pixel size, frame rate, aspect-ratio hint (mirrors db-lib
