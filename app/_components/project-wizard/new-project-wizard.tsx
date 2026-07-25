@@ -86,8 +86,23 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
   const [realRepos, setRealRepos] = useState<MockRepo[]>([]);
   const [realRows, setRealRows] = useState<LogRow[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Mounted guard for the async scaffold flow (the task-26 `drivePolling` idiom, as
+  // implemented in studio-context.tsx). The `= true` on every effect RUN is
+  // load-bearing, not defensive: React StrictMode — on by default in `next dev` —
+  // mounts, runs the effect, runs its CLEANUP, then runs the effect again. A
+  // cleanup-only guard therefore leaves `aliveRef.current === false` for the whole
+  // life of the component, so `drivePolling` and its callers return early forever:
+  // POST /api/projects succeeds and a real repo is scaffolded, but the wizard never
+  // advances to `ready` and never shows an error — it just hangs on step 2. That is
+  // exactly what kept every real-stack spec that acquires a project through this
+  // wizard (including task 62's render lane) from ever getting past provisioning.
   const aliveRef = useRef(true);
-  useEffect(() => () => void (aliveRef.current = false), []);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   const input = { tab, repoName, selectedRepo };
   const projectName =

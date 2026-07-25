@@ -2,14 +2,15 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type StagehandPage } from "./helpers";
+import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
-  completeGithubConnectViaCallback,
-  completeCreateRepoViaCallback,
-} from "./connect-helpers";
+  createProjectViaExistingEmptyRepo,
+  resolveInstallationId,
+} from "./github-e2e";
 
 /**
  * Task #28 — the REAL-STACK Publish wizard + version dropdown, exercised end to end
- * (browser → BFF routes → supagloo-nodejs-api → Postgres + github-stub + git-server →
+ * (browser → BFF routes → the containerised supagloo-nodejs-api → Postgres + real github.com →
  * the DBOS git-ops PUBLISH worker) via the `?seed=` seam (design-delta §5.3 row 7).
  * This is the real counterpart of the mock publish spec (`studio-publish.e2e.ts`),
  * which stays green untouched (the catalog id `psalm-121` in a demo build resolves to
@@ -23,28 +24,31 @@ import {
  * v0.0.2"), and the version dropdown is derived from `GET /v1/projects/:id/versions`
  * (real states, LIVE ON MAIN badge, restore).
  *
- * ── EXECUTION NOTE (release-step harness) ────────────────────────────────────
- * Running this spec requires the FULL real stack:
- *   1. `next dev` on :3000 (global-setup spawns/reuses it);
- *   2. a locally-built API (`node dist/server.js`, db-lib `dist/` copied into the API
- *      submodule checkout) + the studio env (GITHUB_* → github-stub, git-server);
- *   3. a running DBOS git-ops PUBLISH worker (the 7-stage merge→tag→cut-next dance
- *      against the github-stub + git-server) so the publish job reaches `succeeded`
- *      and `Project.currentBranch` advances to the next working branch.
- * Standing up that multi-service git-ops worker is the release-step harness's job, so
- * — exactly like the sibling `studio-hydration.e2e.ts` + `project-wizards-real.e2e.ts`
- * — this spec is WRITTEN + typechecked and its EXECUTION is DEFERRED to that harness.
- * Behavior is proven meanwhile by the nextjs unit suite: the wire-contract pins
- * (`lib/api/contracts.test.ts`), the real-mode version-list mapper
- * (`lib/studio/version-history.test.ts` — `versionRowsFromDtos`), the publish/versions
- * effects (`lib/studio/studio-data.test.ts`), and the reducer real-publish transitions
- * + `publishOutcome` (`lib/studio/reducer.test.ts`). This file is the committed
- * executable spec the release step runs green; it is never reported as a false green.
+ * ── STACK (task 62 half A) ───────────────────────────────────────────────────
+ * There is no github-stub and no local git-server any more: every GitHub call in this
+ * spec reaches real `github.com` / `api.github.com`, and the `installationId` planted
+ * by `completeGithubConnectViaCallback` is DISCOVERED at runtime from
+ * `GET /app/installations` (the fabricated literal it used to plant was exactly plan
+ * row 62 item (d) — a permanent 404 on every installation-token mint).
  *
- * DELIBERATELY Gloo-free + deterministic (testid + `evaluate` + `data-*`, NOT
- * act/extract/observe — those need the Gloo LLM client the harness keeps degraded;
- * every prior studio + real-stack spec follows this convention). Per-run nonce.
- */
+ * The spec runs in the `test:e2e:real` lane (`vitest.e2e.real.config.ts`), whose
+ * `tests/e2e/global-setup.render.ts` brings up the ROOT Compose stack — postgres,
+ * minio, minio-init, migrate, the containerised api AND the `dbos` worker, which
+ * nothing used to start — and gates each of them, including a crash-loop check on the
+ * worker. It needs the root repo's gitignored `docker-compose.override.yml` so the
+ * api+dbos containers carry in-flight code, plus the root `.env` GitHub App
+ * credentials + `GITHUB_E2E_PAT_TOKEN` (loaded into this worker by
+ * `tests/e2e/load-root-env.ts`).
+ *
+ * Its project is acquired through the shared `createProjectViaExistingEmptyRepo`
+ * helper: a private throwaway repo the harness PAT-creates per run, picked via the
+ * wizard's already-shipping "use existing empty repo" tab. Fixture repos are never
+ * auto-removed — reclaim them with the root repo's interactive
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ *
+ * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
+ * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
+ * three times. The unit-level proofs named below still stand alongside it. */
 
 const BASE_URL = "http://localhost:3000";
 const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -95,16 +99,6 @@ async function waitForTestidTextContains(id: string, needle: string, timeoutMs =
     `[data-testid="${id}"] text never contained ${JSON.stringify(needle)} within ${timeoutMs}ms (last: ${JSON.stringify(last)})`,
   );
 }
-async function waitForUrlIncludes(fragment: string, timeoutMs = 45_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = page.url();
-    if (last.includes(fragment)) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(`URL never included ${JSON.stringify(fragment)} (last: ${last})`);
-}
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -115,28 +109,34 @@ async function gotoWorkspace(url = SEED_URL) {
   throw new Error("workspace-home never rendered (is the API up + seed enabled?)");
 }
 
-/** Create a fresh real project via the create-new JIT hop and return its studio slug. */
-async function createProjectAndOpenStudio(repoName: string): Promise<string> {
-  await gotoWorkspace();
-  await waitForTestId("workspace-new-project");
-  await clickTestId("workspace-new-project");
-  await waitForTestId("new-project-wizard");
-  await page.evaluate((name) => {
-    const el = document.querySelector<HTMLInputElement>('[data-testid="new-repo-name"]');
-    if (!el) return;
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(el, name);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  }, repoName);
-  await clickTestId("new-project-cta");
-  await completeCreateRepoViaCallback(page, stagehand.context);
-  await waitForTestId("project-ready-card", 120_000);
-  await clickTestId("open-in-studio");
-  await waitForUrlIncludes("/studio/");
-  return page.url().split("/studio/")[1]?.split(/[?#]/)[0] ?? "";
+/**
+ * Create a fresh real project and open its studio, via the ONE shared helper in
+ * `tests/e2e/github-e2e.ts` (task-62 D14). This used to be a private copy that drove
+ * the wizard's create-NEW-repo tab and faked GitHub's user-authorization redirect with
+ * a literal `code`; against real GitHub that is `bad_verification_code`, and a
+ * containerised api has no seam to intercept the exchange. The helper instead
+ * PAT-creates a private throwaway repo per run and drives the wizard's already-shipping
+ * "use existing empty repo" tab (wireframe 13a), which POSTs straight to
+ * `/api/projects` with no consent hop. `slug` names the repo's purpose; the harness
+ * appends the per-run id (real GitHub 422s a duplicate repo name, and the scaffold's
+ * v0.0.0 commit is byte-deterministic, so a REUSED repo would reject a second run).
+ * Fixture repos are never auto-removed — reclaim them with the root repo's
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ */
+/**
+ * Returns the project id AND the repo's real `owner/name`. The full name has to come
+ * back from the helper: the fixture repo is named by the SHARED harness (its own run
+ * id and its own throwaway prefix), so this file's local `RUN_ID` — which only ever
+ * salts the `?nonce=` seed URL — cannot be used to reconstruct it.
+ */
+async function createProjectAndOpenStudio(
+  slug: string,
+): Promise<{ projectId: string; repoFullName: string }> {
+  const { projectId, repoFullName } = await createProjectViaExistingEmptyRepo(page, {
+    slug,
+    seedUrl: SEED_URL,
+  });
+  return { projectId, repoFullName };
 }
 
 beforeAll(async () => {
@@ -145,7 +145,12 @@ beforeAll(async () => {
   page = stagehand.context.pages()[0];
   await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
   await gotoWorkspace();
-  await completeGithubConnectViaCallback(stagehand.context, { installationId: "42" });
+  // The REAL installation id, discovered at runtime from `GET /app/installations`.
+  // The fabricated literal this used to plant is exactly what made every downstream
+  // installation-token mint a permanent 404 against real GitHub (plan row 62 item d).
+  await completeGithubConnectViaCallback(stagehand.context, {
+    installationId: await resolveInstallationId(),
+  });
 }, 120_000);
 
 afterAll(async () => {
@@ -154,13 +159,14 @@ afterAll(async () => {
 
 describe("Publish a REAL project → real endpoint + polled stages + Model-A one-step bump", () => {
   test("E-PUBR1: publish v0.0.1 → success card 'editing on v0.0.2'; dropdown shows published + new working", async () => {
-    const slug = await createProjectAndOpenStudio(`publish-${RUN_ID}`);
+    const { projectId: slug, repoFullName } = await createProjectAndOpenStudio("publish");
     expect(slug.length).toBeGreaterThan(0);
 
     // The editor mounted from the REAL project. A freshly-scaffolded manifest is empty,
     // but the TopBar (identity / chip / Publish) is always present, so publish is reachable.
     await waitForTestId("studio-frame");
-    expect(await testidText("studio-repo-path")).toContain(`/publish-${RUN_ID}`);
+    // Asserted against the repo the harness ACTUALLY created — owner and full name.
+    expect(await testidText("studio-repo-path")).toContain(repoFullName);
     expect(await testidText("version-branch-chip")).toContain("v0.0.1");
 
     // Open the Publish wizard's review step, then confirm → the REAL endpoint.

@@ -3,6 +3,7 @@ import { Stagehand } from "@browserbasehq/stagehand";
 
 import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
 import { completeGithubConnectViaCallback } from "./connect-helpers";
+import { resolveInstallationId } from "./github-e2e";
 
 /**
  * Task 23 — the BFF session layer + server-driven onboarding, exercised end to
@@ -126,9 +127,13 @@ describe("BFF session — first sign-in via the extended seam (real stack)", () 
 
     // Task 24: the github step is now REAL in seed mode — Authorize kicks off the
     // §6a round-trip; we simulate GitHub's redirect-back into the real callback,
-    // then the main-tab poll opens the gate and auto-advances.
+    // then the main-tab poll opens the gate and auto-advances. The installation id
+    // is discovered at runtime (task-62 D5), so the api's App-JWT verification runs
+    // against a real installation on real api.github.com.
     await a.clickTestId("connect-authorize");
-    await completeGithubConnectViaCallback(shA.context);
+    await completeGithubConnectViaCallback(shA.context, {
+      installationId: await resolveInstallationId(),
+    });
     await a.waitForStepLabel("STEP 3 OF 4 · OPENROUTER");
 
     await a.clickTestId("wizard-skip");

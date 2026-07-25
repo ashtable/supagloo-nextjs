@@ -3,29 +3,43 @@ import { Stagehand } from "@browserbasehq/stagehand";
 
 import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
 import { completeGithubConnectViaCallback } from "./connect-helpers";
+import { resolveGithubLogin, resolveInstallationId } from "./github-e2e";
 
 /**
- * Task 24 — the REAL GitHub App connect flow in the onboarding wizard's step 2/4,
- * exercised end to end against the real stack (browser → BFF routes →
- * supagloo-nodejs-api → Postgres + github-stub) via the `?seed=` seam.
+ * Task 24 + task 62 — the REAL GitHub App connect flow in the onboarding wizard's
+ * step 2/4, exercised end to end against the real stack (browser → BFF routes →
+ * the containerised supagloo-nodejs-api → Postgres + **real api.github.com**) via
+ * the `?seed=` seam.
  *
  * Where Task 23 left the wizard's github step MOCKED even in seed mode (a 350ms
  * timer with a hardcoded "@ashsrinivas"), Task 24 makes it real (design-delta
  * §5.3/§6a): clicking Authorize opens `/api/connect/github/start` and the main tab
  * POLLS `GET /api/connections` until the callback has stored the connection —
- * `pending` spans that real round-trip. The github-stub can't render GitHub's own
- * install-picker page, so `completeGithubConnectViaCallback` simulates GitHub's
- * redirect-back by driving `/api/connect/github/callback` directly (see that
- * helper). The proof the flow is REAL, not mock: the Done recap shows the stub's
- * `account.login` — `@acme` — not the mock `@ashsrinivas`.
+ * `pending` spans that real round-trip.
+ *
+ * The designed happy path is a HUMAN clicking Authorize on a GitHub-hosted consent
+ * screen (wireframe 11/11b: "Opens GitHub in a new tab"), which no headless spec
+ * can complete — that was true of the retired stub and is equally true of real
+ * github.com. So `completeGithubConnectViaCallback` still simulates GitHub's
+ * redirect-back by driving `/api/connect/github/callback` directly: one sanctioned
+ * interactive-hop shim, with everything after it real. What CHANGED under task 62
+ * is that the installation id it plants is now discovered at runtime from
+ * `GET /app/installations` instead of the fabricated literal that made every
+ * downstream installation-token mint a permanent 404 (plan row 62 item d).
+ *
+ * The proof the flow is REAL, not mock: the Done recap shows the login the API read
+ * back off the real installation's `account.login` — asserted against the
+ * discovered value (E-G3), never a hardcoded fixture login.
  *
  * DELIBERATELY Gloo-free (no llmClient), fully deterministic (testids + exact-copy
  * anchors). Per-run nonce so the seeded user is fresh each run.
  *
- * Requires the real stack: Postgres (compose) + the API on :4000 with a VALID
- * GitHub App key and GITHUB_API_BASE_URL → the github-stub (:4801) and
- * SUPAGLOO_ENABLE_TEST_SEED=1; and `next dev` on :3000 with SUPAGLOO_API_URL +
- * SUPAGLOO_ENABLE_TEST_SEED. See scratch/task-24-github-connect-ui.md §5.
+ * Requires the real stack: Postgres + MinIO + the containerised API (via the root
+ * Compose files, brought up and gated by `tests/e2e/global-setup.render.ts`) with
+ * the REAL `GITHUB_APP_*` credentials from the root `.env` and
+ * SUPAGLOO_ENABLE_TEST_SEED=1; `next dev` on :3000 with SUPAGLOO_API_URL +
+ * SUPAGLOO_ENABLE_TEST_SEED; and the root `.env` GitHub creds in this worker
+ * (`tests/e2e/load-root-env.ts`). Runs in the `test:e2e:real` lane.
  */
 
 const BASE_URL = "http://localhost:3000";
@@ -108,13 +122,16 @@ describe("GitHub connect (real) — wizard step 2/4", () => {
   test("E-G2: authorizing → real BFF/API round-trip → pending resolves → auto-advance", async () => {
     // Kick off the real connect: pending + window.open(start) + the main-tab poll.
     await clickTestId("connect-authorize");
-    // Simulate GitHub's redirect-back into the real callback (stores via the API).
-    await completeGithubConnectViaCallback(stagehand.context);
+    // Simulate GitHub's redirect-back into the real callback (stores via the API,
+    // which App-JWT-verifies the DISCOVERED installation against real GitHub).
+    await completeGithubConnectViaCallback(stagehand.context, {
+      installationId: await resolveInstallationId(),
+    });
     // The poll observes the stored connection and opens the gate → step 3.
     await waitForStepLabel("STEP 3 OF 4 · OPENROUTER");
   });
 
-  test("E-G3: Done recap carries the REAL githubLogin (@acme), then finishing reveals the workspace", async () => {
+  test("E-G3: Done recap carries the REAL githubLogin from the live installation, then finishing reveals the workspace", async () => {
     // Skip the two optional providers (Task 25 wires them); they stay not-linked.
     await clickTestId("wizard-skip");
     await waitForStepLabel("STEP 4 OF 4 · GLOO AI");
@@ -122,10 +139,21 @@ describe("GitHub connect (real) — wizard step 2/4", () => {
     await h.waitForText("YOU'RE ALL SET.");
 
     const text = await h.bodyText();
-    // The stub's installation account.login is "acme" — proves the REAL login
-    // flowed through the whole BFF↔API round-trip, NOT the mock "@ashsrinivas".
-    expect(text).toContain("✓ GitHub connected · @acme");
-    expect(text).not.toContain("@ashsrinivas");
+    // The login is asserted against the DISCOVERED installation account, not a
+    // literal: the retired stub fabricated a fixed fixture login, so a hardcoded
+    // string here would have silently stopped proving anything the moment GitHub
+    // became real. Recomputing it from `GET /app/installations` proves the login
+    // flowed all the way from api.github.com through the API and the BFF into the
+    // recap copy — and it stays true for whichever account the App is installed on.
+    const login = await resolveGithubLogin();
+    expect(login.length, "the discovered installation login").toBeGreaterThan(0);
+    expect(text).toContain(`✓ GitHub connected · @${login}`);
+    // The mock path's hardcoded login must never appear... unless the App happens to
+    // be installed on precisely that account, in which case the assertion above is
+    // already the stronger statement and this one would be self-contradictory.
+    if (login !== "ashsrinivas") {
+      expect(text).not.toContain("@ashsrinivas");
+    }
     // The optional providers were skipped (doneRecap templates from real state).
     expect(text).toContain("— OpenRouter skipped · add later in Profile");
     expect(text).toContain("— Gloo AI skipped · add later in Profile");
