@@ -27,6 +27,7 @@ import {
   narrationGenerationOutcome,
   musicGenerationOutcome,
   storyboardGenerationOutcome,
+  renderOutcome,
   type StudioAction,
   type StudioState,
 } from "@/lib/studio/reducer";
@@ -35,13 +36,31 @@ import {
   narrationScenesOf,
   totalDurationSeconds,
 } from "@/lib/studio/storyboard";
-import { projectWithManifest, type StudioProject } from "@/lib/studio/project";
+import {
+  projectWithManifest,
+  publishedVersion,
+  type StudioProject,
+} from "@/lib/studio/project";
+import {
+  pickRenderVersion,
+  renderOutputSpecFor,
+} from "@/lib/studio/render-model";
+import {
+  startRenderJob,
+  cancelRenderJob,
+  fetchRenderDownloadUrl,
+  pollRenderUntilTerminal,
+} from "@/lib/studio/render-data";
 import {
   serializeManifest,
   commitMessage,
   sceneScriptureContext,
 } from "@/lib/studio/manifest-adapter";
-import { commitVersion, publishVersion } from "@/lib/studio/studio-data";
+import {
+  commitVersion,
+  publishVersion,
+  fetchVersions,
+} from "@/lib/studio/studio-data";
 import {
   createGeneration,
   pollGenerationUntilTerminal,
@@ -77,8 +96,10 @@ interface StudioContextValue {
   startRender: () => void;
   /** 14c: hide the overlay while the render keeps ticking in state. */
   backgroundRender: () => void;
-  /** 14c: abort + clear the render. */
+  /** 14c: abort the render (optimistic close + a real cancel behind it). */
   cancelRender: () => void;
+  /** 14c: dismiss a TERMINAL render card (complete / failed). */
+  closeRender: () => void;
   // ── Task #35: AI generation triggers (real path when a manifest is present;
   //    a no-op for the mock catalog, exactly like commit/publish) ─────────────
   /** ↻ Reroll visual — POST kind `image` for a scene, poll, presign, update preview. */
@@ -213,9 +234,91 @@ export function StudioProvider({
   };
   const closePublish = () => dispatch({ type: "CLOSE_PUBLISH" });
   const toggleVersionMenu = () => dispatch({ type: "TOGGLE_VERSION_MENU" });
-  const startRender = () => dispatch({ type: "OPEN_RENDER" });
+
+  // Start a render (14a step-3 CTA → the 14c overlay). Mirrors commit()/confirmPublish():
+  // MOCK catalog projects (no source manifest) keep the fake frame ticker; REAL projects
+  // resolve the version, `POST /api/projects/:id/renders`, and poll `GET /api/renders/:id`
+  // to a terminal status, feeding every read into the overlay.
+  //
+  // The driver lives HERE, in the provider — which sits ABOVE StudioFrame and stays
+  // mounted whether or not the overlay is rendered — so "Run in background" (which only
+  // hides the overlay) cannot interrupt polling. Same `aliveRef` guard as every other
+  // async flow: a late resolve must never dispatch into a dead reducer.
+  const startRender = () => {
+    if (state.render) return; // one render overlay at a time
+
+    const tag =
+      state.lastPublishedVersion ?? publishedVersion(state.versionBranch);
+
+    if (!project.manifest) {
+      dispatch({ type: "OPEN_RENDER" });
+      return;
+    }
+
+    const branch = state.versionBranch;
+    const outputSpec = renderOutputSpecFor(state.aspect, state.storyboard.fps);
+    dispatch({ type: "OPEN_RENDER_REAL", publishedVersion: tag });
+    void (async () => {
+      // The studio holds a branch name and a tag, never a ProjectVersion cuid — the id
+      // comes from the same versions list the 14b dropdown reads.
+      const versions = await fetchVersions(project.id);
+      if (!aliveRef.current) return;
+      const version = pickRenderVersion(versions, state.lastPublishedVersion, branch);
+      if (!version) {
+        dispatch({ type: "RENDER_FAILED", error: "no_version" });
+        return;
+      }
+
+      const renderJobId = await startRenderJob(project.id, {
+        versionId: version.id,
+        outputSpec,
+        runInBackground: false,
+      });
+      if (!aliveRef.current) return;
+      if (!renderJobId) {
+        dispatch({ type: "RENDER_FAILED", error: "render_start_failed" });
+        return;
+      }
+      dispatch({ type: "RENDER_STARTED", renderJobId });
+
+      const job = await pollRenderUntilTerminal(renderJobId, {
+        onUpdate: (j) => {
+          if (aliveRef.current) {
+            dispatch({
+              type: "RENDER_POLLED",
+              renderJobId,
+              job: j,
+              atMs: Date.now(),
+            });
+          }
+        },
+      });
+      if (!aliveRef.current) return;
+      dispatch(renderOutcome(renderJobId, job, Date.now()));
+
+      // The download link is a separate presign (the API is the only S3 signer).
+      if (job?.status === "completed") {
+        const url = await fetchRenderDownloadUrl(renderJobId);
+        if (aliveRef.current && url) {
+          dispatch({ type: "RENDER_DOWNLOAD_READY", url });
+        }
+      }
+    })();
+  };
+
   const backgroundRender = () => dispatch({ type: "RENDER_BACKGROUND" });
-  const cancelRender = () => dispatch({ type: "CANCEL_RENDER" });
+
+  // Cancel is OPTIMISTIC (D-RENDER-DISMISS): the overlay clears immediately and the real
+  // POST goes out behind it. The API cancels the DBOS workflow first and then flips the
+  // row conditionally, so a render that finished in the window is never mislabeled. A
+  // poll still in flight is absorbed by the reducer's RENDER_POLLED guard.
+  const cancelRender = () => {
+    const id = state.render?.renderJobId ?? null;
+    dispatch({ type: "CANCEL_RENDER" });
+    if (id) void cancelRenderJob(id);
+  };
+
+  const closeRender = () => dispatch({ type: "CLOSE_RENDER" });
 
   // ── AI generation (design-delta §6b) ────────────────────────────────────────
   // Shared driver, mirroring commit()/confirmPublish(): dispatch GENERATION_BEGIN,
@@ -357,6 +460,7 @@ export function StudioProvider({
     startRender,
     backgroundRender,
     cancelRender,
+    closeRender,
     rerollVisual,
     rewriteScript,
     generateStoryboard,

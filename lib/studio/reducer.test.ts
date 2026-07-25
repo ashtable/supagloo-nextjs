@@ -17,8 +17,11 @@ import {
   // Task #57 (item 3) — preview generating-overlay predicate (RED until added).
   isPreviewGenerating,
   NARRATION_SLOT,
+  // Task #38 — the real (polled) render outcome mapper (RED until added).
+  renderOutcome,
   type StudioState,
 } from "./reducer";
+import type { RenderJobDto } from "../api/contracts";
 import { DEMO_STORYBOARD, totalFrames, storyboardFromGenerated } from "./storyboard";
 import { visibleCaption } from "./captions";
 import { type StudioProject } from "./project";
@@ -662,5 +665,213 @@ describe("isPreviewGenerating (preview overlay predicate)", () => {
         studioReducer(init(), { type: "GENERATION_BEGIN", slot: imageSlot("s4") }),
       ),
     ).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #38 — the REAL (polled) 14c render. The mock ticker cases above (U-R19)
+// are untouched: demo-catalog projects still run the fake ticker, and the mock
+// e2e (E-RND1..4) pins that path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("studioReducer — the real render overlay (Task #38)", () => {
+  const SPEC = {
+    width: 1080,
+    height: 1920,
+    fps: 30,
+    aspectRatio: "9:16",
+    codec: "h264",
+  };
+
+  function job(over: Record<string, unknown> = {}) {
+    return {
+      id: "rj_1",
+      projectId: "prj_1",
+      versionId: "pv_1",
+      status: "encoding",
+      framesDone: 100,
+      framesTotal: 900,
+      outputSpec: SPEC,
+      outputAssetKey: null,
+      thumbnailAssetKey: null,
+      runInBackground: false,
+      error: null,
+      createdAt: "2026-07-24T10:00:00.000Z",
+      startedAt: "2026-07-24T10:00:05.000Z",
+      completedAt: null,
+      ...over,
+    } as RenderJobDto;
+  }
+
+  /** An opened real render with its id attached (the state right after the POST). */
+  function started(): StudioState {
+    const opened = studioReducer(init(), {
+      type: "OPEN_RENDER_REAL",
+      publishedVersion: "v0.0.2",
+    });
+    return studioReducer(opened, { type: "RENDER_STARTED", renderJobId: "rj_1" });
+  }
+
+  it("U-R32: OPEN_RENDER_REAL opens a real render, closes the publish wizard, and seeds NO mock ticker", () => {
+    const s = studioReducer(init(), {
+      type: "OPEN_RENDER_REAL",
+      publishedVersion: "v0.0.2",
+    });
+    expect(s.render?.mode).toBe("real");
+    expect(s.render?.publishedVersion).toBe("v0.0.2");
+    expect(s.render?.renderJobId).toBeNull();
+    expect(s.render?.status).toBeNull();
+    expect(s.publishFlow).toBe("closed");
+    // the fake ticker must NOT be seeded — a real render's frames come from the server
+    expect(s.render?.totalFrames).toBe(0);
+  });
+
+  it("U-R33: RENDER_STARTED attaches the server render job id", () => {
+    expect(started().render?.renderJobId).toBe("rj_1");
+  });
+
+  it("U-R34: RENDER_POLLED folds the server state in", () => {
+    const s = studioReducer(started(), {
+      type: "RENDER_POLLED",
+      renderJobId: "rj_1",
+      job: job(),
+      atMs: 5_000,
+    });
+    expect(s.render?.status).toBe("encoding");
+    expect(s.render?.framesDone).toBe(100);
+    expect(s.render?.totalFrames).toBe(900);
+    expect(s.render?.outputSpec).toEqual(SPEC);
+    expect(s.render?.started).toBe(true);
+  });
+
+  it("U-R35: RENDER_POLLED ignores a poll for a DIFFERENT render and a poll after the overlay cleared", () => {
+    const s = started();
+    const stale = studioReducer(s, {
+      type: "RENDER_POLLED",
+      renderJobId: "rj_OTHER",
+      job: job({ id: "rj_OTHER", framesDone: 800 }),
+      atMs: 1,
+    });
+    expect(stale.render?.framesDone).toBe(0);
+
+    // after CANCEL_RENDER the in-flight poll must not resurrect the overlay
+    const cleared = studioReducer(s, { type: "CANCEL_RENDER" });
+    expect(cleared.render).toBeNull();
+    const late = studioReducer(cleared, {
+      type: "RENDER_POLLED",
+      renderJobId: "rj_1",
+      job: job(),
+      atMs: 1,
+    });
+    expect(late.render).toBeNull();
+  });
+
+  it("U-R36: encodingSinceMs is stamped on the FIRST encoding poll only (the ETA clock)", () => {
+    const first = studioReducer(started(), {
+      type: "RENDER_POLLED",
+      renderJobId: "rj_1",
+      job: job(),
+      atMs: 5_000,
+    });
+    const second = studioReducer(first, {
+      type: "RENDER_POLLED",
+      renderJobId: "rj_1",
+      job: job({ framesDone: 400 }),
+      atMs: 9_000,
+    });
+    expect(second.render?.encodingSinceMs).toBe(5_000);
+  });
+
+  it("U-R37: RENDER_BACKGROUND hides the overlay but polling keeps applying (background dismissal keeps polling)", () => {
+    const bg = studioReducer(started(), { type: "RENDER_BACKGROUND" });
+    expect(bg.render?.backgrounded).toBe(true);
+
+    const polled = studioReducer(bg, {
+      type: "RENDER_POLLED",
+      renderJobId: "rj_1",
+      job: job({ framesDone: 500 }),
+      atMs: 2,
+    });
+    // still hidden, still climbing
+    expect(polled.render?.backgrounded).toBe(true);
+    expect(polled.render?.framesDone).toBe(500);
+  });
+
+  it("U-R38: CANCEL_RENDER clears the overlay in BOTH modes (optimistic, D-RENDER-DISMISS)", () => {
+    expect(studioReducer(started(), { type: "CANCEL_RENDER" }).render).toBeNull();
+    const mock = studioReducer(init(), { type: "OPEN_RENDER" });
+    expect(studioReducer(mock, { type: "CANCEL_RENDER" }).render).toBeNull();
+  });
+
+  it("U-R39: RENDER_FAILED records the error and KEEPS the overlay open (the terminal card)", () => {
+    const s = studioReducer(started(), {
+      type: "RENDER_FAILED",
+      error: "renderMedia exited 1",
+    });
+    expect(s.render).toBeTruthy();
+    expect(s.render?.error).toBe("renderMedia exited 1");
+    expect(s.render?.status).toBe("failed");
+    // a failed render un-backgrounds itself so the user actually sees the failure
+    expect(s.render?.backgrounded).toBe(false);
+  });
+
+  it("U-R40: RENDER_DOWNLOAD_READY attaches the presigned url; CLOSE_RENDER dismisses the terminal card", () => {
+    const done = studioReducer(started(), {
+      type: "RENDER_POLLED",
+      renderJobId: "rj_1",
+      job: job({ status: "completed", framesDone: 900, completedAt: "2026-07-24T10:04:00.000Z" }),
+      atMs: 1,
+    });
+    const withUrl = studioReducer(done, {
+      type: "RENDER_DOWNLOAD_READY",
+      url: "http://localhost:9000/signed",
+    });
+    expect(withUrl.render?.downloadUrl).toBe("http://localhost:9000/signed");
+    expect(studioReducer(withUrl, { type: "CLOSE_RENDER" }).render).toBeNull();
+  });
+});
+
+describe("renderOutcome (polled terminal render → the settling action)", () => {
+  it("U-R41: a completed job settles via RENDER_POLLED; anything else is RENDER_FAILED with an honest reason", () => {
+    const base = {
+      id: "rj_1",
+      projectId: "prj_1",
+      versionId: "pv_1",
+      framesDone: 900,
+      framesTotal: 900,
+      outputSpec: { width: 1080, height: 1920, fps: 30, aspectRatio: "9:16", codec: "h264" },
+      outputAssetKey: "renders/rj_1/output.mp4",
+      thumbnailAssetKey: "renders/rj_1/thumb.jpg",
+      runInBackground: false,
+      error: null,
+      createdAt: "2026-07-24T10:00:00.000Z",
+      startedAt: "2026-07-24T10:00:05.000Z",
+      completedAt: "2026-07-24T10:04:00.000Z",
+    };
+
+    const ok = renderOutcome("rj_1", { ...base, status: "completed" } as RenderJobDto, 1);
+    expect(ok.type).toBe("RENDER_POLLED");
+
+    const failed = renderOutcome(
+      "rj_1",
+      { ...base, status: "failed", error: "renderMedia exited 1" } as RenderJobDto,
+      1,
+    );
+    expect(failed).toEqual({ type: "RENDER_FAILED", error: "renderMedia exited 1" });
+
+    // a failure with no server message still gets a code, never an empty string
+    expect(
+      renderOutcome("rj_1", { ...base, status: "failed" } as RenderJobDto, 1),
+    ).toEqual({ type: "RENDER_FAILED", error: "render_failed" });
+
+    expect(
+      renderOutcome("rj_1", { ...base, status: "canceled" } as RenderJobDto, 1),
+    ).toEqual({ type: "RENDER_FAILED", error: "render_canceled" });
+
+    // a null job = the POST failed or the poll timed out
+    expect(renderOutcome("rj_1", null, 1)).toEqual({
+      type: "RENDER_FAILED",
+      error: "render_timeout",
+    });
   });
 });

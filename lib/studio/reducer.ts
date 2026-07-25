@@ -22,6 +22,7 @@ import {
   GeneratedScriptSchema,
   GeneratedStoryboardSchema,
   type AiGenerationDto,
+  type RenderJobDto,
 } from "../api/contracts";
 import {
   nextVersion,
@@ -37,7 +38,9 @@ import {
 } from "../project-wizard/provisioning-log";
 import {
   advanceRender,
+  applyRenderJob,
   initRender,
+  initRealRender,
   type RenderState,
 } from "./render-model";
 import type { JobLike, LogRow } from "../project-wizard/job-log";
@@ -143,11 +146,18 @@ export type StudioAction =
   | { type: "PUBLISH_STAGES"; rows: LogRow[] }
   | { type: "PUBLISH_REAL_DONE"; publishedTag: string; nextBranch: string }
   | { type: "PUBLISH_FAILED"; error: string }
-  // 14c render overlay
+  // 14c render overlay — MOCK (fake ticker)
   | { type: "OPEN_RENDER" }
   | { type: "ADVANCE_RENDER" }
   | { type: "RENDER_BACKGROUND" }
   | { type: "CANCEL_RENDER" }
+  // 14c render overlay — REAL (Task 38; driven by the polled RenderJob)
+  | { type: "OPEN_RENDER_REAL"; publishedVersion: string }
+  | { type: "RENDER_STARTED"; renderJobId: string }
+  | { type: "RENDER_POLLED"; renderJobId: string; job: RenderJobDto; atMs: number }
+  | { type: "RENDER_DOWNLOAD_READY"; url: string }
+  | { type: "RENDER_FAILED"; error: string }
+  | { type: "CLOSE_RENDER" }
   // Task #35 AI generation
   | { type: "GENERATION_BEGIN"; slot: string }
   | { type: "GENERATION_FAILED"; slot: string; error: string }
@@ -416,6 +426,56 @@ export function studioReducer(
         ? { ...state, render: { ...state.render, backgrounded: true } }
         : state;
     case "CANCEL_RENDER":
+      // Optimistic in BOTH modes (D-RENDER-DISMISS): the overlay goes away at once and
+      // the caller fires the real POST /cancel behind it. A late poll for the render we
+      // just dropped is absorbed by the RENDER_POLLED guard below.
+      return { ...state, render: null };
+    // ── 14c render overlay — REAL (Task 38); the mock cases above are untouched ──
+    case "OPEN_RENDER_REAL":
+      // Open the overlay WITHOUT seeding the mock ticker's frame total — a real render
+      // has no frame count until the worker's bundleComposition resolves the
+      // composition, and inventing one here would be exactly the preview/render parity
+      // claim design-delta §2 v1-limitation #2 forbids.
+      return {
+        ...state,
+        publishFlow: "closed",
+        render: initRealRender(action.publishedVersion),
+      };
+    case "RENDER_STARTED":
+      return state.render
+        ? { ...state, render: { ...state.render, renderJobId: action.renderJobId } }
+        : state;
+    case "RENDER_POLLED":
+      // Ignore a poll for a render that is no longer on screen (cancel cleared it) or
+      // for a DIFFERENT render (a stale in-flight driver from a previous attempt) —
+      // either would resurrect or corrupt the overlay.
+      return state.render && state.render.renderJobId === action.renderJobId
+        ? { ...state, render: applyRenderJob(state.render, action.job, action.atMs) }
+        : state;
+    case "RENDER_DOWNLOAD_READY":
+      return state.render
+        ? { ...state, render: { ...state.render, downloadUrl: action.url } }
+        : state;
+    case "RENDER_FAILED":
+      // The render did NOT land — record the error and STAY open so the failure card can
+      // surface it (mirrors PUBLISH_FAILED). Un-background it: a backgrounded render that
+      // fails silently would never be seen, and the footer hint promises a notification
+      // surface that does not exist yet.
+      return state.render
+        ? {
+            ...state,
+            render: {
+              ...state.render,
+              mode: "real",
+              status: "failed",
+              error: action.error,
+              backgrounded: false,
+            },
+          }
+        : state;
+    case "CLOSE_RENDER":
+      // Dismiss a TERMINAL render card. D-RENDER-DISMISS governs the in-flight overlay
+      // (no ✕ / Escape / backdrop); a completed or failed card must be dismissable.
       return { ...state, render: null };
     // ── Task #35 AI generation ────────────────────────────────────────────────
     case "GENERATION_BEGIN":
@@ -538,6 +598,30 @@ export function publishOutcome(
   const error =
     job && job.error ? job.error : job ? "publish_failed" : "publish_timeout";
   return { type: "PUBLISH_FAILED", error };
+}
+
+/**
+ * Map a POLLED terminal `RenderJob` (or a null job = a POST failure / poll timeout) to
+ * the action that settles the real render. Mirrors `commitOutcome` / `publishOutcome`.
+ * A `completed` render settles through RENDER_POLLED so the overlay lands on the
+ * authoritative final numbers (the worker squares framesDone := framesTotal at
+ * markCompleted); everything else is a RENDER_FAILED carrying an honest reason — the
+ * server's own message when there is one, else a code, never an empty string.
+ */
+export function renderOutcome(
+  renderJobId: string,
+  job: RenderJobDto | null,
+  atMs: number,
+): StudioAction {
+  if (job && job.status === "completed") {
+    return { type: "RENDER_POLLED", renderJobId, job, atMs };
+  }
+  if (!job) return { type: "RENDER_FAILED", error: "render_timeout" };
+  if (job.error) return { type: "RENDER_FAILED", error: job.error };
+  return {
+    type: "RENDER_FAILED",
+    error: job.status === "canceled" ? "render_canceled" : "render_failed",
+  };
 }
 
 // ── Task #35: generation outcome mappers (polled terminal generation → action) ──

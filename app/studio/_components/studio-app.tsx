@@ -61,9 +61,13 @@ function StudioFrame() {
   // there's no render; Cancel (render → null) stops it at once. Once complete no
   // further timeout is scheduled, so it can't loop or leak an interval past the
   // final frame — completion is state-only (no visible surface), so it's untested.
+  //
+  // Task #38: MOCK MODE ONLY. A real render's frames come from the server, polled by a
+  // driver that lives in StudioProvider (above this component) — the two must never both
+  // touch `render`, so this ticker no-ops the moment the render is real.
   useEffect(() => {
     const r = state.render;
-    if (!r || isRenderComplete(r)) return;
+    if (!r || r.mode !== "mock" || isRenderComplete(r)) return;
     const t = setTimeout(() => dispatch({ type: "ADVANCE_RENDER" }), RENDER_TICK_MS);
     return () => clearTimeout(t);
   }, [state.render, dispatch]);

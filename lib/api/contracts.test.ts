@@ -28,6 +28,12 @@ import {
   CreateRepoRequestSchema,
   RepoAuthorizeUrlResponseSchema,
   ProjectResponseSchema,
+  RenderStatusSchema,
+  RenderJobDtoSchema,
+  RenderJobResponseSchema,
+  RenderJobListResponseSchema,
+  CreateRenderRequestSchema,
+  CreateRenderResponseSchema,
   ManifestSceneSchema,
   ProjectManifestSchema,
   ManifestResponseSchema,
@@ -665,5 +671,128 @@ describe("AI-generation contracts", () => {
       }).url,
     ).toBe("http://minio/signed");
     expect(FilePresignDownloadResponseSchema.safeParse({ url: "x" }).success).toBe(false);
+  });
+});
+
+// ── Render wire DTOs (Task #38 mirrors of the Task #37 API contract) ──────────
+
+describe("render wire DTOs (mirror of the API's Task #37 shapes)", () => {
+  /** Verbatim copy of a `GET /v1/renders/:id` payload's `render` object. */
+  const validRender = {
+    id: "rj_1",
+    projectId: "prj_1",
+    versionId: "pv_1",
+    status: "encoding",
+    framesDone: 612,
+    framesTotal: 840,
+    outputSpec: {
+      width: 1080,
+      height: 1920,
+      fps: 30,
+      aspectRatio: "9:16",
+      codec: "h264",
+    },
+    outputAssetKey: null,
+    thumbnailAssetKey: null,
+    runInBackground: false,
+    error: null,
+    createdAt: "2026-07-24T10:00:00.000Z",
+    startedAt: "2026-07-24T10:00:05.000Z",
+    completedAt: null,
+  };
+
+  it("RenderJobDtoSchema parses the in-flight poll shape (spec re-nested, no userId)", () => {
+    const dto = RenderJobDtoSchema.parse(validRender);
+    expect(dto.status).toBe("encoding");
+    expect(dto.outputSpec.aspectRatio).toBe("9:16");
+    expect(dto.startedAt).toBe("2026-07-24T10:00:05.000Z");
+  });
+
+  it("accepts the queued-but-started 'preparing' shape (task 36 sets startedAt without changing status)", () => {
+    const preparing = RenderJobDtoSchema.parse({
+      ...validRender,
+      status: "queued",
+      framesDone: 0,
+      framesTotal: 0,
+      startedAt: "2026-07-24T10:00:05.000Z",
+    });
+    expect(preparing.status).toBe("queued");
+    expect(preparing.framesTotal).toBe(0);
+  });
+
+  it("accepts the completed shape with both asset keys, and the failed shape with an error", () => {
+    const done = RenderJobDtoSchema.parse({
+      ...validRender,
+      status: "completed",
+      framesDone: 840,
+      outputAssetKey: "renders/rj_1/output.mp4",
+      thumbnailAssetKey: "renders/rj_1/thumb.jpg",
+      completedAt: "2026-07-24T10:04:00.000Z",
+    });
+    expect(done.outputAssetKey).toBe("renders/rj_1/output.mp4");
+
+    const failed = RenderJobDtoSchema.parse({
+      ...validRender,
+      status: "failed",
+      error: "renderMedia exited 1",
+      completedAt: "2026-07-24T10:02:00.000Z",
+    });
+    expect(failed.error).toBe("renderMedia exited 1");
+  });
+
+  it("rejects an unknown status and a malformed aspect ratio", () => {
+    expect(
+      RenderJobDtoSchema.safeParse({ ...validRender, status: "rendering" }).success,
+    ).toBe(false);
+    expect(
+      RenderJobDtoSchema.safeParse({
+        ...validRender,
+        outputSpec: { ...validRender.outputSpec, aspectRatio: "9-16" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("RenderJobResponseSchema / RenderJobListResponseSchema are keyed envelopes", () => {
+    expect(RenderJobResponseSchema.parse({ render: validRender }).render.id).toBe("rj_1");
+    expect(RenderJobResponseSchema.safeParse(validRender).success).toBe(false);
+    expect(
+      RenderJobListResponseSchema.parse({ renders: [validRender] }).renders,
+    ).toHaveLength(1);
+    expect(RenderJobListResponseSchema.safeParse([validRender]).success).toBe(false);
+  });
+
+  it("CreateRenderRequestSchema / CreateRenderResponseSchema mirror the API", () => {
+    const req = CreateRenderRequestSchema.parse({
+      versionId: "pv_1",
+      outputSpec: validRender.outputSpec,
+      runInBackground: true,
+    });
+    expect(req.runInBackground).toBe(true);
+    expect(
+      CreateRenderRequestSchema.safeParse({
+        versionId: "",
+        outputSpec: validRender.outputSpec,
+        runInBackground: false,
+      }).success,
+    ).toBe(false);
+    expect(CreateRenderResponseSchema.parse({ renderJobId: "rj_1" }).renderJobId).toBe(
+      "rj_1",
+    );
+  });
+
+  it("RenderStatusSchema covers all 8 server statuses", () => {
+    for (const s of [
+      "queued",
+      "bundling",
+      "synthesizing",
+      "encoding",
+      "uploading",
+      "completed",
+      "failed",
+      "canceled",
+    ]) {
+      expect(RenderStatusSchema.safeParse(s).success, s).toBe(true);
+    }
+    expect(RenderStatusSchema.safeParse("cancelled").success).toBe(false);
   });
 });
