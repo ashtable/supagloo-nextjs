@@ -63,6 +63,21 @@
   animation: wsSpin 0.7s linear infinite;
 }
 
+/* 14c: the render bar before the worker knows the frame total (RenderJob.framesTotal is
+   0 until bundleComposition). A travelling sliver reads as "working" where a 0% empty
+   track would read as "stuck" — and, unlike a fake percentage, it claims nothing. */
+@keyframes wsRenderPending {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+.renderBarPending {
+  animation: wsRenderPending 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .caret {
     animation: none;
@@ -71,6 +86,9 @@
     transition: none;
   }
   .spin {
+    animation: none;
+  }
+  .renderBarPending {
     animation: none;
   }
 }

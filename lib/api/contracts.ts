@@ -696,3 +696,95 @@ export const FilePresignDownloadResponseSchema = z.object({
   expiresAt: z.string(),
 });
 export type FilePresignDownloadResponse = z.infer<typeof FilePresignDownloadResponseSchema>;
+
+// ── Render wire DTOs (Task #38 — mirrors of the Task #37 API contract) ────────
+//
+// Hand-rolled mirrors of the API's render contracts (db-lib `schemas.ts` Render*).
+// Same rationale as every block above: this repo does not depend on db-lib at all, and
+// a BFF needs only the wire shapes. `contracts.test.ts` pins these against verbatim
+// copies of the API's payloads.
+//
+// The API keeps the five output-spec COLUMNS flat in Postgres but re-nests them into one
+// `outputSpec` on the wire, so the create request and the poll response carry the same
+// object — which is why the 14c overlay can render the spec line straight from the
+// SERVER's echo instead of re-deriving it from the local aspect toggle.
+
+/** The 8 server-side render statuses (mirrors db-lib `RenderStatusSchema`). NOTE the
+ *  declaration order is NOT the runtime order: a render goes
+ *  queued → synthesizing → bundling → encoding → uploading → completed|failed|canceled
+ *  (audio is synthesized BEFORE the bundle because Remotion snapshots assets at bundle
+ *  time). */
+export const RenderStatusSchema = z.enum([
+  "queued",
+  "bundling",
+  "synthesizing",
+  "encoding",
+  "uploading",
+  "completed",
+  "failed",
+  "canceled",
+]);
+export type RenderStatus = z.infer<typeof RenderStatusSchema>;
+
+/** The render output spec (mirrors db-lib `RenderOutputSpecSchema` =
+ *  `CompositionSpecSchema` + a free-string `codec`). `aspectRatio` is a `"W:H"` display
+ *  hint — the pixel dimensions are authoritative. */
+export const RenderOutputSpecSchema = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  fps: z.number().int().positive(),
+  aspectRatio: z.string().regex(/^\d+:\d+$/),
+  codec: z.string().min(1),
+});
+export type RenderOutputSpec = z.infer<typeof RenderOutputSpecSchema>;
+
+/** A `RenderJob` on the wire (mirrors db-lib `RenderJobDtoSchema`) — the poll shape that
+ *  drives the 14c overlay.
+ *
+ *  Two states the overlay must read carefully:
+ *   - `status: "queued"` with a NON-null `startedAt` means the worker already picked the
+ *     job up and is cloning / installing / downloading assets (task 36's
+ *     `markRenderStarted` sets `startedAt` without changing status);
+ *   - `framesTotal` is 0 from creation until the worker's `bundleComposition` resolves
+ *     the composition — 0 means INDETERMINATE, never "done". */
+export const RenderJobDtoSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  versionId: z.string(),
+  status: RenderStatusSchema,
+  framesDone: z.number().int(),
+  framesTotal: z.number().int(),
+  outputSpec: RenderOutputSpecSchema,
+  outputAssetKey: z.string().nullable(),
+  thumbnailAssetKey: z.string().nullable(),
+  runInBackground: z.boolean(),
+  error: z.string().nullable(),
+  createdAt: z.string(),
+  startedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+});
+export type RenderJobDto = z.infer<typeof RenderJobDtoSchema>;
+
+/** `GET /v1/renders/:id` and `POST /v1/renders/:id/cancel` response. */
+export const RenderJobResponseSchema = z.object({ render: RenderJobDtoSchema });
+export type RenderJobResponse = z.infer<typeof RenderJobResponseSchema>;
+
+/** `GET /v1/renders?mine=1` response ("Your videos" — the listing UI is task 41). */
+export const RenderJobListResponseSchema = z.object({
+  renders: z.array(RenderJobDtoSchema),
+});
+export type RenderJobListResponse = z.infer<typeof RenderJobListResponseSchema>;
+
+/** `POST /v1/projects/:id/renders` request. `runInBackground` is a UI hint only — the
+ *  job is always async server-side; it is persisted so "Your videos" can tell the two
+ *  intents apart. */
+export const CreateRenderRequestSchema = z.object({
+  versionId: z.string().min(1),
+  outputSpec: RenderOutputSpecSchema,
+  runInBackground: z.boolean(),
+});
+export type CreateRenderRequest = z.infer<typeof CreateRenderRequestSchema>;
+
+/** `POST /v1/projects/:id/renders` response — the render job id the studio polls. */
+export const CreateRenderResponseSchema = z.object({ renderJobId: z.string() });
+export type CreateRenderResponse = z.infer<typeof CreateRenderResponseSchema>;
