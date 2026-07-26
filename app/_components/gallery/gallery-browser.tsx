@@ -79,6 +79,22 @@ export default function GalleryBrowser() {
    *  stale (the user switched sort mid-request) must never write into the grid. */
   const runRef = useRef(0);
 
+  /**
+   * The ids whose vote request is open right now.
+   *
+   * TWO of them on purpose, and they are not redundant:
+   *   - `votingRef` is the CORRECTNESS guard. It is mutated synchronously inside the
+   *     handler, so a second click cannot get past it no matter what React has or has
+   *     not re-rendered yet;
+   *   - `voting` is the same set as STATE, and exists only so the pill can render
+   *     itself disabled. State alone would be a race (a `setState` is not visible to the
+   *     next event until it commits); a ref alone would be invisible to the user.
+   *
+   * Per ITEM, never global: one slow vote must not freeze every other card's pill.
+   */
+  const votingRef = useRef<Set<string>>(new Set());
+  const [voting, setVoting] = useState<ReadonlySet<string>>(() => new Set());
+
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
@@ -155,26 +171,35 @@ export default function GalleryBrowser() {
 
     setLoadingMore(true);
     setFailed(false);
-    const page = await fetchGalleryPage({
-      sort: state.sort,
-      q: state.q,
-      cursor,
-    });
-    // A sort/search change while page 2 was in flight supersedes it; writing now would
-    // splice rows from the OLD ordering into the new one.
-    if (run !== runRef.current) return;
-    setLoadingMore(false);
-    if (!page) {
-      setFailed(true);
-      return;
+    try {
+      const page = await fetchGalleryPage({
+        sort: state.sort,
+        q: state.q,
+        cursor,
+      });
+      // A sort/search change while page 2 was in flight supersedes it; writing now would
+      // splice rows from the OLD ordering into the new one.
+      if (run !== runRef.current) return;
+      if (!page) {
+        setFailed(true);
+        return;
+      }
+      setState((s) =>
+        nextQueryState(s, {
+          kind: "page-loaded",
+          items: page.items,
+          nextCursor: page.nextCursor,
+        }),
+      );
+    } finally {
+      // `finally`, not a line before each `return`, and this is the reason: the
+      // superseded-run guard above USED to return without clearing the flag. Nothing
+      // else ever sets it false — `loadingMore` disables "Load more" AND short-circuits
+      // this very callback — so leaking it once left the control permanently dead, for
+      // the rest of the session, recoverable only by reloading the page. Changing sort
+      // or search while page 2 was in flight was enough to do it.
+      setLoadingMore(false);
     }
-    setState((s) =>
-      nextQueryState(s, {
-        kind: "page-loaded",
-        items: page.items,
-        nextCursor: page.nextCursor,
-      }),
-    );
   }, [loadingMore, state.sort, state.q, state.cursor]);
 
   const onVote = useCallback(
@@ -185,33 +210,48 @@ export default function GalleryBrowser() {
         return;
       }
 
-      const snapshot = voteSnapshot(item);
-      const optimistic = optimisticVote(item, outcome);
-      setState((s) => ({ ...s, items: replaceItem(s.items, optimistic) }));
+      // ONE open vote request per item, enforced by a REF rather than by `voting` —
+      // the ref is written synchronously, so it holds even for two clicks React batches
+      // into a single render. Without it a double-click sent POST and DELETE
+      // concurrently (the optimistic flip makes the second click read as an un-vote) and
+      // the block below then adopted whichever answer landed last, which need not be the
+      // state the database committed.
+      if (votingRef.current.has(item.id)) return;
+      votingRef.current.add(item.id);
+      setVoting(new Set(votingRef.current));
 
-      const server =
-        outcome === "vote" ? await sendUpvote(item.id) : await removeUpvote(item.id);
+      try {
+        const snapshot = voteSnapshot(item);
+        const optimistic = optimisticVote(item, outcome);
+        setState((s) => ({ ...s, items: replaceItem(s.items, optimistic) }));
 
-      if (!server) {
-        // Put the pill back exactly as it was, then say why. The most likely cause of a
-        // failed vote for a user who looked signed in is an expired session, and a
-        // silently-reverted pill would read as a bug in the button.
+        const server =
+          outcome === "vote" ? await sendUpvote(item.id) : await removeUpvote(item.id);
+
+        if (!server) {
+          // Put the pill back exactly as it was, then say why. The most likely cause of a
+          // failed vote for a user who looked signed in is an expired session, and a
+          // silently-reverted pill would read as a bug in the button.
+          setState((s) => ({
+            ...s,
+            items: replaceItem(s.items, revertVote(optimistic, snapshot)),
+          }));
+          setPromptOpen(true);
+          return;
+        }
+
+        // Reconcile against server truth — but KEEP the rank this card is displaying. The
+        // vote routes answer with the item, and `rank` is a property of the popular
+        // LISTING, so the response carries none; adopting its null would blank a badge
+        // whose position on screen has not changed.
         setState((s) => ({
           ...s,
-          items: replaceItem(s.items, revertVote(optimistic, snapshot)),
+          items: replaceItem(s.items, { ...server, rank: item.rank }),
         }));
-        setPromptOpen(true);
-        return;
+      } finally {
+        votingRef.current.delete(item.id);
+        setVoting(new Set(votingRef.current));
       }
-
-      // Reconcile against server truth — but KEEP the rank this card is displaying. The
-      // vote routes answer with the item, and `rank` is a property of the popular
-      // LISTING, so the response carries none; adopting its null would blank a badge
-      // whose position on screen has not changed.
-      setState((s) => ({
-        ...s,
-        items: replaceItem(s.items, { ...server, rank: item.rank }),
-      }));
     },
     [isAuthed],
   );
@@ -238,6 +278,7 @@ export default function GalleryBrowser() {
           loading={loading}
           error={failed}
           searching={state.q.length > 0}
+          voting={voting}
           onRetry={onRetry}
           onPlay={onPlay}
           onVote={onVote}

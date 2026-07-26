@@ -24,10 +24,13 @@ import type { GalleryItemDto } from "@/lib/api/contracts";
  */
 export default function GalleryCard({
   item,
+  voting,
   onPlay,
   onVote,
 }: {
   item: GalleryItemDto;
+  /** This card's vote request is open — the pill is disabled until it settles. */
+  voting: boolean;
   onPlay: () => void;
   onVote: () => void;
 }) {
@@ -185,6 +188,7 @@ export default function GalleryCard({
           itemId={item.id}
           upvoteCount={item.upvoteCount}
           viewerHasUpvoted={item.viewerHasUpvoted}
+          busy={voting}
           onVote={onVote}
         />
       </div>

@@ -12,10 +12,17 @@ import { SESSION_COOKIE_NAME } from "@/lib/api/cookies";
  * degrades to anonymous otherwise — including for a present-but-stale cookie, which
  * must never turn a public gallery into an error page.
  *
- * The three parameters are forwarded by NAME, not by copying the whole querystring:
- * the API's query schema is closed, an unknown parameter is a 400, and an allowlist
- * keeps this route from silently becoming a general-purpose passthrough. There is no
- * `book` — the book filter does not exist (plan §5.2).
+ * The three parameters are forwarded by NAME, not by copying the whole querystring —
+ * and the reason is the OPPOSITE of the obvious one. `GalleryListQuerySchema` (db-lib)
+ * is a plain `z.object({ sort, q, cursor })` with no `.strict()`, bound as the route's
+ * `querystring`, so Zod STRIPS unknown keys: the API IGNORES an unrecognised parameter
+ * and answers 200. Its own e2e pins that (`?q=…&book=GEN` returns every item).
+ *
+ * So nothing upstream would stop this route from becoming a general-purpose passthrough
+ * — the allowlist is the only thing that does. It is also what makes a REMOVED parameter
+ * visibly gone: `book` is not forwarded, so a stale link carrying `?book=GEN` cannot
+ * read as "accepted but unfiltered". There is no book filter (plan §5.2), and adding a
+ * name here is the deliberate act that would create one.
  *
  * Status + body pass through verbatim, so `invalid_cursor` / `invalid_query` reach the
  * client unchanged.

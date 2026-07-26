@@ -157,8 +157,10 @@ export function StudioProvider({
   // `if (state.render) return` guard for the closure that reads it next. That is what
   // made the failure card's "Try again ▸" a dead button. See `RenderRunGate` in
   // lib/studio/render-model.ts for the full rules; they are pure and unit-tested there
-  // (U-RM20..23) because this provider is not component-testable (the vitest unit config
-  // is `environment: "node"` — no jsdom).
+  // (U-RM20..23). NOTE: the unit lane's default is still `environment: "node"`, but a
+  // `.test.tsx` can now opt into jsdom (`// @vitest-environment jsdom`, see
+  // tests/unit/support/render.tsx), so "not component-testable" is no longer why —
+  // these rules are simply better held as pure ones.
   const renderRunRef = useRef<RenderRunGate>(IDLE_RENDER_RUN_GATE);
 
   const selectScene = (id: string) => {

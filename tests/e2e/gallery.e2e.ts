@@ -579,9 +579,17 @@ describe("upvote and navigate signed in", () => {
     // No sign-in prompt for an authed voter.
     expect(await countTestId("gallery-signin-prompt")).toBe(0);
 
+    // `aria-pressed` flips OPTIMISTICALLY, in 0-16ms — it says the intent was recorded,
+    // not that the POST came back. The pill is `disabled`/`aria-busy` until it does,
+    // deliberately: a click in that window would send a DELETE racing its own POST and
+    // the loser's response would be adopted as truth. So the un-vote waits for the
+    // request to SETTLE, and this wait is itself the proof that the pill re-enables.
+    await pollAttr(`gallery-upvote-${target}`, "aria-busy", "false");
+
     await clickTestId(`gallery-upvote-${target}`);
     await pollAttr(`gallery-upvote-${target}`, "aria-pressed", "false");
     expect(await attrOf(`gallery-upvote-${target}`, "data-voted")).toBe("false");
+    await pollAttr(`gallery-upvote-${target}`, "aria-busy", "false");
     expect(await testidText(`gallery-upvote-count-${target}`)).toBe(
       String(item.upvoteCount),
     );

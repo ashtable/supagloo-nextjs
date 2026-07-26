@@ -820,10 +820,12 @@ export type GalleryVisibility = z.infer<typeof GalleryVisibilitySchema>;
  *  contract for the Turn-15 grid.
  *
  *  Two fields the UI must read carefully:
- *   - `rank` is 1-based, CONTINUOUS ACROSS PAGES, and non-null ONLY under
- *     `sort=popular`. It comes from the SERVER because it is a property of the global
+ *   - `rank` is 1-based, CONTINUOUS ACROSS PAGES, and non-null ONLY under `sort=popular`
+ *     WITH NO `q`. It comes from the SERVER because it is a property of the UNFILTERED
  *     popular ordering: a client computing `index + 1` would badge the 25th item "#1",
- *     and a "#7" badge under a different ordering would assert something untrue. The
+ *     and a "#7" badge under a different ordering would assert something untrue. It is
+ *     null under any other sort AND under any search, because "#3" among the items
+ *     matching a search term is not a standing about which anything is true. The
  *     `rank <= 3` threshold and the trophy-at-1 rule are PRESENTATION and live in
  *     `lib/gallery/gallery-model.ts`.
  *   - `thumbnailUrl` is a short-lived presigned GET URL (the anonymous grid cannot use

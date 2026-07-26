@@ -24,6 +24,7 @@ export default function GalleryGrid({
   loading,
   error,
   searching,
+  voting,
   onRetry,
   onPlay,
   onVote,
@@ -32,6 +33,9 @@ export default function GalleryGrid({
   loading: boolean;
   error: boolean;
   searching: boolean;
+  /** Ids with a vote request open — those pills render disabled. Per item, so a slow
+   *  vote on one card never freezes the rest of the grid. */
+  voting: ReadonlySet<string>;
   onRetry: () => void;
   onPlay: (item: GalleryItemDto) => void;
   onVote: (item: GalleryItemDto) => void;
@@ -51,6 +55,7 @@ export default function GalleryGrid({
             <GalleryCard
               key={item.id}
               item={item}
+              voting={voting.has(item.id)}
               onPlay={() => onPlay(item)}
               onVote={() => onVote(item)}
             />

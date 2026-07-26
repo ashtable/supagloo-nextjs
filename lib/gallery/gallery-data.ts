@@ -65,14 +65,6 @@ export async function fetchGalleryPage(
   }
 }
 
-/** `GET /api/gallery/:id` → the item (unwraps `{ item }`), or null. */
-export async function fetchGalleryItem(
-  id: string,
-  deps: FetchDep = {},
-): Promise<GalleryItemDto | null> {
-  return itemRequest(`/api/gallery/${encodeURIComponent(id)}`, "GET", undefined, deps);
-}
-
 /** `GET /api/gallery/:id/stream-url` → a 120s presigned GET for the mp4, or null.
  *
  *  NOTE for anyone debugging a silent player: this endpoint signs LOCALLY, so it
@@ -170,17 +162,20 @@ export async function fetchMyRenders(deps: FetchDep = {}): Promise<RenderJobDto[
   }
 }
 
-/** The shared `{ item }`-envelope request every single-item route uses. */
+/** The shared `{ item }`-envelope request every single-item route uses.
+ *
+ *  All three remaining callers MUTATE, so there is no cache branch here: `cache` only
+ *  ever mattered for the GET that `fetchGalleryItem` used to make, and that function is
+ *  gone with the item-detail page that never got designed. */
 async function itemRequest(
   url: string,
-  method: string,
+  method: "POST" | "DELETE",
   body: unknown,
   deps: FetchDep,
 ): Promise<GalleryItemDto | null> {
   const doFetch = doFetchOf(deps);
   try {
-    const init: RequestInit =
-      method === "GET" ? { cache: "no-store" } : { method };
+    const init: RequestInit = { method };
     if (body !== undefined) {
       init.headers = { "content-type": "application/json" };
       init.body = JSON.stringify(body);

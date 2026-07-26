@@ -43,11 +43,15 @@ import { describe, expect, it } from "vitest";
  * waiting for `project-ready-card` and then timed out pointing at the DBOS worker —
  * which was innocent.
  *
- * Unit-level component rendering is not available in this repo's unit lane (node
- * environment, no jsdom — see the note in `studio-context.tsx`), and an e2e that
- * reproduces it costs a real GitHub scaffold plus a 4-minute timeout. A source guard
- * is the proportionate fence, and it matches the established convention here
- * (`e2e-real-github-seam.test.ts`, and the root repo's overlay/prefix guards).
+ * A source guard is still the proportionate fence, but the REASON changed on
+ * 2026-07-26: unit-level component rendering IS now available (a `.test.tsx` opts into
+ * jsdom with a `// @vitest-environment jsdom` docblock — see `gallery-browser.test.tsx`
+ * and `support/render.tsx`). What that cannot do is prove the ABSENCE of the broken
+ * shape across a growing tree — a rendered test asserts one component behaves, this
+ * asserts no component in `app/` carries the idiom without the re-arm, including
+ * components not yet written. That is the same reason `e2e-real-github-seam.test.ts`
+ * and the root repo's overlay/prefix guards read source rather than behaviour. An e2e
+ * reproduction would additionally cost a real GitHub scaffold and a 4-minute timeout.
  */
 
 const APP_DIR = resolve(process.cwd(), "app");

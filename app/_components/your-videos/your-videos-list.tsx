@@ -35,6 +35,10 @@ export default function YourVideosList() {
    *  THIS session. The render DTO carries no gallery link, so this is the only thing we
    *  can honestly say about publication state without a second endpoint. */
   const [published, setPublished] = useState<Record<string, GalleryItemDto>>({});
+  /** renderJobId → why the last un-publish attempt did not take. A refused DELETE used
+   *  to return silently, which reads as a dead button on a card that still says
+   *  "Remove from gallery". */
+  const [unpublishError, setUnpublishError] = useState<Record<string, string>>({});
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
@@ -216,6 +220,14 @@ export default function YourVideosList() {
                         </Link>
                       )}
                     </div>
+                    {unpublishError[card.id] && (
+                      <div
+                        data-testid={`your-videos-unpublish-error-${card.id}`}
+                        style={{ marginTop: 8, fontSize: 11.5, color: "var(--sg-red)" }}
+                      >
+                        {unpublishError[card.id]}
+                      </div>
+                    )}
                   </div>
                 </article>
               ))}
@@ -244,7 +256,24 @@ export default function YourVideosList() {
         </div>
       )}
 
+      {/*
+        `key` IS THE RESET. `PublishDialog` is mounted unconditionally (the only
+        visibility gate is `open` on its inner `<Modal>`), so without a key its six
+        `useState` initializers run ONCE PER PAGE LOAD and survive every close: the
+        second "Share to gallery" opened carrying the FIRST render's title, its scripture
+        reference, its translation and any error it had left behind. That is not a
+        cosmetic leak — `scriptureReference` is what the server derives `scriptureBook`
+        from AND what renders verbatim on the public card, so the likely accident was
+        publishing B under A's reference. Exactly the class of lie D7 removed when it
+        refused to let the client send `durationSeconds`.
+
+        Keying on the render id is cheaper and harder to get wrong than an effect that
+        resets six fields: React unmounts the old instance, so there is no field anyone
+        can forget to add to the reset list. `"none"` is the closed state, which means
+        closing the dialog is itself a reset.
+      */}
       <PublishDialog
+        key={publishing?.id ?? "none"}
         render={publishing}
         onClose={() => setPublishing(null)}
         onPublished={(item) => {
@@ -258,13 +287,25 @@ export default function YourVideosList() {
   async function onUnpublish(renderId: string) {
     const item = published[renderId];
     if (!item) return;
-    if (!(await unpublishGalleryItem(item.id))) return;
-    setPublished((p) => {
-      const next = { ...p };
-      delete next[renderId];
-      return next;
-    });
+    setUnpublishError((e) => (renderId in e ? omit(e, renderId) : e));
+    if (!(await unpublishGalleryItem(item.id))) {
+      // Say it. The item genuinely IS still in the gallery, the button stays in place,
+      // and the user gets to try again — a bare `return` here left a card insisting
+      // "Remove from gallery" while the click did nothing observable at all.
+      setUnpublishError((e) => ({
+        ...e,
+        [renderId]: "That didn't remove it — it's still in the gallery. Try again.",
+      }));
+      return;
+    }
+    setPublished((p) => omit(p, renderId));
   }
+}
+
+function omit<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
 }
 
 const linkButton = {

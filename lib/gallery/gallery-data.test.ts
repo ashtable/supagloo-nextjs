@@ -15,7 +15,6 @@ import { describe, expect, it, vi } from "vitest";
  * of a gallery.
  */
 import {
-  fetchGalleryItem,
   fetchGalleryPage,
   fetchMyRenders,
   fetchStreamUrl,
@@ -189,31 +188,6 @@ describe("U-D3 fetchGalleryPage request URL", () => {
     const { fetchImpl, calls } = stubFetch({ json: { items: [], nextCursor: null } });
     await fetchGalleryPage({ sort: "popular", q: "", cursor: null }, { fetchImpl });
     expect(calls[0].init?.cache).toBe("no-store");
-  });
-});
-
-// ── fetchGalleryItem ─────────────────────────────────────────────────────────
-
-describe("fetchGalleryItem", () => {
-  it("unwraps the `{ item }` envelope", async () => {
-    const { fetchImpl, calls } = stubFetch({ json: { item: ITEM } });
-    const item = await fetchGalleryItem("gal_1", { fetchImpl });
-    expect(item?.id).toBe("gal_1");
-    expect(calls[0].url).toBe("/api/gallery/gal_1");
-  });
-
-  it("escapes the id into the path", async () => {
-    const { fetchImpl, calls } = stubFetch({ json: { item: ITEM } });
-    await fetchGalleryItem("a/b?c", { fetchImpl });
-    expect(calls[0].url).toBe("/api/gallery/a%2Fb%3Fc");
-  });
-
-  it("returns null on a 404 and on a rejection", async () => {
-    const { fetchImpl } = stubFetch({ status: 404, json: { error: "not_found" } });
-    await expect(fetchGalleryItem("nope", { fetchImpl })).resolves.toBeNull();
-    await expect(
-      fetchGalleryItem("nope", { fetchImpl: rejectingFetch }),
-    ).resolves.toBeNull();
   });
 });
 
