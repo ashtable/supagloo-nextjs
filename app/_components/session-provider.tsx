@@ -291,6 +291,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       if (!active || !body) return;
 
       // GitHub — flip connected immediately, backfill the live repo count.
+      //
+      // COST NOTE (deferred review finding DR2). This effect's deps are
+      // `[mounted, connectionsSeeded, search, serverUser]`, so `fetchGithubRepoCount`
+      // runs on EVERY hard page load of EVERY page in the app for a connected user —
+      // not just on the wizard — purely to render "N repos accessible" on the
+      // connection card. It reaches real GitHub through
+      // `GET /api/github/repos` → `GET /v1/github/repos`, which mints an installation
+      // token and walks the whole paginated listing (measured: 582 repos, 6 pages).
+      // That is deliberately the CHEAPEST shape of that request: it asks unnarrowed,
+      // so the API issues no per-repo emptiness probes (see `fetchGithubRepoCount`).
+      // Before that split it cost ~62 GitHub requests per page load against a
+      // ~5,000/hour installation budget — ~80 page loads to exhaustion — and the
+      // listing GETs throw when the limit is hit, so the repo picker broke outright
+      // rather than degrading. If this card ever needs `empty`, it needs a different
+      // endpoint, not a different filter here.
       const gh = githubSnapshotFromConnections(body);
       if (gh.connected && gh.login) {
         const username = githubUsername(gh.login);

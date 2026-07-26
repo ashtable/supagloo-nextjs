@@ -533,14 +533,26 @@ async function gotoWorkspace(page: StagehandPage, seedUrl: string): Promise<void
  * the seed + the connect callback have run. That is also why this gate cannot
  * live in globalSetup, where no session exists.
  *
- * Why it is a mandatory gate and not a nicety (task-62 D16): the api derives
- * `empty` from GitHub's `size` field, which is reported in KB and computed
- * ASYNCHRONOUSLY. If a freshly-`auto_init`ed repo ever reported a non-zero size,
- * the picker row would render disabled, its click would be a silent no-op, and
- * the whole wizard would fail four minutes later as an inexplicable timeout. A
- * live probe found small real repos genuinely reporting `size: 0`, so the
- * derivation is left unchanged — but the failure mode is silent, so we assert it
- * loudly HERE, naming the contingency.
+ * Why it is a mandatory gate and not a nicety (task-62 D16): if the api ever
+ * reported a freshly-`auto_init`ed repo as NOT empty, the picker row would render
+ * disabled, its click would be a silent no-op, and the whole wizard would fail four
+ * minutes later as an inexplicable timeout. The failure mode is silent, so it is
+ * asserted loudly HERE.
+ *
+ * **UPDATED — plan row 65 shipped the probe this docblock used to describe as a
+ * contingency.** The api no longer derives `empty` from GitHub's KB-rounded,
+ * asynchronously-computed `size` alone, and the old wording ("a live probe found
+ * small real repos genuinely reporting `size: 0`, so the derivation is left
+ * unchanged") is obsolete — `size: 0` was never evidence of emptiness, only the
+ * absence of evidence of content. The shipped derivation is:
+ *   • `size > 0`  ⇒ definitively NOT empty, no probe issued (`size` lags upward and
+ *                   never overstates, so a positive reading is trustworthy alone);
+ *   • `size === 0` ⇒ a CANDIDATE, resolved by `GET /repos/:o/:r/commits?per_page=2`
+ *                   — 409 ("Git Repository is empty.") or ≤1 commit ⇒ empty, ≥2 ⇒ not
+ *                   empty, anything else ⇒ fall back to `size`.
+ * The `≤1 commit ⇒ empty` clause is deliberate: an `auto_init` repo has exactly one
+ * README commit and is still a valid scaffold target — which is precisely the fixture
+ * this gate waits on, and wireframe 13a's selectable "Empty · created just now".
  */
 export async function assertFixtureRepoListedEmpty(
   page: StagehandPage,
@@ -578,10 +590,13 @@ export async function assertFixtureRepoListedEmpty(
       `  • present=false → the installation cannot see the repo yet (or the seeded user has ` +
       `no GitHub connection: was completeGithubConnectViaCallback called with the DISCOVERED ` +
       `installation id?).\n` +
-      `  • present=true, empty=false → GitHub's async KB-rounded \`size\` is non-zero for an ` +
-      `initialised repo, so the api's \`empty = size === 0\` derivation no longer holds. That is ` +
-      `the known contingency: derive emptiness from a commits probe instead of \`size\` ` +
-      `(a 409 "Git Repository is empty" or <=1 commit means empty). Do NOT work around it here.`,
+      `  • present=true, empty=false → the api's emptiness derivation disagreed. Since plan ` +
+      `row 65 that is NOT \`size === 0\`: a \`size: 0\` candidate is resolved by ` +
+      `\`GET /repos/:o/:r/commits?per_page=2\` (409 or <=1 commit ⇒ empty). So this means ` +
+      `either \`size > 0\` was reported for a one-commit \`auto_init\` repo (short-circuiting ` +
+      `to not-empty with no probe), or the probe answered >=2 commits / an unexpected status ` +
+      `and fell back to \`size\`. Debug the probe in api \`github-app-client.ts\` — it already ` +
+      `ships. Do NOT work around it here.`,
   );
 }
 
