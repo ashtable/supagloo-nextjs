@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
-import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
+import {
+  makeHelpers,
+  waitForHydrated,
+  type E2EHelpers,
+  type StagehandPage,
+} from "./helpers";
 
 /**
  * Turn 14 — the three overlays that hang off the already-built 13b `/studio/[id]`
@@ -190,21 +195,18 @@ async function typeIntoScript(value: string): Promise<void> {
     ta.dispatchEvent(new Event("input", { bubbles: true }));
   }, value);
 }
-/** Navigate to a studio id and settle past the client mount (studio-frame). The
- *  studio island is SSR'd, so `studio-frame` is in the DOM BEFORE React hydrates
- *  and attaches the button onClicks — clicking `publish-button` in that window is
- *  a no-op and the wizard never opens (the mount-gate race, memory `test-harness`).
- *  So after the frame appears, settle briefly to let hydration wire the handlers. */
+/** Navigate to a studio id and settle past HYDRATION (not merely past the HTML).
+ *  The studio island is SSR'd, so `studio-frame` is in the DOM BEFORE React
+ *  hydrates and attaches the button onClicks — clicking `publish-button` in that
+ *  window is a no-op and the wizard never opens (the mount-gate race, memory
+ *  `test-harness`). This spec used to bridge that window with a fixed 700 ms
+ *  sleep; plan row 68 replaced it with the shared, measured hydration gate
+ *  (non-zero box AND a `__reactProps$` key), which is the same guarantee without
+ *  the magic number and which throws loudly instead of proceeding blind. The
+ *  canonical statement of the rule now lives in `helpers.ts`. */
 async function gotoStudio(path: string): Promise<void> {
   await page.goto(`${BASE_URL}${path}`, { waitUntil: "load" });
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    if ((await countTestId("studio-frame")) > 0) {
-      await page.waitForTimeout(700); // let the client island hydrate before clicks
-      return;
-    }
-    await page.waitForTimeout(200);
-  }
+  await waitForHydrated(page, "studio-frame");
 }
 
 // ── shared flow drivers (each polls; RED at the first missing seam) ────────────

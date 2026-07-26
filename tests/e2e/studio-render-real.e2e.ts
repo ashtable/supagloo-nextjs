@@ -46,8 +46,9 @@ import {
  * `createProjectAndOpenStudio` used to drive the wizard's create-NEW-repo tab and
  * then fake GitHub's user-authorization redirect with a literal `code`. The
  * retired github-stub accepted any non-empty code; real GitHub answers
- * `bad_verification_code`, and there is no seam to intercept the exchange inside a
- * containerised api. So this spec now uses the wizard's SECOND tab — "use existing
+ * `bad_verification_code`, and at the time there was no seam to intercept the
+ * exchange inside a containerised api (plan row 66 has since added one; this lane
+ * still does not want the consent hop). So this spec uses the wizard's SECOND tab — "use existing
  * empty repo" (wireframe 13a), a fully shipped designed path whose
  * `startRealExisting` POSTs straight to `/api/projects` with no consent hop —
  * against a private throwaway repo the harness PAT-creates per run. That keeps

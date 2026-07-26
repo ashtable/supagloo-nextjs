@@ -4,8 +4,11 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
 import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
+  createProjectViaCreateNewRepo,
   createProjectViaExistingEmptyRepo,
   ensureFixtureRepo,
+  namingModule,
+  resolveGithubE2eContext,
   resolveInstallationId,
 } from "./github-e2e";
 
@@ -28,9 +31,13 @@ import {
  *    call here reaches api.github.com / github.com.
  *  • `installationId` is discovered from `GET /app/installations` at runtime, never
  *    the fabricated literal that was plan row 62 item (d).
- *  • E-RNP1 no longer drives the create-NEW-repo user-authorization hop (a reported
+ *  • E-RNP1 stopped driving the create-NEW-repo user-authorization hop (a reported
  *    deviation with its reason recorded at the test — real GitHub rejects a synthetic
- *    `code`, and a containerised api has no seam to intercept the exchange).
+ *    `code`, and a containerised api had no seam to intercept the exchange).
+ *    **Plan row 66 reopened it as E-RNP1b**, by splitting the OAuth base URL into a
+ *    public (browser) and an internal (server) half and adding a double-gated
+ *    test-only exchange route, so the api can complete that one hop against itself
+ *    while the browser still redirects to real github.com.
  *  • E-RIMP1 pins its OWN fixture repo through `repo-search`. This is SAFETY-CRITICAL,
  *    not tidiness: it used to `querySelector('[data-testid^="repo-row-"]')` — literally
  *    the FIRST row — and against a personal account with an all-repos installation that
@@ -44,7 +51,10 @@ import {
  * `dbos` worker, which nothing used to start — and gates it. Requires the root repo's
  * gitignored `docker-compose.override.yml` so the api+dbos containers carry in-flight
  * code, plus the root `.env` GitHub App credentials + `GITHUB_E2E_PAT_TOKEN` (loaded
- * into this worker by `tests/e2e/load-root-env.ts`).
+ * into this worker by `tests/e2e/load-root-env.ts`). E-RNP1b additionally requires
+ * `GITHUB_E2E_EXCHANGE_TOKEN` in that same root `.env` — it is the ONE GitHub
+ * credential that enters a container, and the api refuses to boot under the test
+ * overlay without it rather than let the spec pass on a placeholder.
  *
  * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
  * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
@@ -130,31 +140,29 @@ afterAll(async () => {
 
 describe("New-project wizard (existing empty repo → real scaffold)", () => {
   /**
-   * ── WHY THIS IS NO LONGER THE create-NEW-repo CASE (task-62 D13 tier 2) ─────
-   * This test used to drive the "Create new repo" tab and then fake GitHub's
-   * user-authorization redirect with a literal `code`. The retired github-stub
-   * accepted any non-empty code; real GitHub answers `bad_verification_code`, and
-   * there is no seam to intercept the exchange: it happens inside the CONTAINERISED
-   * api (no injectable `fetchImpl`), and the only container-level seam —
-   * `GITHUB_OAUTH_BASE_URL` — is simultaneously the BROWSER's authorize-redirect
-   * target, so overriding it re-creates the very `DNS_PROBE_FINISHED_NXDOMAIN`
-   * failure plan row 62 item (e) was about.
+   * ── WHY THIS IS THE existing-empty CASE, AND E-RNP1b IS THE create-new ONE ──
+   * Under task 62 this test could not be the create-new case at all: it used to fake
+   * GitHub's user-authorization redirect with a literal `code`, which the retired
+   * github-stub accepted and real GitHub answers `bad_verification_code` to — and
+   * there was no seam to intercept the exchange, because it happens inside the
+   * CONTAINERISED api (no injectable `fetchImpl`) and the only container-level seam,
+   * `GITHUB_OAUTH_BASE_URL`, was simultaneously the BROWSER's authorize-redirect
+   * target (row 62 item (e)'s `DNS_PROBE_FINISHED_NXDOMAIN`). That was booked as a
+   * REPORTED DEVIATION with the consequence stated plainly: the product's headline
+   * designed path shipped un-exercised at browser level against real GitHub.
    *
-   * A REPORTED DEVIATION, not a silent drop. The create-new path's SERVER half is
-   * covered by the api repo's `repo-provisioning.e2e.ts` (which shims only
-   * `POST /login/oauth/access_token` at its in-process client seam and lets
-   * `POST /user/repos` plus the whole scaffold hit real github.com); its CLIENT half
-   * by the mock lane's `project-wizards.e2e.ts`. Restoring BROWSER-level coverage
-   * needs an api-side public/internal OAuth base-URL split plus a double-gated
-   * test-only exchange route — its own plan row. Consequence stated plainly: the
-   * product's headline designed path ("Create new repos for new projects") ships
-   * un-exercised at browser level against real GitHub.
+   * Plan row 66 CLOSED it. `exchangeCode` now reads a separate
+   * `GITHUB_OAUTH_INTERNAL_BASE_URL`, so the containerised api can complete that one
+   * hop against ITSELF over the Compose network — where a test-only route, gated
+   * exactly like `POST /v1/test/seed`, answers with a purpose-built narrow token —
+   * while the browser keeps redirecting to real github.com. E-RNP1b below drives the
+   * full round trip; this test keeps the existing-empty tab covered, which is a
+   * different shipped product path (wireframe 13a), not a stand-in for the other.
    *
-   * What this test still proves against real GitHub is everything downstream of the
-   * consent screen: the wizard's second tab (wireframe 13a, already shipping) picks
-   * a real empty repo, `startRealExisting` POSTs `/api/projects`, and step 2's
-   * provisioning log renders from the POLLED `ProjectJob.stages` of a real scaffold
-   * (clone → commit v0.0.0 → push → open+merge base PR → cut v0.0.1 on github.com).
+   * What THIS test proves against real GitHub: the wizard's second tab picks a real
+   * empty repo, `startRealExisting` POSTs `/api/projects`, and step 2's provisioning
+   * log renders from the POLLED `ProjectJob.stages` of a real scaffold (clone →
+   * commit v0.0.0 → push → open+merge base PR → cut v0.0.1 on github.com).
    */
   test("E-RNP1: the existing-empty tab scaffolds a real repo → real provisioning log → studio", async () => {
     await createProjectViaExistingEmptyRepo(page, {
@@ -185,6 +193,92 @@ describe("New-project wizard (existing empty repo → real scaffold)", () => {
     // picked repo row, so a bad emptiness derivation fails attributably rather than
     // as an unexplained wizard timeout.
   }, 600_000);
+
+  /**
+   * ── E-RNP1b: THE HEADLINE DESIGNED PATH, RESTORED (plan row 66) ─────────────
+   * The 11-hop browser round trip, end to end: CTA → `startScaffold` → a random
+   * `state` nonce → the localStorage param stash → the authorize popup →
+   * `/api/connect/github/create-repo/start`'s 302 → *[consent]* → the callback page →
+   * `completeCreateRepo` → `/api/projects/create-repo` → the create-repo result poll →
+   * the job poll → `TerminalReadyCard` → `/studio/<id>`.
+   *
+   * ONE hop is simulated, and it is the same one every other connect helper in this
+   * suite simulates: a HUMAN clicking "Authorize" on GitHub's hosted consent screen
+   * (§10.2 — interactive browser logins, and only that hop). Everything else is real,
+   * including `POST /user/repos`, which creates a genuine repository on github.com,
+   * and the DBOS worker's clone/commit/push/PR/merge/branch against it.
+   *
+   * The code→token exchange is answered by the api's own double-gated test-only route
+   * rather than by github.com, which is what plan row 66 built and what makes this
+   * spec possible at all. It is not a stub: the credential that comes back is a REAL
+   * GitHub token, so `POST /user/repos` succeeds or fails for real reasons. Only the
+   * token's PROVENANCE is substituted.
+   *
+   * REQUIRES `GITHUB_E2E_EXCHANGE_TOKEN` in the ROOT repo's untracked `.env` (loaded
+   * into this worker by `tests/e2e/load-root-env.ts`, and into the api container by
+   * `${VAR}` substitution in `docker-compose.test.yml`). Absent it, the api refuses to
+   * boot under the test overlay and says so, naming the variable — deliberately, so a
+   * missing credential can never present as a passing suite.
+   */
+  test("E-RNP1b: the create-new tab creates a REAL repo through the consent round trip → real scaffold → studio", async () => {
+    const acquired = await createProjectViaCreateNewRepo(page, {
+      slug: "wizard-new",
+      seedUrl: SEED_URL,
+      context: stagehand.context,
+      onScaffoldStarted: async () => {
+        // Step 2 is on screen only until the ready card replaces it.
+        await waitForTestId("provisioning-log", 120_000);
+        const sawCompleted = await (async () => {
+          const deadline = Date.now() + 180_000;
+          while (Date.now() < deadline) {
+            const done = await page.evaluate(() =>
+              Array.from(
+                document.querySelectorAll<HTMLElement>('[data-testid="log-row"]'),
+              ).some((el) => el.getAttribute("data-status") === "completed"),
+            );
+            if (done) return true;
+            await page.waitForTimeout(300);
+          }
+          return false;
+        })();
+        expect(sawCompleted, "a real scaffold stage completed").toBe(true);
+      },
+    });
+
+    // The repository must EXIST on github.com — the whole point of the round trip is
+    // that the product created it, so this is read back independently of any UI state.
+    // Read with the PAT: it is the credential this harness holds, and the read is a
+    // pure existence check, not a permission proof.
+    const ctx = await resolveGithubE2eContext();
+    const res = await fetch(
+      `https://api.github.com/repos/${acquired.repoFullName}`,
+      {
+        headers: {
+          authorization: `Bearer ${ctx.pat}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+        },
+      },
+    );
+    expect(
+      res.status,
+      `the product-created repo ${acquired.repoFullName} must exist on github.com`,
+    ).toBe(200);
+    const repo = (await res.json()) as { private?: boolean; default_branch?: string };
+    // `🔒 Private ▾` in wireframe 12a step 1 is not decoration.
+    expect(repo.private).toBe(true);
+    // Row 63's `auto_init: true` — without a real `main` the scaffold's base PR 422s.
+    expect(repo.default_branch).toBe("main");
+
+    // Reclaimable by the root repo's interactive cleanup script: the driver names the
+    // repo through the same root-authored namer every fixture uses, so the throwaway
+    // prefix is present even though the PRODUCT is what created it.
+    const naming = await namingModule();
+    expect(
+      naming.isE2eRepoName(acquired.repoShortName),
+      "a PRODUCT-created repo the cleanup script cannot match would be stranded",
+    ).toBe(true);
+  }, 900_000);
 });
 
 describe("Landing 'Blank canvas' → the same New-project wizard", () => {

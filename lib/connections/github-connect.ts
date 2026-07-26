@@ -68,14 +68,28 @@ export async function fetchGithubConnection(
   }
 }
 
-/** The live "N repos accessible" count (`GET /api/github/repos` →
- *  `repositories.length`). Best-effort: any failure (non-200 incl. 409
- *  not-connected, bad body, thrown fetch) → 0, so it never blocks the connected
- *  transition or the wizard auto-advance. */
+/**
+ * The live "N repos accessible" count (`GET /api/github/repos` →
+ * `repositories.length`). Best-effort: any failure (non-200 incl. 409
+ * not-connected, bad body, thrown fetch) → 0, so it never blocks the connected
+ * transition or the wizard auto-advance.
+ *
+ * **`?filter=all` is stated EXPLICITLY, and that is the point** (deferred review
+ * finding DR2). This call renders a COUNT; it never reads `empty`. The API prices
+ * plan row 65's per-repo emptiness probe off the query — `filter=empty` or a `q`
+ * narrowing buys an authoritative verdict, the unnarrowed listing buys none — so
+ * asking for the whole listing with no narrowing is what makes this request cost
+ * one token mint plus the page walk and NOTHING else. It is issued on every hard
+ * page load of every page in the app (see `SessionProvider`), against an
+ * installation with a ~5,000-requests/hour budget, so the difference is ~700 page
+ * loads before exhaustion instead of ~80. Relying on the route's `filter` default
+ * would produce the same request; saying it out loud is what stops the next reader
+ * from "tidying" this into `?filter=empty` without seeing the bill.
+ */
 export async function fetchGithubRepoCount(deps: FetchDeps = {}): Promise<number> {
   const doFetch = deps.fetchImpl ?? fetch;
   try {
-    const res = await doFetch(REPOS_URL, { cache: "no-store" });
+    const res = await doFetch(`${REPOS_URL}?filter=all`, { cache: "no-store" });
     if (!res.ok) return 0;
     const body = (await res.json()) as { repositories?: unknown };
     return Array.isArray(body.repositories) ? body.repositories.length : 0;

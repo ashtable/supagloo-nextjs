@@ -111,7 +111,13 @@ describe("fetchGithubRepoCount", () => {
       { status: 200, body: { repositories: [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] } },
     ]);
     expect(await fetchGithubRepoCount({ fetchImpl })).toBe(4);
-    expect(calls[0]).toBe("/api/github/repos");
+    // `filter=all` is EXPLICIT, not incidental (deferred review finding DR2). This
+    // call renders a count and never reads `empty`, and the API only pays for plan
+    // row 65's per-repo emptiness probe when the query asks for an emptiness verdict
+    // (`filter=empty`) or narrows with `q`. Since this request fires on every hard
+    // page load of every page, the unnarrowed query is what keeps it at one mint plus
+    // the page walk rather than ~62 GitHub requests. Do NOT "tidy" it to `filter=empty`.
+    expect(calls[0]).toBe("/api/github/repos?filter=all");
   });
 
   it("defaults to 0 on a non-200, a missing array, or a thrown fetch (best-effort)", async () => {

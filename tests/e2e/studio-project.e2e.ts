@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
-import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
+import {
+  makeHelpers,
+  waitForHydrated,
+  type E2EHelpers,
+  type StagehandPage,
+} from "./helpers";
 
 /**
  * Turn 13b — the `/studio/[id]` editor's new top bar (repo identity, the
@@ -125,16 +130,23 @@ async function waitForDataAttr(
     `[data-testid="${testid}"] ${attr}="${last}" never became "${expected}" within ${timeoutMs}ms`,
   );
 }
-/** Navigate to a studio id and settle past the client mount. On Step 7 RED the
- *  route 404s so `studio-frame` never appears — we swallow the wait so the
- *  per-test presence guard reports the missing frame as a clean assertion. */
+/** Navigate to a studio id and settle past HYDRATION, not merely past the HTML.
+ *
+ *  This function used to poll for the presence of `studio-frame` — which is
+ *  SSR'd, so it is in the first HTML byte and its presence is NOT a
+ *  post-hydration signal. That was the single root cause of plan row 68's two
+ *  reported mock-lane failures (E-SP2's lost `input` event and E-SP3's `-32000
+ *  Node does not have a layout object`); see the rule and the measurements in
+ *  `helpers.ts`. `waitForHydrated` polls for a non-zero box AND a
+ *  `__reactProps$` key instead, and THROWS on timeout — the race must be loud.
+ *
+ *  The old tolerance (silently returning so a Step-7 RED 404 surfaces as a clean
+ *  per-test presence assertion) is preserved but no longer the default: pass
+ *  `{ optional: true }` through to `waitForHydrated` during such a phase. Every
+ *  call in this file targets a route that must render. */
 async function gotoStudio(path: string): Promise<void> {
   await page.goto(`${BASE_URL}${path}`, { waitUntil: "load" });
-  const deadline = Date.now() + 8000;
-  while (Date.now() < deadline) {
-    if ((await countTestId("studio-frame")) > 0) return;
-    await page.waitForTimeout(200);
-  }
+  await waitForHydrated(page, "studio-frame");
 }
 
 beforeAll(async () => {

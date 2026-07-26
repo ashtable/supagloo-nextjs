@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
+import { waitForHydrated } from "./helpers";
+
 /**
  * Turn 5 / Fig 5a "Wilderness Studio" editor E2E.
  *
@@ -201,9 +203,13 @@ beforeAll(async () => {
   await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
   // On Step 7 RED `/studio/psalm-121` 404s (the `[id]` route is not built yet);
   // `next dev` still serves a 404 HTML page, so goto resolves and the per-test
-  // assertions below are what go RED.
+  // assertions below are what go RED — pass `{ optional: true }` to the gate
+  // during such a phase so the missing frame stays a clean per-test assertion.
+  // Plan row 68: a fixed 800 ms sleep was standing in for hydration here. Every
+  // test below clicks and measures, and `studio-frame` is SSR'd, so this is the
+  // same latent race that made `studio-project.e2e.ts` flaky — see `helpers.ts`.
   await page.goto(STUDIO_URL, { waitUntil: "load" });
-  await page.waitForTimeout(800); // settle any client mount
+  await waitForHydrated(page, "studio-frame");
 });
 
 afterAll(async () => {
@@ -489,8 +495,12 @@ describe("Wilderness Studio editor (5a)", () => {
 
     // the landing must NOT inherit the Wilderness tokens: `--ws-*` are declared
     // on the studio wrapper, never on :root.
+    // Row 68: gate on the landing being hydrated rather than sleeping 400 ms.
+    // `hero-demo` is SSR'd too (the landing is the signed-out default of
+    // `home-switch.tsx`), so presence alone would prove nothing — the explicit
+    // hydration predicate is what makes waiting on it sound.
     await page.goto(BASE_URL, { waitUntil: "load" });
-    await page.waitForTimeout(400);
+    await waitForHydrated(page, "hero-demo");
     const wsOnRoot = await page.evaluate(() =>
       getComputedStyle(document.documentElement)
         .getPropertyValue("--ws-bg")
@@ -498,9 +508,10 @@ describe("Wilderness Studio editor (5a)", () => {
     );
     expect(wsOnRoot).toBe("");
 
-    // restore for suite hygiene
+    // restore for suite hygiene — E11 onward clicks scene rows immediately, so
+    // this restore must land HYDRATED, not merely rendered (row 68).
     await page.goto(STUDIO_URL, { waitUntil: "load" });
-    await page.waitForTimeout(400);
+    await waitForHydrated(page, "studio-frame");
   });
 
   // --- Regression tests for code-review fixes [0]–[2] (E10 left /studio freshly

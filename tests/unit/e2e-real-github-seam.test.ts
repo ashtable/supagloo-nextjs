@@ -163,6 +163,23 @@ describe("project acquisition is not re-duplicated (task-62 D14)", () => {
     ).toEqual([]);
   });
 
+  it("the create-new-repo browser driver also lives in the exempt shared helper", () => {
+    // Plan row 66 restored browser-level coverage of the create-NEW-repo round trip.
+    // It goes in `github-e2e.ts` for the same reason `createProjectViaExistingEmptyRepo`
+    // does — that is the ONE file exempt from the CTA-duplication check above, and the
+    // driver carries the fixture-naming discipline (the throwaway prefix is single-
+    // sourced in the ROOT repo) plus the callback-nonce handshake. A private copy in a
+    // spec would look fine and create a repo the cleanup script cannot see.
+    const shared = readFileSync(resolve(E2E_DIR, "github-e2e.ts"), "utf8");
+    expect(shared).toContain("export async function createProjectViaCreateNewRepo");
+
+    const offenders = e2eFiles()
+      .filter(({ name }) => name !== "github-e2e.ts")
+      .filter(({ text }) => /export\s+(async\s+)?function\s+createProjectViaCreateNewRepo/.test(text))
+      .map(({ name }) => name);
+    expect(offenders).toEqual([]);
+  });
+
   it("the shared helper keeps its safety assertions", () => {
     const shared = readFileSync(resolve(E2E_DIR, "github-e2e.ts"), "utf8");
     // Narrow the picker before clicking: the live account renders 100+ rows, so a

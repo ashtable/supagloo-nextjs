@@ -12,6 +12,13 @@ import { resolve } from "node:path";
  * credential source for every lane in every repo. Hence this setupFile, modelled
  * on the sibling `load-env.ts` (which loads THIS repo's `.env.local`).
  *
+ * Plan row 66 added `GITHUB_E2E_EXCHANGE_TOKEN` to that same root `.env`, but it is
+ * NOT read here: it is consumed inside the **api container**, which receives it by
+ * `${VAR}` substitution from the same file via `docker-compose.test.yml`. The
+ * distinction matters — `GITHUB_E2E_PAT_TOKEN` is loaded into this worker and enters
+ * no container; `GITHUB_E2E_EXCHANGE_TOKEN` enters exactly one container and is never
+ * needed here. Do not "tidy" them into one variable or one path.
+ *
  * Listed ONLY by `vitest.e2e.real.config.ts` and `vitest.e2e.render.config.ts`.
  * The mock lane (`vitest.e2e.config.ts`) deliberately omits it so that lane keeps
  * running with no root checkout, no root `.env` and no credentials at all —

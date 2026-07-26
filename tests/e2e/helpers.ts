@@ -17,6 +17,177 @@ import type { Stagehand } from "@browserbasehq/stagehand";
 
 export type StagehandPage = ReturnType<Stagehand["context"]["pages"]>[number];
 
+// ── the hydration gate (plan row 68) ─────────────────────────────────────────
+
+/**
+ * THE RULE, and it is the whole of plan row 68:
+ *
+ *   **Wait on a mount-gated testid, or on an explicit hydration predicate —
+ *   never on an SSR'd one.**
+ *
+ * A `data-testid` that a Server Component emits is in the FIRST HTML BYTE. Its
+ * presence proves the HTML arrived; it proves nothing about React having
+ * hydrated, and `page.goto(..., { waitUntil: "load" })` adds no protection —
+ * `document.readyState` reaches `"complete"` while the island is still cold.
+ * Everything that needs a live React tree — a click that must run an `onClick`,
+ * a synthetic `input` event that must reach an `onChange`, any measurement of a
+ * box — is a silent no-op in that window.
+ *
+ * The two sides of the rule, both live in this repo:
+ *
+ *   - `studio-frame` is **SSR'd** (`app/studio/[id]/page.tsx` resolves the demo
+ *     catalog synchronously and renders `<StudioApp>`; the div is in
+ *     `app/studio/_components/studio-app.tsx`). Polling for it returns
+ *     immediately, before hydration. That is the single root cause behind BOTH
+ *     of row 68's reported mock-lane failures — the lost `input` event that
+ *     leaves `data-dirty="false"`, and Stagehand's `-32000 Node does not have a
+ *     layout object` when it clicks a node with no layout box. They are one bug,
+ *     not two, and raising the assertion's timeout fixes neither: the event is
+ *     LOST, not slow (the mock commit path is 320 ms and the observed flip
+ *     latency is 0-16 ms).
+ *   - `workspace-home` is **mount-gated** (`app/_components/home-switch.tsx`
+ *     renders the public landing until `mounted && session.isAuthed`), so its
+ *     presence genuinely IS a post-hydration signal. `project-wizards.e2e.ts`'s
+ *     `gotoWorkspace` looks identical to the broken `gotoStudio` and is immune
+ *     purely by that accident — do not read it as a pattern to copy.
+ *
+ * Measured over 16 navigations against a warm `next dev`: 2 returned with the
+ * frame present, `readyState === "complete"`, `getBoundingClientRect() === 0x0`,
+ * no `__reactProps$` key and `document.styleSheets.length === 4` instead of 5 —
+ * and in exactly those 2, the E-SP2 script edit never dirtied the chip.
+ * `waitForSelector({ state: "visible" })` alone is NECESSARY BUT NOT SUFFICIENT
+ * (1/16 satisfied it while unhydrated). A non-zero box AND a `__reactProps$` key
+ * is 0/16, and costs 0-70 ms.
+ *
+ * The gate is deliberately split in three so it can carry a unit test at all:
+ * `vitest.config.ts` is `environment: "node"` with no jsdom, so `pollUntil` and
+ * `isHydratedSnapshot` are PURE (injected `read`/`sleep`/`now`, plain snapshot
+ * objects — the same shape as `lib/project-wizard/provision-effects.ts`'s
+ * `pollJobUntilTerminal`), and only `waitForHydrated` touches a browser. Its
+ * unit suite is `tests/unit/hydration-gate.test.ts`.
+ *
+ * FOLLOW-UP, deliberately out of scope for row 68: there are ~17 hand-rolled
+ * poll loops across 14 e2e files that should collapse into `pollUntil`.
+ */
+
+/** One element's hydration evidence, measured in-page. */
+export interface HydrationSnapshot {
+  width: number;
+  height: number;
+  /** Does the node carry a React fiber-props key (`__reactProps$…`)? */
+  hasReactProps: boolean;
+}
+
+/**
+ * Is this node both laid out and wired to React? Both halves are load-bearing:
+ * a zero box means Blink has no layout object (Stagehand's
+ * `DOM.scrollIntoViewIfNeeded` / `DOM.getBoxModel` throw `-32000` on it), and a
+ * missing fiber-props key means React's delegated root listener will find no
+ * props for a dispatched event, so `onChange`/`onClick` never run.
+ */
+export function isHydratedSnapshot(s: HydrationSnapshot): boolean {
+  return s.width > 0 && s.height > 0 && s.hasReactProps;
+}
+
+export interface PollUntilOptions {
+  /** What we are waiting for, named in the timeout message. */
+  label: string;
+  /** One observation. Resolve true to stop. */
+  read: () => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  timeoutMs: number;
+  intervalMs: number;
+  /** Last observed state, rendered into the timeout message. */
+  describe: () => Promise<string> | string;
+}
+
+/**
+ * The generic condition wait this repo has never had: poll `read` every
+ * `intervalMs` until it goes true, or throw a message naming the target AND the
+ * last observed state. Pure — every clock and every I/O is injected, so the
+ * timing contract is unit-testable with no browser and no jsdom.
+ *
+ * Reads are bounded by the deadline as well as sleeps: a predicate is never
+ * evaluated once `now()` has passed the deadline.
+ */
+export async function pollUntil(opts: PollUntilOptions): Promise<void> {
+  const deadline = opts.now() + opts.timeoutMs;
+  for (;;) {
+    if (await opts.read()) return;
+    if (opts.now() >= deadline) break;
+    await opts.sleep(opts.intervalMs);
+  }
+  throw new Error(
+    `Timed out after ${opts.timeoutMs}ms waiting for ${opts.label}. ` +
+      `Last observed: ${await opts.describe()}`,
+  );
+}
+
+const DEFAULT_HYDRATION_TIMEOUT_MS = 8000;
+const DEFAULT_HYDRATION_INTERVAL_MS = 100;
+
+/**
+ * Wait until at least one element carrying `testid` is BOTH laid out and
+ * hydrated. This is the "explicit hydration predicate" half of the rule above,
+ * and it is what makes waiting on an SSR'd testid safe.
+ *
+ * ANY matching element counts (not just the first): under this repo's dual-copy
+ * convention a testid can appear in both a hidden desktop copy and a visible
+ * mobile one, exactly as `isVisibleByTestId` already handles.
+ *
+ * Returns true when the gate passes. Throws on timeout — the race must be LOUD;
+ * silently returning is what let row 68's defect survive a whole task. Pass
+ * `{ optional: true }` to get `false` instead, which is the documented opt-out
+ * for a Step-7 RED phase where the route legitimately 404s and the per-test
+ * presence guard is the assertion that should report it.
+ */
+export async function waitForHydrated(
+  page: StagehandPage,
+  testid: string,
+  opts: { timeoutMs?: number; intervalMs?: number; optional?: boolean } = {},
+): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_HYDRATION_TIMEOUT_MS;
+  const intervalMs = opts.intervalMs ?? DEFAULT_HYDRATION_INTERVAL_MS;
+
+  const readSnapshots = (): Promise<HydrationSnapshot[]> =>
+    page.evaluate(
+      (id) =>
+        Array.from(
+          document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`),
+        ).map((el) => {
+          const r = el.getBoundingClientRect();
+          return {
+            width: r.width,
+            height: r.height,
+            // React 18+ attaches fiber props under a `__reactProps$<hash>` key.
+            // Its ABSENCE is the precise, observable statement of "this node is
+            // in the DOM but React has not adopted it yet".
+            hasReactProps: Object.keys(el).some((k) =>
+              k.startsWith("__reactProps$"),
+            ),
+          };
+        }),
+      testid,
+    );
+
+  try {
+    await pollUntil({
+      label: `[data-testid="${testid}"] to be laid out and hydrated`,
+      read: async () => (await readSnapshots()).some(isHydratedSnapshot),
+      sleep: (ms) => page.waitForTimeout(ms),
+      now: Date.now,
+      timeoutMs,
+      intervalMs,
+      describe: async () => JSON.stringify(await readSnapshots()),
+    });
+    return true;
+  } catch (err) {
+    if (opts.optional) return false;
+    throw err;
+  }
+}
+
 export interface E2EHelpers {
   bodyText(): Promise<string>;
   waitForText(needle: string, timeoutMs?: number): Promise<void>;
