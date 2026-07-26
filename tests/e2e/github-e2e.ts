@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import type { Stagehand } from "@browserbasehq/stagehand";
+
 import type { StagehandPage } from "./helpers";
 
 /**
@@ -37,6 +39,10 @@ import type { StagehandPage } from "./helpers";
  * `pick*` helpers so a harmless shape difference in the shared harness surfaces
  * as a named error here rather than an `undefined` propagating into a URL.
  */
+
+/** The app's own origin (`next dev`). A legitimate coordinate, not a stub host — the
+ *  no-stub seam guard is deliberately narrow enough to say so. */
+const APP_BASE_URL = "http://localhost:3000";
 
 // ── locating the root checkout ───────────────────────────────────────────────
 
@@ -75,6 +81,21 @@ interface NamingModule {
   E2E_RUN_ID: string;
   buildE2eRepoName(slug: string, runId: string): string;
   isE2eRepoName(name: string): boolean;
+}
+
+/**
+ * The name the create-new-repo driver types into the wizard.
+ *
+ * It goes through the SAME root-authored namer every fixture repo uses, for the same
+ * reason: this is the one flow where the PRODUCT creates the repository, so if the
+ * name did not carry the throwaway prefix the cleanup script could never reclaim it —
+ * a repo stranded in a personal account that also holds the user's real ones. The
+ * prefix itself is never re-typed in this repo (task-62 D1).
+ */
+export async function createNewRepoName(slug: string): Promise<string> {
+  const naming = await namingModule();
+  const { runId } = await resolveGithubE2eContext();
+  return naming.buildE2eRepoName(slug, runId);
 }
 
 interface GithubApiModule {
@@ -160,7 +181,14 @@ function pickString(
 export interface GithubE2eContext {
   appId: string;
   privateKey: string;
-  /** Classic PAT (`repo`), host-side only — NEVER passed into a container. */
+  /**
+   * Classic PAT (`repo`), host-side only — NEVER passed into a container. Still true
+   * after plan row 66, and true on purpose: row 66 needed a GitHub credential INSIDE
+   * the api container, and rather than reverse this property it minted a SECOND,
+   * deliberately narrower one (`GITHUB_E2E_EXCHANGE_TOKEN` — repository creation only,
+   * no `delete_repo`) that the api reads and this harness never touches. Two
+   * credentials with two different blast radii; do not collapse them.
+   */
   pat: string;
   /** The installation account login, discovered — never a literal in a spec. */
   owner: string;
@@ -353,10 +381,13 @@ let creationChain: Promise<unknown> = Promise.resolve();
  *     scaffold's `ensureRepoReachable` treats absence as a PERMANENT failure, so
  *     a missing gate turns a timing blip into a non-retryable scaffold error.
  *
- * The repo is created with an initial commit on `main` (the shared harness passes
- * `auto_init: true`). That is load-bearing, not cosmetic: `scaffoldProjectWorkflow`
- * opens its base PR with `base: "main"`, and real GitHub 422s that against a
- * commit-less repo.
+ * The repo is created with an initial commit on `main` (the shared harness's
+ * `auto_init: true` DEFAULT). Every nextjs fixture uses that default, and it stays
+ * load-bearing here: `scaffoldProjectWorkflow` opens its base PR with `base: "main"`,
+ * and the picker's existing-empty flow expects a normal one-commit repo. Plan row 63
+ * added an additive `autoInit: false` opt-out to the shared harness and taught the
+ * workflow to bootstrap an unborn base ref, so a commit-less repo no longer 422s — but
+ * that opt-out is used by ONE dbos spec only and is deliberately not used from nextjs.
  *
  * There is NO teardown here, on purpose (task-62 D6): fixture repos live in a
  * personal account that also holds the user's real repos, so the only path that
@@ -584,21 +615,22 @@ export interface AcquiredProject {
  * tab, and open its studio. ONE implementation, shared by every real-stack spec
  * that used to carry a byte-similar private copy.
  *
- * Why this path and not "Create new repo" (task-62 D13/D14): the create-new tab
- * runs GitHub's user-authorization consent screen, which is a human clicking
- * "Authorize" in a second tab. Against the retired stub any non-empty `code` was
- * accepted; real GitHub answers `bad_verification_code`, and a containerised api
- * exposes no client-side seam to intercept the exchange (the only container-level
- * seam, `GITHUB_OAUTH_BASE_URL`, is simultaneously the BROWSER's authorize
- * redirect target — overriding it re-creates the `DNS_PROBE_FINISHED_NXDOMAIN`
- * this task deletes). The existing-empty tab is a fully shipped, DESIGNED product
- * path (wireframe 13a) whose `startRealExisting` POSTs straight to
- * `/api/projects` with no consent hop at all — so the specs that use it keep
- * their failure modes about the thing they test instead of about OAuth plumbing.
- * The create-new path's server half stays covered by the api repo's
- * `repo-provisioning.e2e.ts`, its client half by the mock lane's
- * `project-wizards.e2e.ts`, and restoring browser-level coverage is its own plan
- * row.
+ * Why this path and not "Create new repo" for the specs that only need A PROJECT
+ * (task-62 D13/D14): the create-new tab runs GitHub's user-authorization consent
+ * screen, a human clicking "Authorize" in a second tab, and everything downstream of
+ * it is OAuth plumbing. The existing-empty tab is a fully shipped, DESIGNED product
+ * path (wireframe 13a) whose `startRealExisting` POSTs straight to `/api/projects`
+ * with no consent hop at all — so the eight specs that just need a scaffolded project
+ * keep their failure modes about the thing they test.
+ *
+ * That is now a CHOICE rather than a limitation. It used to be a hard block: a
+ * containerised api exposed no seam to intercept the code→token exchange, and the only
+ * container-level seam, `GITHUB_OAUTH_BASE_URL`, was simultaneously the BROWSER's
+ * authorize redirect target — so overriding it re-created row 62 item (e)'s
+ * `DNS_PROBE_FINISHED_NXDOMAIN`. Plan row 66 split that variable in two, and
+ * `createProjectViaCreateNewRepo` below now drives the full create-new round trip
+ * against real GitHub. Use THIS helper unless the create-new path is the thing under
+ * test; it is faster and has fewer moving parts.
  */
 export async function createProjectViaExistingEmptyRepo(
   page: StagehandPage,
@@ -686,6 +718,295 @@ export async function createProjectViaExistingEmptyRepo(
     repoFullName: repo.fullName,
     repoShortName: repo.name,
   };
+}
+
+// ── the create-NEW-repo acquisition helper (plan row 66) ────────────────────
+
+export interface CreateNewRepoProjectOptions {
+  /** Spec-scoped slug fragment; the throwaway prefix + run id are added by the
+   *  root-authored namer, so the PRODUCT-created repo is reclaimable. */
+  slug: string;
+  /** The `?seed=…&nonce=…` workspace URL the calling spec already builds. */
+  seedUrl: string;
+  /** The Stagehand context — the callback runs in a SECOND page that must share this
+   *  context's localStorage and httpOnly session cookie. */
+  context: Stagehand["context"];
+  /** Real exchange → create → clone → commit → push → PR → merge → branch. */
+  projectReadyTimeoutMs?: number;
+  /** Same contract as the existing-empty helper: invoked after the CTA click and
+   *  before the wait for `project-ready-card`, while step 2's log is still on screen. */
+  onScaffoldStarted?: () => Promise<void>;
+}
+
+/**
+ * Acquire a real, scaffolded project through the wizard's **create-new-repo** tab —
+ * the product's headline designed path (wireframe 12a) — and open its studio.
+ *
+ * ── WHAT IS REAL AND WHAT IS SIMULATED ───────────────────────────────────────
+ * Everything is real except the ONE hop no headless spec can drive: a human clicking
+ * "Authorize" on GitHub's hosted consent screen. That is the same §10.2-sanctioned
+ * interactive-hop exception `completeGithubConnectViaCallback` and the OpenRouter PKCE
+ * helper already use, and it is applied identically here — we navigate a second page
+ * straight to the app's own callback URL, exactly as GitHub would redirect it.
+ *
+ * What makes this possible AT ALL (and what made it impossible until plan row 66) is
+ * the api-side change, not anything here: `exchangeCode` now uses
+ * `GITHUB_OAUTH_INTERNAL_BASE_URL`, distinct from the browser-facing
+ * `GITHUB_OAUTH_BASE_URL`, so the containerised api completes the code→token hop
+ * against ITSELF over the Compose network — where a double-gated, test-only route
+ * answers with `GITHUB_E2E_EXCHANGE_TOKEN`. A synthetic `code` therefore no longer
+ * reaches real github.com (which correctly answers `bad_verification_code`), while the
+ * browser's authorize redirect still points at real github.com and resolves from the
+ * user's machine. Before the split, one variable had to be both and could be neither.
+ *
+ * Everything downstream of the exchange is REAL: `POST /user/repos` creates a genuine
+ * repository on github.com under a genuine credential, and the DBOS worker clones,
+ * commits v0.0.0, pushes, opens+merges the base PR and cuts v0.0.1 against it.
+ *
+ * ── WHY IT LIVES HERE ────────────────────────────────────────────────────────
+ * Same reason as `createProjectViaExistingEmptyRepo`: this file is the ONE exemption
+ * in the `new-project-cta` acquisition guard, and it is where the repo-naming
+ * discipline lives. A private copy in a spec would look fine and create a repo the
+ * cleanup script cannot see. It is also deliberately NOT named
+ * `completeCreateRepoViaCallback` — that identifier stays banned by
+ * `tests/unit/e2e-real-github-seam.test.ts`, because it named a helper that fed a
+ * synthetic code to REAL github.com and therefore could never pass.
+ *
+ * NO TEARDOWN, as everywhere else (task-62 D6): reclaim with the root repo's
+ * interactive `npm run cleanup:github-e2e`, which archives and never deletes.
+ */
+export async function createProjectViaCreateNewRepo(
+  page: StagehandPage,
+  opts: CreateNewRepoProjectOptions,
+): Promise<AcquiredProject> {
+  const ctx = await resolveGithubE2eContext();
+  const repoName = await createNewRepoName(opts.slug);
+  const repoFullName = `${ctx.owner}/${repoName}`;
+
+  await gotoWorkspace(page, opts.seedUrl);
+
+  await waitForTestId(page, "workspace-new-project");
+  await clickTestId(page, "workspace-new-project");
+  await waitForTestId(page, "new-project-wizard");
+
+  // First tab: "Create new repo" (12a). It is the default, but assert-then-click
+  // rather than assume — a default flip would otherwise present as the repo-name
+  // field simply never appearing.
+  await waitForTestId(page, "tab-create-new");
+  await clickTestId(page, "tab-create-new");
+  await waitForTestId(page, "new-repo-name");
+  await typeInto(page, "new-repo-name", repoName);
+
+  // The CTA carries a native `disabled` until the name is non-empty, and a click on a
+  // natively-disabled button is silently dropped — so a lost `input` event would look
+  // like a wizard that simply never advanced.
+  const ctaDisabled = await page.evaluate(
+    () =>
+      document.querySelector<HTMLButtonElement>('[data-testid="new-project-cta"]')
+        ?.disabled ?? true,
+  );
+  if (ctaDisabled) {
+    throw new Error(
+      `[github-e2e] new-project-cta is still disabled after typing ${repoName} into ` +
+        `new-repo-name — the React-controlled input did not receive the value.`,
+    );
+  }
+  await clickTestId(page, "new-project-cta");
+
+  // The wizard stashes its form params under a random `state` nonce and opens the
+  // authorize popup. The nonce is generated in the browser, so the ONLY way to learn
+  // it is to read it back out of localStorage — which is also a real assertion that
+  // hop 4 of the round trip happened at all.
+  const nonce = await waitForStashedCreateRepoNonce(page);
+
+  // Close the consent popup. It navigated to real github.com's authorize screen (hop 6,
+  // genuinely exercised: the BFF's 302 really is built from the PUBLIC base URL and
+  // really does resolve). A human cannot be asked to click Authorize in CI, so we stop
+  // there and simulate only the redirect BACK.
+  await closeExtraPages(page, opts.context);
+
+  await completeCreateRepoCallback(opts.context, nonce);
+
+  // …and again, because `completeCreateRepoCallback` opens one of its own and the
+  // callback page may self-close mid-flight. See `closeExtraPages` for why leaving one
+  // behind is not cosmetic.
+  await closeExtraPages(page, opts.context);
+
+  if (opts.onScaffoldStarted) await opts.onScaffoldStarted();
+
+  await waitForProjectReady(
+    page,
+    { owner: ctx.owner, name: repoName, fullName: repoFullName },
+    opts.projectReadyTimeoutMs ?? 300_000,
+  );
+
+  await waitForTestId(page, "open-in-studio");
+  await clickTestId(page, "open-in-studio");
+
+  const deadline = Date.now() + 45_000;
+  let url = page.url();
+  while (Date.now() < deadline && !url.includes("/studio/")) {
+    await page.waitForTimeout(200);
+    url = page.url();
+  }
+  if (!url.includes("/studio/")) {
+    throw new Error(`URL never included "/studio/" (last: ${url})`);
+  }
+  return {
+    projectId: url.split("/studio/")[1]?.split(/[?#]/)[0] ?? "",
+    repoFullName,
+    repoShortName: repoName,
+  };
+}
+
+/**
+ * The localStorage key PREFIX the wizard stashes its create-repo form params under.
+ *
+ * Deliberately derived from the app's own shape rather than re-typed as a full key:
+ * the nonce half is random per click, so the spec has to discover it. Reading it back
+ * is itself the assertion that the cross-tab handoff was set up.
+ */
+const CREATE_REPO_PARAMS_KEY_PREFIX = "sg_createrepo_params_";
+
+async function waitForStashedCreateRepoNonce(
+  page: StagehandPage,
+  timeoutMs = 20_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = await page.evaluate((prefix) => {
+      for (let i = 0; i < window.localStorage.length; i += 1) {
+        const key = window.localStorage.key(i);
+        if (key && key.startsWith(prefix)) return key.slice(prefix.length);
+      }
+      return null;
+    }, CREATE_REPO_PARAMS_KEY_PREFIX);
+    if (found) return found;
+    await page.waitForTimeout(200);
+  }
+  throw new Error(
+    `[github-e2e] the wizard never stashed its create-repo params under a ` +
+      `\`${CREATE_REPO_PARAMS_KEY_PREFIX}<nonce>\` localStorage key within ${timeoutMs}ms. ` +
+      `That stash is written synchronously by the CTA handler, so its absence means ` +
+      `the click never reached React (an unhydrated island) or the wizard is in mock ` +
+      `mode — check the \`?seed=\` URL.`,
+  );
+}
+
+/**
+ * Close every page this driver caused to exist, leaving only the spec's own.
+ *
+ * NOT COSMETIC — this is the one thing about the create-new driver that a reader will
+ * otherwise "simplify" away. The wizard's `window.open` produces a real popup WINDOW,
+ * and while it is open it holds focus. A backgrounded Chrome tab defers the work React
+ * needs to mount, so the spec's page stops producing mount-gated testids —
+ * `workspace-home` is rendered only after `home-switch.tsx`'s `mounted` effect runs.
+ * Measured symptom when this cleanup is missing or partial: E-RNP1b itself passes, and
+ * then EVERY subsequent test in the file fails with "workspace-home never rendered" —
+ * a failure that names the api and the seed gate and is about neither. Its real
+ * signature is that the page loads (the api logs the requests) but nothing hydrates.
+ *
+ * Matching by URL is not enough: at the moment the nonce appears the popup is usually
+ * still `about:blank` and has not reached the BFF's 302 yet. So this waits briefly for
+ * a late-registering popup, then closes by POSITION — the spec's page is
+ * `context.pages()[0]` (every spec here captures it that way in `beforeAll`), and pages
+ * opened afterwards append. Finally it re-focuses the spec's page, because closing a
+ * popup does not by itself hand focus back.
+ */
+async function closeExtraPages(
+  main: StagehandPage,
+  context: Stagehand["context"],
+): Promise<void> {
+  // A popup opened by `window.open` can register a tick or two after the click.
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline && context.pages().length < 2) {
+    await main.waitForTimeout(200);
+  }
+  const [, ...extras] = context.pages();
+  for (const p of extras) {
+    await p.close().catch(() => {});
+  }
+  const focusable = main as unknown as { bringToFront?: () => Promise<unknown> };
+  if (typeof focusable.bringToFront === "function") {
+    await focusable.bringToFront().catch(() => {});
+  }
+  // A repaint tick after the focus change, so the first poll that follows is not
+  // measuring a page that is still coming out of background throttling.
+  await main.waitForTimeout(250);
+}
+
+/**
+ * Simulate GitHub's redirect back to the create-repo callback page.
+ *
+ * The `code` is deliberately arbitrary: with the row-66 split the containerised api
+ * exchanges it against ITSELF, not github.com, so its VALUE carries no meaning — what
+ * is under test is that the api completes the exchange, creates a real repository with
+ * the returned token and enqueues a real scaffold. (Against real github.com any code
+ * we could manufacture answers `bad_verification_code`; that path is covered at unit
+ * level in the api's `github-user-auth-client.test.ts`, deliberately.)
+ *
+ * The page runs in the SAME context, so it shares the localStorage the opener stashed
+ * the params in and the httpOnly session cookie the BFF needs.
+ */
+async function completeCreateRepoCallback(
+  context: Stagehand["context"],
+  nonce: string,
+  timeoutMs = 120_000,
+): Promise<void> {
+  const cb = await context.newPage();
+  try {
+    await cb.goto(
+      `${APP_BASE_URL}/connect/github/create-repo/callback` +
+        `?code=e2e-row66-exchange&state=${encodeURIComponent(nonce)}`,
+      { waitUntil: "load" },
+    );
+    const deadline = Date.now() + timeoutMs;
+    let state: string | null = null;
+    while (Date.now() < deadline) {
+      try {
+        state = await cb.evaluate(
+          () =>
+            document
+              .querySelector<HTMLElement>(
+                '[data-testid="create-repo-callback-status"]',
+              )
+              ?.getAttribute("data-state") ?? null,
+        );
+      } catch {
+        // The page best-effort `window.close()`s ITSELF, and only on success (the
+        // error branch deliberately leaves the tab open so a human can read it). A
+        // vanished tab is therefore a SUCCESS signal, not a lost evaluate.
+        state = "done";
+      }
+      if (state === "done" || state === "error") break;
+      await cb.waitForTimeout(250);
+    }
+    if (state === "error") {
+      throw new Error(
+        `[github-e2e] the create-repo callback page reported data-state="error". ` +
+          `That is POST /api/projects/create-repo → POST /v1/projects/create-repo ` +
+          `failing. The usual causes, in order:\n` +
+          `  • the api container has no GITHUB_E2E_EXCHANGE_TOKEN, so the test-only ` +
+          `exchange route refused to register (check \`docker compose logs api\` — it ` +
+          `names the variable and refuses to boot);\n` +
+          `  • GITHUB_OAUTH_INTERNAL_BASE_URL is not set on the api service, so ` +
+          `\`exchangeCode\` posted the synthetic code to REAL github.com and got ` +
+          `\`bad_verification_code\`;\n` +
+          `  • the seeded user has no GitHub connection (409) — was ` +
+          `completeGithubConnectViaCallback called first?\n` +
+          `  • GitHub rejected the repo name (422) — a collision means the run id is ` +
+          `not per-run.`,
+      );
+    }
+    if (state !== "done") {
+      throw new Error(
+        `[github-e2e] the create-repo callback page never left data-state="working" ` +
+          `within ${timeoutMs}ms (last: ${JSON.stringify(state)}).`,
+      );
+    }
+  } finally {
+    await cb.close().catch(() => {});
+  }
 }
 
 /**

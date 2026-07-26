@@ -111,8 +111,11 @@ async function scriptureOfScene(
  * Create a fresh real project and open its studio, via the ONE shared helper in
  * `tests/e2e/github-e2e.ts` (task-62 D14). This used to be a private copy that drove
  * the wizard's create-NEW-repo tab and faked GitHub's user-authorization redirect with
- * a literal `code`; against real GitHub that is `bad_verification_code`, and a
- * containerised api has no seam to intercept the exchange. The helper instead
+ * a literal `code`; against real GitHub that is `bad_verification_code`, and at the
+ * time a containerised api had no seam to intercept the exchange. (Plan row 66 has
+ * since added one and restored browser coverage of that path as
+ * `createProjectViaCreateNewRepo`; this spec still does not want the consent hop —
+ * it is not what is under test here.) The helper instead
  * PAT-creates a private throwaway repo per run and drives the wizard's already-shipping
  * "use existing empty repo" tab (wireframe 13a), which POSTs straight to
  * `/api/projects` with no consent hop. `slug` names the repo's purpose; the harness

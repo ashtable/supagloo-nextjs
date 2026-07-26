@@ -404,25 +404,38 @@ export async function connectOpenRouterViaProfile(
  * `bad_verification_code`, so that literal can never work again and the helper was
  * dead weight that only looked like coverage.
  *
- * It is deleted rather than repaired because there is no seam to repair it AT.
- * The exchange happens inside the CONTAINERISED api, which exposes no injectable
- * `fetchImpl`, and the only container-level seam — `GITHUB_OAUTH_BASE_URL` —
- * is simultaneously the BROWSER's authorize-redirect target, so overriding it
- * reproduces exactly the `DNS_PROBE_FINISHED_NXDOMAIN` failure that plan row 62
- * item (e) was about. This is a REPORTED DEVIATION, not a silent drop.
+ * It was deleted rather than repaired because at the time there was no seam to
+ * repair it AT. The exchange happens inside the CONTAINERISED api, which exposes no
+ * injectable `fetchImpl`, and the only container-level seam —
+ * `GITHUB_OAUTH_BASE_URL` — was simultaneously the BROWSER's authorize-redirect
+ * target, so overriding it reproduced exactly the `DNS_PROBE_FINISHED_NXDOMAIN`
+ * failure that plan row 62 item (e) was about. That was a REPORTED DEVIATION, not a
+ * silent drop.
  *
- * What still covers the create-new-repo path:
+ * ── THE DEVIATION IS NOW CLOSED (plan row 66) — AND THIS BAN STILL STANDS ────
+ * Row 66 split the variable: `GITHUB_OAUTH_BASE_URL` stays the browser's, and a new
+ * `GITHUB_OAUTH_INTERNAL_BASE_URL` is the api's, so the containerised api completes
+ * the exchange against ITSELF where a double-gated test-only route answers. Browser
+ * coverage is restored by `createProjectViaCreateNewRepo` in
+ * `tests/e2e/github-e2e.ts`, driven by `project-wizards-real.e2e.ts`'s E-RNP1b.
+ *
+ * The identifier `completeCreateRepoViaCallback` is nonetheless still BANNED by
+ * `tests/unit/e2e-real-github-seam.test.ts`, deliberately: what was wrong with it was
+ * not only where it lived but WHAT IT DID — it fed a synthetic `code` to real
+ * github.com. The restored driver is a different thing under a different name, and
+ * reviving the old one would revive the old failure.
+ *
+ * What ALSO still covers the create-new-repo path, at other levels:
  *   • its SERVER half — the api repo's `tests/e2e/repo-provisioning.e2e.ts`, which
  *     builds the client in-process and shims ONLY `POST /login/oauth/access_token`
  *     at the `fetchImpl` seam; `POST /user/repos` and the whole scaffold chain hit
  *     real github.com;
  *   • its CLIENT half — the mock lane's `project-wizards.e2e.ts`;
  *   • its effect/mapping logic — the nextjs unit suite.
- * Restoring BROWSER-level coverage needs an api-side public/internal OAuth
- * base-URL split plus a double-gated test-only exchange route: its own plan row.
  *
- * Every spec that used it now acquires its project through
+ * Every spec that used the deleted helper acquires its project through
  * `createProjectViaExistingEmptyRepo` (`tests/e2e/github-e2e.ts`) — the wizard's
  * already-shipping "use existing empty repo" tab (wireframe 13a), which has no
- * consent hop at all.
+ * consent hop at all. That stays the right default: it is faster and has fewer
+ * moving parts. Use the create-new driver only where that path is the thing tested.
  */
