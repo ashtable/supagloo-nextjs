@@ -788,3 +788,122 @@ export type CreateRenderRequest = z.infer<typeof CreateRenderRequestSchema>;
 /** `POST /v1/projects/:id/renders` response — the render job id the studio polls. */
 export const CreateRenderResponseSchema = z.object({ renderJobId: z.string() });
 export type CreateRenderResponse = z.infer<typeof CreateRenderResponseSchema>;
+
+// ── Gallery wire DTOs (Row 41 — mirrors of the rows-39/40 API contract) ──────
+//
+// Hand-rolled mirrors of `supagloo-nodejs-api`'s gallery contracts (db-lib
+// `schemas.ts` Gallery*). Same rationale as every block above: this repo does not
+// depend on db-lib at all, and a BFF needs only the wire shapes.
+// `contracts.test.ts` pins these against verbatim copies of the API's payloads.
+//
+// THERE IS NO `book` PARAMETER anywhere in this block, by design (superseding scope
+// decision, 2026-07-26): the gallery is sorted and free-text searched, never faceted
+// by book. WHICH BOOKS EXIST IS A PROPERTY OF THE TRANSLATION and the YouVersion API
+// is the authority on it, so a facet enumerated from a canon hardcoded in a client was
+// the wrong design. `scriptureBook` still arrives on the DTO — it is an internal
+// derived column that MAY be displayed as text on a card, and must never become a
+// control.
+
+/** Gallery listing order (mirrors db-lib `GallerySortSchema`). A CLOSED enum because
+ *  the API selects its ORDER BY key expression from a fixed map keyed by this value —
+ *  the request string never reaches the SQL. The `popular` DEFAULT lives on the API's
+ *  query schema, not here. */
+export const GallerySortSchema = z.enum(["popular", "newest", "trending"]);
+export type GallerySort = z.infer<typeof GallerySortSchema>;
+
+/** A published item's visibility (mirrors db-lib `GalleryVisibilitySchema`). An
+ *  `unlisted` item is reachable by id but never appears in the public listing. */
+export const GalleryVisibilitySchema = z.enum(["public", "unlisted"]);
+export type GalleryVisibility = z.infer<typeof GalleryVisibilitySchema>;
+
+/** A `GalleryItem` on the wire (mirrors db-lib `GalleryItemDtoSchema`) — the card
+ *  contract for the Turn-15 grid.
+ *
+ *  Two fields the UI must read carefully:
+ *   - `rank` is 1-based, CONTINUOUS ACROSS PAGES, and non-null ONLY under `sort=popular`
+ *     WITH NO `q`. It comes from the SERVER because it is a property of the UNFILTERED
+ *     popular ordering: a client computing `index + 1` would badge the 25th item "#1",
+ *     and a "#7" badge under a different ordering would assert something untrue. It is
+ *     null under any other sort AND under any search, because "#3" among the items
+ *     matching a search term is not a standing about which anything is true. The
+ *     `rank <= 3` threshold and the trophy-at-1 rule are PRESENTATION and live in
+ *     `lib/gallery/gallery-model.ts`.
+ *   - `thumbnailUrl` is a short-lived presigned GET URL (the anonymous grid cannot use
+ *     the auth-scoped `presign-download`) and is null when it could not be signed.
+ *
+ *  `videoAssetKey`, `ownerId` and `viewCount` are deliberately NOT on this DTO — see
+ *  the API's `toGalleryItemDto`. Playback goes through `stream-url`. */
+export const GalleryItemDtoSchema = z.object({
+  id: z.string(),
+  renderJobId: z.string(),
+  projectId: z.string(),
+  title: z.string(),
+  description: z.string(),
+  scriptureReference: z.string(),
+  scriptureBook: z.string(),
+  translation: TranslationSchema,
+  durationSeconds: z.number().int(),
+  visibility: GalleryVisibilitySchema,
+  publishedAt: z.string(),
+  upvoteCount: z.number().int(),
+  thumbnailUrl: z.string().nullable(),
+  rank: z.number().int().nullable(),
+  viewerHasUpvoted: z.boolean(),
+  owner: z.object({
+    displayName: z.string(),
+    avatarInitials: z.string(),
+  }),
+});
+export type GalleryItemDto = z.infer<typeof GalleryItemDtoSchema>;
+
+/** `POST /v1/renders/:id/gallery` (201), `GET /v1/gallery/:id`, and BOTH upvote routes.
+ *  The vote routes return the CURRENT item — count and `viewerHasUpvoted` re-read after
+ *  the transaction — so the UI reconciles its optimistic update against server truth in
+ *  one round trip. */
+export const GalleryItemResponseSchema = z.object({ item: GalleryItemDtoSchema });
+export type GalleryItemResponse = z.infer<typeof GalleryItemResponseSchema>;
+
+/** `GET /v1/gallery` response. A keyed envelope, never a bare array.
+ *
+ *  `nextCursor` is the WHOLE pagination contract: the API fetches `pageSize + 1` rows
+ *  and mints a cursor only if the extra row existed, so `null` means GENUINELY
+ *  EXHAUSTED — not "this page was short". That is what lets `<LoadMore/>` hide itself
+ *  honestly. There is deliberately no `hasMore` and no `total`. */
+export const GalleryListResponseSchema = z.object({
+  items: z.array(GalleryItemDtoSchema),
+  nextCursor: z.string().nullable(),
+});
+export type GalleryListResponse = z.infer<typeof GalleryListResponseSchema>;
+
+/** `DELETE /v1/gallery/:id` response — `200 { ok: true }` (the `DELETE /v1/projects/:id`
+ *  precedent, not a 204). */
+export const GalleryDeleteResponseSchema = z.object({ ok: z.literal(true) });
+export type GalleryDeleteResponse = z.infer<typeof GalleryDeleteResponseSchema>;
+
+/** `GET /v1/gallery/:id/stream-url` response. Structurally the presign envelope
+ *  (`FilePresignDownloadResponseSchema`), aliased so the gallery player reads against a
+ *  name that says which endpoint it came from: this one takes NO auth and NO key, the
+ *  item itself is the authorization, and the TTL is 120s. */
+export const GalleryStreamUrlResponseSchema = z.object({
+  url: z.string(),
+  expiresAt: z.string(),
+});
+export type GalleryStreamUrlResponse = z.infer<typeof GalleryStreamUrlResponseSchema>;
+
+/** `POST /v1/renders/:id/gallery` request body (mirrors db-lib
+ *  `PublishGalleryItemRequestSchema`).
+ *
+ *  Only five fields, and the omissions are the point: `scriptureBook`,
+ *  `durationSeconds` and both asset keys are SERVER-derived. Letting a client claim a
+ *  duration would let the `mm:ss` badge lie about its own video.
+ *
+ *  `title` and `scriptureReference` are trimmed BEFORE the length check, so a
+ *  whitespace-only value is a 400 rather than an invisible title on a public card. */
+export const PublishGalleryItemRequestSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  description: z.string().max(1000).default(""),
+  scriptureReference: z.string().trim().min(1).max(120),
+  translation: TranslationSchema,
+  visibility: GalleryVisibilitySchema.default("public"),
+});
+export type PublishGalleryItemRequest = z.infer<typeof PublishGalleryItemRequestSchema>;

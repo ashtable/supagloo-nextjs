@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { useYVAuth } from "@youversion/platform-react-ui";
+import Link from "next/link";
 import SignInButton from "../sign-in-button";
 import HolyBibleGlyph from "../holy-bible-glyph";
+import { useSession } from "../session-provider";
 
 /**
  * The mobile nav: a hamburger button toggling a dismissible sheet. Below `md`
@@ -17,8 +18,13 @@ import HolyBibleGlyph from "../holy-bible-glyph";
  *
  * Not mount-gated: the sheet is closed at SSR (`open=false`), so SSR === first
  * client render (only the hamburger). The auth-dependent sheet body renders only
- * after the user opens it — post-hydration — so there is no mismatch. All links
- * are inert placeholders.
+ * after the user opens it — post-hydration — so there is no mismatch.
+ *
+ * Row 41: "Gallery" and "Your videos" became real links, and the auth source moved
+ * from `useYVAuth()` to `useSession()` for the same reason `nav-your-videos.tsx` did —
+ * a cookie session carries no YouVersion auth state, so the old gate hid "Your videos"
+ * from exactly the users who have videos. `signOut()` from the session provider is the
+ * strict superset of the SDK's (it clears the server session too).
  */
 
 const menuItem: CSSProperties = {
@@ -39,7 +45,7 @@ const bar: CSSProperties = {
 };
 
 export default function MobileNav() {
-  const { auth, signOut } = useYVAuth();
+  const { session, signOut } = useSession();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -66,7 +72,7 @@ export default function MobileNav() {
     };
   }, [open]);
 
-  const authed = auth.isAuthenticated;
+  const authed = session.isAuthed;
 
   return (
     <div className="relative">
@@ -120,25 +126,27 @@ export default function MobileNav() {
           >
             {"How it works"}
           </button>
-          <button
-            type="button"
+          <Link
+            href="/gallery"
             role="menuitem"
+            data-testid="nav-sheet-gallery"
             onClick={() => setOpen(false)}
             className="text-left cursor-pointer"
             style={menuItem}
           >
             {"Gallery"}
-          </button>
+          </Link>
           {authed && (
-            <button
-              type="button"
+            <Link
+              href="/your-videos"
               role="menuitem"
+              data-testid="nav-sheet-your-videos"
               onClick={() => setOpen(false)}
               className="text-left cursor-pointer"
               style={menuItem}
             >
               {"Your videos"}
-            </button>
+            </Link>
           )}
 
           <div

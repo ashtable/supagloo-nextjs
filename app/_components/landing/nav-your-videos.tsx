@@ -1,25 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useYVAuth } from "@youversion/platform-react-ui";
+import Link from "next/link";
+import { useSession } from "../session-provider";
 
 /**
- * The authed-only "Your videos" desktop nav link. Mount-gated (renders null
- * until mounted) so the auth-dependent tree only appears after hydration — same
- * reason as `nav-auth.tsx`. Inert placeholder (no route yet).
+ * The authed-only "Your videos" desktop nav link.
+ *
+ * IT READS `useSession()`, NOT `useYVAuth()`, and that is load-bearing rather than
+ * cosmetic (plan §5.4 / the row-41 risk table). A cookie session — the `?seed=` e2e
+ * seam, and equally any session established server-side — carries NO YouVersion auth
+ * state, so gating on `useYVAuth().auth.isAuthenticated` left this link permanently
+ * invisible for exactly the users who have videos. `home-switch.tsx` already uses the
+ * correct hook; this now matches it.
+ *
+ * Still mount-gated: `useSession()` reports signed-out until its own mount effect
+ * fires, so SSR === the first client render and there is no hydration mismatch.
  */
 export default function NavYourVideos() {
-  const { auth } = useYVAuth();
-  const [mounted, setMounted] = useState(false);
+  const { mounted, session } = useSession();
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => setMounted(true), []);
-
-  if (!mounted || !auth.isAuthenticated) return null;
+  if (!mounted || !session.isAuthed) return null;
 
   return (
-    <button
-      type="button"
+    <Link
+      href="/your-videos"
+      data-testid="nav-your-videos"
       className="cursor-pointer"
       style={{
         fontWeight: 600,
@@ -30,6 +35,6 @@ export default function NavYourVideos() {
       }}
     >
       {"Your videos"}
-    </button>
+    </Link>
   );
 }

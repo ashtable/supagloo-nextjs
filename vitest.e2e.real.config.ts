@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 /**
  * E2E lane 2 of 3 — the REAL-STACK lane (task-62 D21).
  *
- * The nine specs that drive the browser through the BFF into the CONTAINERISED
+ * The ten specs that drive the browser through the BFF into the CONTAINERISED
  * supagloo-nodejs-api, Postgres, MinIO, a DBOS worker and — as of task 62 half
  * (A) — **real github.com / api.github.com**. No stubs are involved anywhere.
  *
@@ -18,7 +18,7 @@ import { defineConfig } from "vitest/config";
  *      the workers).
  *
  * ── EXECUTION HONESTY (D21) ──────────────────────────────────────────────────
- * These nine specs are EDITED + TYPECHECKED under half (A); their execution
+ * These specs are EDITED + TYPECHECKED under half (A); their execution
  * stays deferred exactly as it was before (their own headers say so). Only the
  * render lane must be green for plan row 62. Do not report this lane as green
  * unless it actually ran green.
@@ -37,6 +37,10 @@ export default defineConfig({
     environment: "node",
     include: [
       "tests/e2e/bff-session.e2e.ts",
+      // Row 41 — the public gallery + "Your videos". Needs Compose (postgres, minio,
+      // migrate, api) and the ROOT repo's `tests/support/gallery-e2e-seed.mjs`, but NOT
+      // GitHub and NOT a provider: nothing here scaffolds a repo or runs a generation.
+      "tests/e2e/gallery.e2e.ts",
       "tests/e2e/github-connect.e2e.ts",
       "tests/e2e/openrouter-gloo-connect.e2e.ts",
       "tests/e2e/project-wizards-real.e2e.ts",

@@ -12,6 +12,14 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored sibling checkouts. `supagloo-database-lib` is a git SUBMODULE with its
+    // own lint config, its own committed `dist/`, and a hard rule that it is never
+    // edited from this repo — so linting it here can only ever produce failures nobody
+    // in this repo is allowed to fix (229 errors before this line existed).
+    // `tsconfig.json` already excludes it for exactly the same reason; this keeps the
+    // two tools' views of "what is ours" identical.
+    "supagloo-database-lib/**",
+    "supagloo-prompts/**",
   ]),
 ]);
 

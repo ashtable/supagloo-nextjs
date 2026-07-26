@@ -35,12 +35,21 @@ function memStorage(): Storage {
 }
 
 function recordingFetch(handler: (url: string, init?: RequestInit) => Response) {
-  const calls: { url: string; method: string; body?: any }[] = [];
+  const calls: {
+    url: string;
+    method: string;
+    /** The parsed JSON body. A record rather than `any` so a typo in a field name is a
+     *  compile error, while an assertion on any field still typechecks. */
+    body?: Record<string, unknown>;
+  }[] = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     calls.push({
       url,
       method: init?.method ?? "GET",
-      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      body:
+        typeof init?.body === "string"
+          ? (JSON.parse(init.body) as Record<string, unknown>)
+          : undefined,
     });
     return handler(url, init);
   }) as unknown as typeof fetch;
@@ -100,7 +109,7 @@ describe("importRepo (12b)", () => {
       repoName: "exodus",
       visibility: "private",
     });
-    expect(calls[0].body.createdFrom).toBeUndefined();
+    expect(calls[0].body?.createdFrom).toBeUndefined();
     expect(res).toEqual({ projectId: "p2", jobId: "j2" });
   });
 });

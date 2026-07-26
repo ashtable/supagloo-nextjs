@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "../session-provider";
 import WizardShell from "./wizard-shell";
-import SegmentedControl from "./segmented-control";
+import SegmentedControl from "../segmented-control";
 import RepoPicker from "./repo-picker";
 import ProvisioningLog from "./provisioning-log";
 import TerminalReadyCard from "./terminal-ready-card";
