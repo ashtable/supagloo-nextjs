@@ -1,10 +1,15 @@
+import Link from "next/link";
 import LogoMark from "../logo-mark";
 import ProfileMenu from "../profile-menu";
 
 /**
- * 10a's top nav — brand, placeholder links (Gallery/How it works are inert,
- * matching the landing nav's own placeholders), and the shared profile pill +
- * dropdown (plan D-NAV).
+ * 10a's top nav — brand, section links, and the shared profile pill + dropdown
+ * (plan D-NAV).
+ *
+ * Row 41: "Gallery" became a real link to `/gallery` ("How it works" is still an inert
+ * placeholder, matching the landing nav). The rendered text is unchanged, so
+ * `workspace-profile.e2e.ts`'s exact-copy anchor still matches — its `textIsVisible`
+ * helper queries `button, a, span, div`.
  */
 export default function WorkspaceNav() {
   return (
@@ -37,9 +42,13 @@ export default function WorkspaceNav() {
         <span style={{ fontWeight: 700, fontSize: 14, color: "var(--sg-fg)" }}>
           {"Workspace"}
         </span>
-        <span style={{ fontWeight: 600, fontSize: 14, color: "var(--sg-dim)" }}>
+        <Link
+          href="/gallery"
+          data-testid="workspace-nav-gallery"
+          style={{ fontWeight: 600, fontSize: 14, color: "var(--sg-dim)" }}
+        >
           {"Gallery"}
-        </span>
+        </Link>
         <span style={{ fontWeight: 600, fontSize: 14, color: "var(--sg-dim)" }}>
           {"How it works"}
         </span>

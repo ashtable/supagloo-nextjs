@@ -13,8 +13,9 @@ import { initials } from "@/lib/initials";
  * `useSession()` (real `userInfo` in prod, the seeded demo identity in demo
  * mode — plan D-DATA), not `useYVAuth()` directly.
  *
- * "Your videos" and "Account settings" were inert stubs before Turn 10/11;
- * both now navigate (ambiguity #8). "Sign out" calls the real `signOut()`.
+ * "Your videos" and "Account settings" were inert stubs before Turn 10/11; both now
+ * navigate (ambiguity #8). "Sign out" calls the real `signOut()`. Row 41 pointed "Your
+ * videos" at its real route — it used to push `/` because no such page existed.
  */
 export default function ProfileMenu({ pillTestId }: { pillTestId: string }) {
   const router = useRouter();
@@ -148,7 +149,7 @@ export default function ProfileMenu({ pillTestId }: { pillTestId: string }) {
               data-testid="menu-your-videos"
               onClick={() => {
                 setOpen(false);
-                router.push("/");
+                router.push("/your-videos");
               }}
               className="w-full text-left cursor-pointer"
               style={{

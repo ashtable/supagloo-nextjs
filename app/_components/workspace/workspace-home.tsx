@@ -36,6 +36,10 @@ export default function WorkspaceHome() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
+    // Intentional one-shot mount effect (the documented `nav-auth.tsx` pattern, not a
+    // cascading-render bug): `window.location.search` is a browser value that does not
+    // exist during SSR, so reading it here is the synchronization this effect is FOR.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (params.get("newproject") === "blank") setWizard("new");
   }, []);
 

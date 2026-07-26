@@ -52,6 +52,14 @@ import {
   AiGenerationDtoSchema,
   AiGenerationResponseSchema,
   FilePresignDownloadResponseSchema,
+  GallerySortSchema,
+  GalleryVisibilitySchema,
+  GalleryItemDtoSchema,
+  GalleryItemResponseSchema,
+  GalleryListResponseSchema,
+  GalleryDeleteResponseSchema,
+  GalleryStreamUrlResponseSchema,
+  PublishGalleryItemRequestSchema,
 } from "./contracts";
 
 const validAuthUser = {
@@ -794,5 +802,178 @@ describe("render wire DTOs (mirror of the API's Task #37 shapes)", () => {
       expect(RenderStatusSchema.safeParse(s).success, s).toBe(true);
     }
     expect(RenderStatusSchema.safeParse("cancelled").success).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gallery wire DTOs (Row 41 — mirrors of the rows-39/40 API contract)
+//
+// Same pinning discipline as every block above: the fixtures are VERBATIM copies
+// of what `supagloo-nodejs-api` actually sends (`src/gallery/dto.ts`'s
+// `toGalleryItemDto` + `routes/gallery.ts`'s envelopes), so a drift in the API
+// breaks this suite rather than the browser.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("gallery wire DTOs (mirror of the API's rows-39/40 shapes)", () => {
+  /** Verbatim copy of one item from a `GET /v1/gallery?sort=popular` payload. */
+  const validGalleryItem = {
+    id: "gal_1",
+    renderJobId: "rj_1",
+    projectId: "prj_1",
+    title: "Forty days in the wilderness",
+    description: "Matthew's temptation narrative, scored.",
+    scriptureReference: "Matthew 4:1-11",
+    scriptureBook: "MAT",
+    translation: "BSB",
+    durationSeconds: 83,
+    visibility: "public",
+    publishedAt: "2026-07-26T09:14:00.000Z",
+    upvoteCount: 41,
+    thumbnailUrl:
+      "http://localhost:9000/supagloo-dev/renders/rj_1/thumb.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=deadbeef",
+    rank: 1,
+    viewerHasUpvoted: false,
+    owner: { displayName: "Grace Hopper", avatarInitials: "GH" },
+  };
+
+  it("GalleryItemDtoSchema parses the popular-sort card payload", () => {
+    const dto = GalleryItemDtoSchema.parse(validGalleryItem);
+    expect(dto.rank).toBe(1);
+    expect(dto.owner.avatarInitials).toBe("GH");
+    expect(dto.scriptureBook).toBe("MAT");
+  });
+
+  it("accepts rank: null — the API sends it off sort=popular", () => {
+    // rank is a property of the GLOBAL popular ordering. Under `newest`/`trending`
+    // the API sends null rather than a number that would assert something untrue.
+    expect(GalleryItemDtoSchema.parse({ ...validGalleryItem, rank: null }).rank).toBeNull();
+  });
+
+  it("accepts thumbnailUrl: null (the poster could not be signed)", () => {
+    expect(
+      GalleryItemDtoSchema.parse({ ...validGalleryItem, thumbnailUrl: null }).thumbnailUrl,
+    ).toBeNull();
+  });
+
+  it("accepts the unlisted visibility and rejects anything else", () => {
+    expect(
+      GalleryItemDtoSchema.parse({ ...validGalleryItem, visibility: "unlisted" }).visibility,
+    ).toBe("unlisted");
+    expect(
+      GalleryItemDtoSchema.safeParse({ ...validGalleryItem, visibility: "private" }).success,
+    ).toBe(false);
+  });
+
+  it("carries NO videoAssetKey, ownerId or viewCount — three deliberate API omissions", () => {
+    // Documented in the API's `toGalleryItemDto`: the raw key would invite clients to
+    // guess sibling keys, an internal user id on a public endpoint is gratuitous, and
+    // `viewCount` has no endpoint that increments it (shipping an always-0 field lies).
+    const dto = GalleryItemDtoSchema.parse(validGalleryItem) as Record<string, unknown>;
+    expect(dto).not.toHaveProperty("videoAssetKey");
+    expect(dto).not.toHaveProperty("ownerId");
+    expect(dto).not.toHaveProperty("viewCount");
+  });
+
+  it("rejects a payload missing a required field", () => {
+    const { scriptureBook: _omit, ...missing } = validGalleryItem;
+    void _omit;
+    expect(GalleryItemDtoSchema.safeParse(missing).success).toBe(false);
+  });
+
+  it("U-C2 GalleryListResponseSchema is a keyed envelope, never a bare array", () => {
+    const page = GalleryListResponseSchema.parse({
+      items: [validGalleryItem],
+      nextCursor: "eyJ2IjoxfQ",
+    });
+    expect(page.items).toHaveLength(1);
+    expect(page.nextCursor).toBe("eyJ2IjoxfQ");
+    expect(GalleryListResponseSchema.safeParse([validGalleryItem]).success).toBe(false);
+  });
+
+  it("U-C2 nextCursor: null is legal and means GENUINELY EXHAUSTED", () => {
+    // The API fetches pageSize+1 and mints a cursor only if the extra row existed, so
+    // null is what lets the UI hide "Load more" honestly. There is deliberately no
+    // `hasMore` and no `total`.
+    const page = GalleryListResponseSchema.parse({ items: [], nextCursor: null });
+    expect(page.nextCursor).toBeNull();
+    expect(
+      GalleryListResponseSchema.safeParse({ items: [validGalleryItem] }).success,
+    ).toBe(false);
+  });
+
+  it("GalleryItemResponseSchema wraps the publish/read/vote item", () => {
+    expect(
+      GalleryItemResponseSchema.parse({ item: validGalleryItem }).item.id,
+    ).toBe("gal_1");
+    expect(GalleryItemResponseSchema.safeParse(validGalleryItem).success).toBe(false);
+  });
+
+  it("GalleryDeleteResponseSchema pins the literal `{ ok: true }`", () => {
+    expect(GalleryDeleteResponseSchema.parse({ ok: true }).ok).toBe(true);
+    expect(GalleryDeleteResponseSchema.safeParse({ ok: false }).success).toBe(false);
+  });
+
+  it("GalleryStreamUrlResponseSchema mirrors the presign envelope", () => {
+    const signed = GalleryStreamUrlResponseSchema.parse({
+      url: "http://localhost:9000/supagloo-dev/renders/rj_1/output.mp4?X-Amz-Signature=deadbeef",
+      expiresAt: "2026-07-26T09:16:00.000Z",
+    });
+    expect(signed.url).toContain("X-Amz-Signature");
+    expect(GalleryStreamUrlResponseSchema.safeParse({ url: 42 }).success).toBe(false);
+  });
+
+  it("GallerySortSchema is the API's closed three-value enum", () => {
+    for (const s of ["popular", "newest", "trending"]) {
+      expect(GallerySortSchema.safeParse(s).success, s).toBe(true);
+    }
+    expect(GallerySortSchema.safeParse("top").success).toBe(false);
+    // Faithful to db-lib: the `popular` DEFAULT lives on the API's query schema, not on
+    // the enum. This repo's own default lives in `initialQueryState()`.
+    expect(GallerySortSchema.safeParse(undefined).success).toBe(false);
+  });
+
+  it("GalleryVisibilitySchema is public|unlisted", () => {
+    expect(GalleryVisibilitySchema.safeParse("public").success).toBe(true);
+    expect(GalleryVisibilitySchema.safeParse("unlisted").success).toBe(true);
+    expect(GalleryVisibilitySchema.safeParse("private").success).toBe(false);
+  });
+
+  it("PublishGalleryItemRequestSchema trims, defaults, and bounds", () => {
+    const req = PublishGalleryItemRequestSchema.parse({
+      title: "  Forty days  ",
+      scriptureReference: "  Matthew 4:1-11 ",
+      translation: "BSB",
+    });
+    expect(req.title).toBe("Forty days");
+    expect(req.scriptureReference).toBe("Matthew 4:1-11");
+    expect(req.description).toBe("");
+    expect(req.visibility).toBe("public");
+  });
+
+  it("PublishGalleryItemRequestSchema rejects a whitespace-only title", () => {
+    // Trimmed BEFORE the length check server-side, so a padded-blank title is a 400
+    // rather than an invisible title on a public card.
+    expect(
+      PublishGalleryItemRequestSchema.safeParse({
+        title: "   ",
+        scriptureReference: "Matthew 4:1-11",
+        translation: "BSB",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("PublishGalleryItemRequestSchema carries NO server-derived field", () => {
+    // scriptureBook / durationSeconds / both asset keys are server-derived; a client
+    // that could send them could make the mm:ss badge lie about its own video.
+    const shape = Object.keys(
+      (PublishGalleryItemRequestSchema as unknown as { shape: Record<string, unknown> }).shape,
+    ).sort();
+    expect(shape).toEqual([
+      "description",
+      "scriptureReference",
+      "title",
+      "translation",
+      "visibility",
+    ]);
   });
 });
