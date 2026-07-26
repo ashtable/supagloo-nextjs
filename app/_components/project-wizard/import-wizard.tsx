@@ -73,8 +73,18 @@ export default function ImportWizard({
   const [realRepos, setRealRepos] = useState<MockRepo[]>([]);
   const [realRows, setRealRows] = useState<LogRow[]>([]);
   const [realDone, setRealDone] = useState(false);
+  // Mounted guard for the async import flow — same idiom, and the same StrictMode
+  // hazard, as new-project-wizard.tsx / studio-context.tsx: the effect must set
+  // `true` on every RUN, because `next dev`'s StrictMode invokes the cleanup between
+  // the two mount-effect runs and a cleanup-only guard would stay false forever,
+  // silently freezing the import wizard on its verification step.
   const aliveRef = useRef(true);
-  useEffect(() => () => void (aliveRef.current = false), []);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   // Real/seed mode: hydrate the import picker from live GitHub repos.
   useEffect(() => {

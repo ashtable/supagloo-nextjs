@@ -2,41 +2,56 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
+import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
-  completeGithubConnectViaCallback,
-  completeCreateRepoViaCallback,
-} from "./connect-helpers";
+  createProjectViaExistingEmptyRepo,
+  ensureFixtureRepo,
+  resolveInstallationId,
+} from "./github-e2e";
 
 /**
- * Task #26 — the REAL-STACK project wizards, exercised end to end against the full
- * stack (browser → BFF routes → supagloo-nodejs-api → Postgres + github-stub + local
- * git-server → the DBOS git-ops worker) via the `?seed=` seam (design-delta
- * §5.3/§2.3/§6b). This is the real counterpart of the mock `project-wizards.e2e.ts`.
+ * Task #26 + task 62 — the REAL-STACK project wizards, exercised end to end against
+ * the full stack (browser → BFF routes → the containerised supagloo-nodejs-api →
+ * Postgres → the DBOS git-ops worker → **real github.com**) via the `?seed=` seam
+ * (design-delta §5.3/§2.3/§6b). The real counterpart of the mock
+ * `project-wizards.e2e.ts`, which stays green untouched in the Docker-free mock lane.
  *
- * Where the mock spec drives the fake ticker + `MOCK_REPOS`, this spec drives the
- * REAL flow: the create-new tab runs the JIT user-auth hop (§2.3/§6b —
- * `completeCreateRepoViaCallback` simulates GitHub's redirect-back after the
- * authorize popup, mirroring `completeGithubConnectViaCallback`), the provisioning log
- * is rendered from the polled `ProjectJob.stages`, and the wizard lands in
+ * Where the mock spec drives the fake ticker + `MOCK_REPOS`, this spec drives the REAL
+ * flow: a private throwaway repo the harness PAT-creates per run is picked through the
+ * wizard's shipped "use existing empty repo" tab, the provisioning log is rendered from
+ * the POLLED `ProjectJob.stages` of a real scaffold, and the wizard lands in
  * `/studio/<slug>`. The import wizard's "NOT A SUPAGLOO PROJECT" card is driven by the
- * real `verifySupaglooProject` stage failing, not a mock flag.
+ * real `verifySupaglooProject` stage failing on a real repo, not a mock flag.
  *
- * ── EXECUTION NOTE (in-flight-dblib-e2e-constraint) ──────────────────────────
- * Task #26 adds NEW database-lib schemas (the JIT-hop DTOs), so per the standing
- * constraint the CONTAINERIZED full stack cannot build against them until the db-lib
- * submodule SHA is bumped at the release step. Running this spec therefore requires:
- *   1. `next dev` on :3000 (global-setup spawns/reuses it);
- *   2. a LOCALLY-BUILT API (`node dist/server.js`, db-lib `dist/` copied into the API
- *      submodule checkout + the JIT env: GITHUB_APP_CLIENT_ID/SECRET,
- *      GITHUB_OAUTH_BASE_URL/GITHUB_API_BASE_URL → the github-stub :4801);
- *   3. a running DBOS git-ops worker (so the scaffold/import jobs reach a terminal
- *      status) + the local git-server with import fixtures.
- * Until that release-step stack is stood up, this spec's EXECUTION is deferred and the
- * behavior is proven meanwhile by: the API in-process e2e
- * (`supagloo-nodejs-api/tests/e2e/repo-provisioning.e2e.ts` — the JIT hop end to end
- * against the real github-stub), the nextjs unit suite (all effect/mapping/contract
- * logic), and the mock `project-wizards.e2e.ts` (the full UI click-through). This file
- * is the committed executable spec that the release step runs green.
+ * ── WHAT CHANGED UNDER TASK 62 ───────────────────────────────────────────────
+ *  • No stubs. The github-stub and the local git-server are deleted; every GitHub
+ *    call here reaches api.github.com / github.com.
+ *  • `installationId` is discovered from `GET /app/installations` at runtime, never
+ *    the fabricated literal that was plan row 62 item (d).
+ *  • E-RNP1 no longer drives the create-NEW-repo user-authorization hop (a reported
+ *    deviation with its reason recorded at the test — real GitHub rejects a synthetic
+ *    `code`, and a containerised api has no seam to intercept the exchange).
+ *  • E-RIMP1 pins its OWN fixture repo through `repo-search`. This is SAFETY-CRITICAL,
+ *    not tidiness: it used to `querySelector('[data-testid^="repo-row-"]')` — literally
+ *    the FIRST row — and against a personal account with an all-repos installation that
+ *    first row is one of the USER'S REAL REPOSITORIES. The import workflow is read-only
+ *    so nothing could be corrupted, but running it over an arbitrary real repo is slow,
+ *    nondeterministic and unacceptable.
+ *
+ * ── EXECUTION ────────────────────────────────────────────────────────────────
+ * Runs in the `test:e2e:real` lane (`vitest.e2e.real.config.ts`), whose
+ * `tests/e2e/global-setup.render.ts` brings up the root Compose stack — including the
+ * `dbos` worker, which nothing used to start — and gates it. Requires the root repo's
+ * gitignored `docker-compose.override.yml` so the api+dbos containers carry in-flight
+ * code, plus the root `.env` GitHub App credentials + `GITHUB_E2E_PAT_TOKEN` (loaded
+ * into this worker by `tests/e2e/load-root-env.ts`).
+ *
+ * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
+ * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
+ * three times.
+ *
+ * Fixture repos are never auto-removed — reclaim them with the root repo's interactive
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
  *
  * DELIBERATELY Gloo-free (no llmClient), fully deterministic (testids + exact-copy
  * anchors + data-status). Per-run nonce so the seeded user + repo are fresh each run.
@@ -82,16 +97,6 @@ async function waitForTestId(id: string, timeoutMs = 30_000) {
   }
   throw new Error(`[data-testid="${id}"] never appeared within ${timeoutMs}ms`);
 }
-async function waitForUrlIncludes(fragment: string, timeoutMs = 45_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = page.url();
-    if (last.includes(fragment)) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(`URL never included ${JSON.stringify(fragment)} (last: ${last})`);
-}
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -112,55 +117,74 @@ beforeAll(async () => {
   // Every wizard flow needs a GitHub installation first (the JIT hop + the
   // use-existing/import paths all require a connection). Establish one via the
   // task-24 callback simulation, then wait for the connections poll to reflect it.
-  await completeGithubConnectViaCallback(stagehand.context, { installationId: "42" });
+  await completeGithubConnectViaCallback(stagehand.context, {
+    // Runtime-discovered (task-62 D5). A fabricated id makes every downstream
+    // installation-token mint a permanent 404 against real GitHub.
+    installationId: await resolveInstallationId(),
+  });
 }, 120_000);
 
 afterAll(async () => {
   await stagehand?.close();
 });
 
-describe("New-project wizard (create-new → real JIT hop → scaffold)", () => {
-  test("E-RNP1: create-new drives the user-auth redirect → repo created → real scaffold log → studio", async () => {
-    await gotoWorkspace();
-    await waitForTestId("workspace-new-project");
-    await clickTestId("workspace-new-project");
-    await waitForTestId("new-project-wizard");
-
-    // create-new tab is active; type a fresh repo name.
-    expect(await countTestId("new-repo-name")).toBeGreaterThan(0);
-    const repoName = `psalm-real-${RUN_ID}`;
-    await typeInto("new-repo-name", repoName);
-
-    // "Create & scaffold →" stashes the params + opens the authorize popup; simulate
-    // GitHub's redirect-back to the JIT callback, which POSTs create-repo (real
-    // user-token dance against the github-stub) and hands the { projectId, jobId } back.
-    await clickTestId("new-project-cta");
-    await completeCreateRepoViaCallback(page, stagehand.context);
-
-    // Step 2 — the REAL scaffold log (rendered from polled ProjectJob.stages).
-    await waitForTestId("provisioning-log");
-    // The log advances to at least one completed stage row (real, not the ticker).
-    const sawCompleted = await (async () => {
-      const deadline = Date.now() + 60_000;
-      while (Date.now() < deadline) {
-        const done = await page.evaluate(() =>
-          Array.from(
-            document.querySelectorAll<HTMLElement>('[data-testid="log-row"]'),
-          ).some((el) => el.getAttribute("data-status") === "completed"),
-        );
-        if (done) return true;
-        await page.waitForTimeout(300);
-      }
-      return false;
-    })();
-    expect(sawCompleted).toBe(true);
-
-    // Step 3 — the ready card → open the studio at the new slug.
-    await waitForTestId("project-ready-card", 90_000);
-    await waitForTestId("open-in-studio");
-    await clickTestId("open-in-studio");
-    await waitForUrlIncludes("/studio/");
-  }, 180_000);
+describe("New-project wizard (existing empty repo → real scaffold)", () => {
+  /**
+   * ── WHY THIS IS NO LONGER THE create-NEW-repo CASE (task-62 D13 tier 2) ─────
+   * This test used to drive the "Create new repo" tab and then fake GitHub's
+   * user-authorization redirect with a literal `code`. The retired github-stub
+   * accepted any non-empty code; real GitHub answers `bad_verification_code`, and
+   * there is no seam to intercept the exchange: it happens inside the CONTAINERISED
+   * api (no injectable `fetchImpl`), and the only container-level seam —
+   * `GITHUB_OAUTH_BASE_URL` — is simultaneously the BROWSER's authorize-redirect
+   * target, so overriding it re-creates the very `DNS_PROBE_FINISHED_NXDOMAIN`
+   * failure plan row 62 item (e) was about.
+   *
+   * A REPORTED DEVIATION, not a silent drop. The create-new path's SERVER half is
+   * covered by the api repo's `repo-provisioning.e2e.ts` (which shims only
+   * `POST /login/oauth/access_token` at its in-process client seam and lets
+   * `POST /user/repos` plus the whole scaffold hit real github.com); its CLIENT half
+   * by the mock lane's `project-wizards.e2e.ts`. Restoring BROWSER-level coverage
+   * needs an api-side public/internal OAuth base-URL split plus a double-gated
+   * test-only exchange route — its own plan row. Consequence stated plainly: the
+   * product's headline designed path ("Create new repos for new projects") ships
+   * un-exercised at browser level against real GitHub.
+   *
+   * What this test still proves against real GitHub is everything downstream of the
+   * consent screen: the wizard's second tab (wireframe 13a, already shipping) picks
+   * a real empty repo, `startRealExisting` POSTs `/api/projects`, and step 2's
+   * provisioning log renders from the POLLED `ProjectJob.stages` of a real scaffold
+   * (clone → commit v0.0.0 → push → open+merge base PR → cut v0.0.1 on github.com).
+   */
+  test("E-RNP1: the existing-empty tab scaffolds a real repo → real provisioning log → studio", async () => {
+    await createProjectViaExistingEmptyRepo(page, {
+      slug: "wizard",
+      seedUrl: SEED_URL,
+      // Assert on step 2 WHILE it is on screen — the ready card replaces it.
+      onScaffoldStarted: async () => {
+        await waitForTestId("provisioning-log");
+        // The log advances to at least one completed stage row (real, not the ticker).
+        const sawCompleted = await (async () => {
+          const deadline = Date.now() + 120_000;
+          while (Date.now() < deadline) {
+            const done = await page.evaluate(() =>
+              Array.from(
+                document.querySelectorAll<HTMLElement>('[data-testid="log-row"]'),
+              ).some((el) => el.getAttribute("data-status") === "completed"),
+            );
+            if (done) return true;
+            await page.waitForTimeout(300);
+          }
+          return false;
+        })();
+        expect(sawCompleted, "a real scaffold stage completed").toBe(true);
+      },
+    });
+    // The helper waited for `project-ready-card`, clicked "Open in studio" and
+    // confirmed the /studio/ URL — including a not-`data-disabled` assertion on the
+    // picked repo row, so a bad emptiness derivation fails attributably rather than
+    // as an unexplained wizard timeout.
+  }, 600_000);
 });
 
 describe("Landing 'Blank canvas' → the same New-project wizard", () => {
@@ -187,25 +211,42 @@ describe("Recent-projects grid from GET /v1/projects", () => {
 });
 
 describe("Import wizard (real verify)", () => {
+  /**
+   * ── SAFETY-CRITICAL: this test MUST pin its own fixture repo (task-62 D14) ───
+   * It used to select `document.querySelector('[data-testid^="repo-row-"]')` —
+   * literally the FIRST row the picker rendered. That was harmless against the
+   * github-stub's four-repo fixture. Against the real account this App is installed
+   * on, with `repository_selection: all` and 100+ repositories, the first row is one
+   * of the USER'S REAL REPOSITORIES. The import workflow is read-only, so nothing
+   * could be corrupted, but cloning and verifying an arbitrary real repo is slow,
+   * nondeterministic, and simply not something a test may do. It now provisions its
+   * own throwaway repo and narrows the picker to it by name.
+   *
+   * The fixture is also what makes the assertion DETERMINISTIC rather than
+   * accepting-either-outcome: the harness creates the repo with a single
+   * auto-initialised README, so it has no `remotion.config.ts` and no version
+   * branch, and the real `verifySupaglooProject` stage must fail → 12b's
+   * "NOT A SUPAGLOO PROJECT" card. Under the old "first row" selection the
+   * repo could have been anything, so the spec had to accept a successful import
+   * too — which would have silently passed on a genuinely broken verify.
+   */
   test("E-RIMP1: importing a non-Supagloo repo surfaces the real 'NOT A SUPAGLOO PROJECT' card", async () => {
+    const fixture = await ensureFixtureRepo("import");
     await gotoWorkspace();
     await waitForTestId("workspace-import-repo");
     await clickTestId("workspace-import-repo");
     await waitForTestId("import-wizard");
-    // The import picker is populated from the real GET /api/github/repos list. Pick the
-    // first available repo and import; a repo without remotion.config.ts / a version
-    // branch fails at the verifySupaglooProject stage → the error card.
-    const firstRepo = await page.evaluate(() => {
-      const el = document.querySelector<HTMLElement>('[data-testid^="repo-row-"]');
-      return el?.getAttribute("data-testid") ?? null;
-    });
-    expect(firstRepo, "at least one real repo listed").toBeTruthy();
-    await clickTestId(firstRepo!);
+
+    // The import picker is populated from the real GET /api/github/repos list, which
+    // returns 100+ rows here — narrow it to the fixture before clicking anything.
+    await typeInto("repo-search", fixture.name);
+    const rowId = `repo-row-${fixture.name}`;
+    await waitForTestId(rowId, 60_000);
+    await clickTestId(rowId);
     await clickTestId("import-cta");
-    // Either the verify log settles (a valid supagloo fixture) or the error card shows
-    // (a non-supagloo repo). Both are real, job-driven outcomes.
+
     const outcome = await (async () => {
-      const deadline = Date.now() + 90_000;
+      const deadline = Date.now() + 180_000;
       while (Date.now() < deadline) {
         if ((await countTestId("import-error-card")) > 0) return "error";
         if ((await countTestId("open-in-studio")) > 0) return "ready";
@@ -213,6 +254,9 @@ describe("Import wizard (real verify)", () => {
       }
       return "timeout";
     })();
-    expect(["error", "ready"]).toContain(outcome);
-  }, 150_000);
+    expect(
+      outcome,
+      `a README-only repo (${fixture.fullName}) must fail verifySupaglooProject`,
+    ).toBe("error");
+  }, 300_000);
 });

@@ -2,10 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type StagehandPage } from "./helpers";
+import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
-  completeGithubConnectViaCallback,
-  completeCreateRepoViaCallback,
-} from "./connect-helpers";
+  createProjectViaExistingEmptyRepo,
+  resolveInstallationId,
+} from "./github-e2e";
 
 /**
  * Task #58 — the REAL-STACK regression guard for the widened `TranslationSchema`
@@ -34,22 +35,31 @@ import {
  * translation against its already-broadened db-lib schema, and the DBOS git-ops commit
  * worker writes `supagloo.project.json` to the branch), then proves the READ.
  *
- * ── EXECUTION NOTE (in-flight-dblib-e2e-constraint; same posture as the task-27/57
- * studio e2e) ── Running this needs the full stack: `next dev`, a locally-built API
- * (with the commit + jobs routes) + github-stub + git-server, and a running DBOS
- * git-ops COMMIT worker (so the commit reaches `succeeded` and the manifest is
- * re-read on re-open). It needs NO OpenRouter/Gloo (no LLM — the manifest is crafted),
- * so it is strictly LESS demanding than the replan spec. Until that stack is stood up
- * EXECUTION IS DEFERRED to the release step; the behavior is proven meanwhile by the
- * unit suite (`lib/api/contracts.test.ts` — the widened schema accepts an arbitrary
- * abbreviation; `lib/studio/manifest-adapter.test.ts` U-A18 — round-trip; and
- * `lib/studio/studio-data.test.ts` U-D4b — `fetchManifest` parses "NIV" instead of
- * returning `manifest_invalid`, the EXACT read-side failure this fixes).
+ * ── STACK (task 62 half A) ───────────────────────────────────────────────────
+ * There is no github-stub and no local git-server any more: every GitHub call in this
+ * spec reaches real `github.com` / `api.github.com`, and the `installationId` planted
+ * by `completeGithubConnectViaCallback` is DISCOVERED at runtime from
+ * `GET /app/installations` (the fabricated literal it used to plant was exactly plan
+ * row 62 item (d) — a permanent 404 on every installation-token mint).
  *
- * DELIBERATELY Gloo-free + deterministic (testid + `evaluate` + `data-*`, NOT
- * act/extract/observe — those need the Gloo LLM client the harness keeps degraded;
- * the same convention as every prior studio + real-stack spec). Per-run nonce.
- */
+ * The spec runs in the `test:e2e:real` lane (`vitest.e2e.real.config.ts`), whose
+ * `tests/e2e/global-setup.render.ts` brings up the ROOT Compose stack — postgres,
+ * minio, minio-init, migrate, the containerised api AND the `dbos` worker, which
+ * nothing used to start — and gates each of them, including a crash-loop check on the
+ * worker. It needs the root repo's gitignored `docker-compose.override.yml` so the
+ * api+dbos containers carry in-flight code, plus the root `.env` GitHub App
+ * credentials + `GITHUB_E2E_PAT_TOKEN` (loaded into this worker by
+ * `tests/e2e/load-root-env.ts`).
+ *
+ * Its project is acquired through the shared `createProjectViaExistingEmptyRepo`
+ * helper: a private throwaway repo the harness PAT-creates per run, picked via the
+ * wizard's already-shipping "use existing empty repo" tab. Fixture repos are never
+ * auto-removed — reclaim them with the root repo's interactive
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ *
+ * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
+ * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
+ * three times. The unit-level proofs named below still stand alongside it. */
 
 const BASE_URL = "http://localhost:3000";
 const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -66,27 +76,9 @@ let page: StagehandPage;
 function countTestId(id: string) {
   return page.locator(`[data-testid="${id}"]`).count();
 }
-function clickTestId(id: string) {
-  return page.locator(`[data-testid="${id}"]`).click();
-}
-async function waitForTestId(id: string, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if ((await countTestId(id)) > 0) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(`[data-testid="${id}"] never appeared within ${timeoutMs}ms`);
-}
-async function waitForUrlIncludes(fragment: string, timeoutMs = 45_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = page.url();
-    if (last.includes(fragment)) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(`URL never included ${JSON.stringify(fragment)} (last: ${last})`);
-}
+// `clickTestId` / `waitForTestId` used to live here for this file's private copy of
+// the project-creation flow; that copy is now the shared
+// `createProjectViaExistingEmptyRepo` (task-62 D14), which carries its own.
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -97,29 +89,26 @@ async function gotoWorkspace(url = SEED_URL) {
   throw new Error("workspace-home never rendered (is the API up + seed enabled?)");
 }
 
-/** Create a fresh real project via the create-new JIT hop, open it in the studio,
- *  and return its studio slug. */
-async function createProjectAndOpenStudio(repoName: string): Promise<string> {
-  await gotoWorkspace();
-  await waitForTestId("workspace-new-project");
-  await clickTestId("workspace-new-project");
-  await waitForTestId("new-project-wizard");
-  await page.evaluate((name) => {
-    const el = document.querySelector<HTMLInputElement>('[data-testid="new-repo-name"]');
-    if (!el) return;
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(el, name);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  }, repoName);
-  await clickTestId("new-project-cta");
-  await completeCreateRepoViaCallback(page, stagehand.context);
-  await waitForTestId("project-ready-card", 120_000);
-  await clickTestId("open-in-studio");
-  await waitForUrlIncludes("/studio/");
-  return page.url().split("/studio/")[1]?.split(/[?#]/)[0] ?? "";
+/**
+ * Create a fresh real project and open its studio, via the ONE shared helper in
+ * `tests/e2e/github-e2e.ts` (task-62 D14). This used to be a private copy that drove
+ * the wizard's create-NEW-repo tab and faked GitHub's user-authorization redirect with
+ * a literal `code`; against real GitHub that is `bad_verification_code`, and a
+ * containerised api has no seam to intercept the exchange. The helper instead
+ * PAT-creates a private throwaway repo per run and drives the wizard's already-shipping
+ * "use existing empty repo" tab (wireframe 13a), which POSTs straight to
+ * `/api/projects` with no consent hop. `slug` names the repo's purpose; the harness
+ * appends the per-run id (real GitHub 422s a duplicate repo name, and the scaffold's
+ * v0.0.0 commit is byte-deterministic, so a REUSED repo would reject a second run).
+ * Fixture repos are never auto-removed — reclaim them with the root repo's
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ */
+async function createProjectAndOpenStudio(slug: string): Promise<string> {
+  const { projectId } = await createProjectViaExistingEmptyRepo(page, {
+    slug,
+    seedUrl: SEED_URL,
+  });
+  return projectId;
 }
 
 /** Resolve the project's cuid id from its studio slug via the BFF list route
@@ -198,7 +187,12 @@ beforeAll(async () => {
   page = stagehand.context.pages()[0];
   await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
   await gotoWorkspace();
-  await completeGithubConnectViaCallback(stagehand.context, { installationId: "42" });
+  // The REAL installation id, discovered at runtime from `GET /app/installations`.
+  // The fabricated literal this used to plant is exactly what made every downstream
+  // installation-token mint a permanent 404 against real GitHub (plan row 62 item d).
+  await completeGithubConnectViaCallback(stagehand.context, {
+    installationId: await resolveInstallationId(),
+  });
 }, 120_000);
 
 afterAll(async () => {
@@ -208,7 +202,7 @@ afterAll(async () => {
 describe("A committed non-KJV/BSB translation hydrates the studio (not a load error)", () => {
   test("E-TW1: seed a manifest with a non-KJV/BSB translation → /studio hydrates + reads it back", async () => {
     // ── seed: create a real project, then commit a crafted non-KJV/BSB manifest ──
-    const slug = await createProjectAndOpenStudio(`translation-widen-${RUN_ID}`);
+    const slug = await createProjectAndOpenStudio("widen");
     expect(slug.length).toBeGreaterThan(0);
     const id = await resolveProjectId(slug);
     await seedNonKjvBsbManifest(id, SEED_TRANSLATION);

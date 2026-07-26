@@ -6,28 +6,47 @@ import {
   completeGithubConnectViaCallback,
   completeOpenRouterConnectViaCallback,
   interceptOpenRouter,
-  E2E_OPENROUTER_LAST4,
+  openRouterKeyLast4,
 } from "./connect-helpers";
+import { resolveGithubLogin, resolveInstallationId } from "./github-e2e";
 
 /**
  * Task 25 — the REAL OpenRouter (PKCE) + Gloo (verify-then-store) connect flows,
- * end to end against the real stack (browser → BFF routes → supagloo-nodejs-api →
- * Postgres + openrouter-stub :4802 + gloo-stub :4803) via the `?seed=` seam.
+ * end to end against the real stack (browser → BFF routes → the containerised
+ * supagloo-nodejs-api → Postgres) via the `?seed=` seam.
  *
- * OpenRouter's browser leg (authorize page + token exchange) is route-intercepted
- * (`interceptOpenRouter`) because the stub can't render OpenRouter's hosted HTML —
- * the intercepted token exchange returns a deterministic key whose last-4 (`cafe`)
- * the profile must render masked as `sk-or-••••••cafe`. GitHub reuses Task 24's
- * `completeGithubConnectViaCallback`; OpenRouter uses `completeOpenRouterConnectViaCallback`
- * (a throwaway page → the client callback page that completes the exchange + key POST).
+ * ── PROVIDER POSTURE (kept current — this header used to be badly stale) ─────
+ * There are NO provider stubs left anywhere in the harness. Task 34-E8 deleted the
+ * openrouter/gloo/youversion stubs (this file's original header cited an
+ * openrouter-stub on :4802 and a gloo-stub on :4803 long after both had gone), and
+ * task 62 deleted the last two — the github-stub and the local git-server — so all
+ * four providers are now exercised against their real hosts. "Provider stub" is out
+ * of the vocabulary; the delta is REMOVING test-side base-URL overrides, not adding
+ * configuration.
  *
- * Gloo needs no interception — the gloo-stub is reached server-side by the API's
- * live client-credentials verify; the reserved `gloo-invalid` clientId makes that
- * verify fail (401 → API 400), proving the failure surfaces as a REAL form error.
+ * Consequences for this spec, per hop:
+ *   • OpenRouter's BROWSER leg (the hosted authorize page + the cross-origin token
+ *     exchange) is still intercepted in-page by `interceptOpenRouter` — that is the
+ *     sanctioned interactive-hop shim, not a stub: an OAuth consent screen needs a
+ *     human, and the exchange is a cross-origin browser call. What the intercepted
+ *     exchange hands back is the REAL `OPENROUTER_E2E_TEST_API_KEY` (root `.env`, via
+ *     `tests/e2e/load-root-env.ts`) — the shim removes the consent click and nothing
+ *     else — so the profile's masked `sk-or-••••••<last4>` is asserted against that
+ *     key's own last-4 and the credit line against a LIVE balance.
+ *   • Gloo's verify is a SERVER-side client-credentials call from the API to the
+ *     real Gloo host. `gloo-invalid` is no longer a stub-reserved fixture: it is
+ *     simply a credential real Gloo rejects, which is exactly what E-C2 needs
+ *     (401 → API 400 → a real form error rather than local validation).
+ *   • GitHub reuses Task 24's `completeGithubConnectViaCallback`, now with the
+ *     runtime-DISCOVERED installation id (task-62 D5) rather than a fabricated
+ *     literal, so the API's App-JWT verification runs against real api.github.com.
  *
- * Requires the real stack: Postgres (compose), the stubs, the API on :4000 with
- * OPENROUTER_BASE_URL/GLOO_BASE_URL → the stubs + SUPAGLOO_ENABLE_TEST_SEED=1, and
- * `next dev` on :3000. See scratch/task-25-openrouter-gloo-connect-ui.md §5.
+ * Requires the real stack: Postgres + MinIO + the containerised API via the root
+ * Compose files (brought up and gated by `tests/e2e/global-setup.render.ts`) with
+ * SUPAGLOO_ENABLE_TEST_SEED=1 and real provider credentials; `next dev` on :3000;
+ * and the root `.env` GitHub creds in this worker (`tests/e2e/load-root-env.ts`).
+ * Runs in the `test:e2e:real` lane.
+ * See scratch/task-25-openrouter-gloo-connect-ui.md §5.
  */
 
 const BASE_URL = "http://localhost:3000";
@@ -35,9 +54,49 @@ const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 
 const SEED_FRESH_URL = `${BASE_URL}/?seed=authed-fresh&nonce=${RUN_ID}`;
 const VIEWPORT = { width: 1440, height: 1000 };
 
-// Valid Gloo creds: the gloo-stub accepts ANY Basic pair except `gloo-invalid`.
-const GLOO_VALID_ID = "gloo-e2e-client";
-const GLOO_VALID_SECRET = "gloo-e2e-secret";
+/**
+ * ── THE APP-UNDER-TEST'S GLOO CREDENTIALS (real, from the environment) ───────
+ *
+ * These were the deleted gloo-stub's fixture literals (`gloo-e2e-client` /
+ * `gloo-e2e-secret`) — the stub accepted any Basic pair except `gloo-invalid`. Task
+ * 34-E8 deleted that stub, so real Gloo rejects them, E-C3 fails on "We couldn't
+ * verify those credentials with Gloo", and E-C4/E-C5 cascade because the wizard never
+ * completes. They now come from the environment, with no fallback (design-delta
+ * §10.8: a suite that quietly degrades rather than failing is a green lie).
+ *
+ * ── WHY THE `GLOO_CONNECT_` PREFIX (task 34-E2) ──────────────────────────────
+ * In THIS repo `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET` are already taken: they
+ * configure STAGEHAND's own LLM (`lib/gloo/llm-client.ts`) — the harness's brain,
+ * nothing to do with the app's per-user Gloo connections. Reusing those names for the
+ * app-under-test's credentials would have one file's meaning silently clobber the
+ * other's. Hence the distinct `GLOO_CONNECT_*` names, which are nextjs-only (the api
+ * and dbos repos have no Stagehand to collide with, so there this concept is just
+ * `GLOO_CLIENT_ID`/`_SECRET`). Documented, NAMES ONLY, in `.env.example`; the values
+ * live in the untracked `.env.local`, loaded into the worker by `tests/e2e/load-env.ts`.
+ */
+const GLOO_ID_ENV_VAR = "GLOO_CONNECT_CLIENT_ID";
+const GLOO_SECRET_ENV_VAR = "GLOO_CONNECT_CLIENT_SECRET";
+
+function requireGlooConnectCredential(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(
+      `[openrouter-gloo-connect] ${name} is unset or empty, so E-C3 cannot type ` +
+        `credentials real Gloo will accept.\n` +
+        `  Set ${GLOO_ID_ENV_VAR} + ${GLOO_SECRET_ENV_VAR} in this repo's untracked ` +
+        `\`.env.local\` (copy the real values from the ROOT supagloo checkout's ` +
+        `\`.env\`, where the same pair is named GLOO_CLIENT_ID/GLOO_CLIENT_SECRET).\n` +
+        `  The GLOO_CONNECT_ prefix is mandatory here: plain GLOO_CLIENT_ID/SECRET in ` +
+        `this repo belong to STAGEHAND's own LLM (task 34-E2).\n` +
+        `  There is deliberately no fallback — the old literals were the deleted ` +
+        `gloo-stub's fixtures and real Gloo rejects them.`,
+    );
+  }
+  return value;
+}
+
+const GLOO_VALID_ID = requireGlooConnectCredential(GLOO_ID_ENV_VAR);
+const GLOO_VALID_SECRET = requireGlooConnectCredential(GLOO_SECRET_ENV_VAR);
 
 let stagehand: Stagehand;
 let page: StagehandPage;
@@ -134,20 +193,26 @@ describe("OpenRouter + Gloo connect (real) — wizard + profile", () => {
     await clickTestId("wizard-get-started");
     await waitForStepLabel("STEP 2 OF 4 · CONNECT GITHUB");
     await clickTestId("connect-authorize");
-    await completeGithubConnectViaCallback(stagehand.context);
+    await completeGithubConnectViaCallback(stagehand.context, {
+      installationId: await resolveInstallationId(),
+    });
     await waitForStepLabel("STEP 3 OF 4 · OPENROUTER");
 
     // Kick off the real PKCE connect: pending + window.open(authorize) + stash the
     // verifier + the main-tab poll. Then simulate OpenRouter's redirect-back.
     await clickTestId("connect-openrouter-submit");
-    await completeOpenRouterConnectViaCallback(stagehand.context);
+    // `opener: page` waits for the PKCE verifier to actually be stashed before the
+    // callback tab opens — the store happens after an awaited SHA-256, so without the
+    // barrier this is a race that presents as a bare `data-state="error"`.
+    await completeOpenRouterConnectViaCallback(stagehand.context, { opener: page });
 
     // The poll observes the stored connection → connected → auto-advance to Gloo.
     await waitForStepLabel("STEP 4 OF 4 · GLOO AI");
   });
 
   test("E-C2: a LIVE Gloo verify failure surfaces as a real form error, not local validation", async () => {
-    // `gloo-invalid` is the stub's reserved bad-credential fixture → 401 → API 400.
+    // Not a reserved fixture any more (the gloo-stub is gone): `gloo-invalid` is just
+    // a client id real Gloo rejects → 401 at the API's live verify → API 400.
     await typeInto("gloo-client-id", "gloo-invalid");
     await typeInto("gloo-secret", "whatever-secret");
     await clickTestId("gloo-save");
@@ -167,7 +232,8 @@ describe("OpenRouter + Gloo connect (real) — wizard + profile", () => {
 
     await h.waitForText("YOU'RE ALL SET.");
     const recap = await h.bodyText();
-    expect(recap).toContain("✓ GitHub connected · @acme");
+    // The DISCOVERED installation login, not a stub fixture literal (task-62 D5).
+    expect(recap).toContain(`✓ GitHub connected · @${await resolveGithubLogin()}`);
     expect(recap).toContain("✓ OpenRouter connected");
     expect(recap).toContain("✓ Gloo AI connected");
 
@@ -188,14 +254,22 @@ describe("OpenRouter + Gloo connect (real) — wizard + profile", () => {
     await waitForStatus("connection-card-gloo", "connected");
 
     const text = await h.bodyText();
-    // OpenRouter: the REAL masked key from the intercepted exchange (last4 `cafe`)…
-    expect(text).toContain(`sk-or-••••••${E2E_OPENROUTER_LAST4}`);
-    // …and LIVE credits (stub: 100 total − 12.5 used = 87.5 remaining).
-    expect(text).toContain("$87.50 credit remaining");
-    // Gloo: the REAL stored clientId (never the mock).
+    // OpenRouter: the masked form of the REAL key that was stored (last4 DERIVED from
+    // OPENROUTER_E2E_TEST_API_KEY — the old literal `cafe` was a property of the fake
+    // key the intercepted exchange used to return).
+    expect(text).toContain(`sk-or-••••••${openRouterKeyLast4()}`);
+    // …and LIVE credits. The old exact `$87.50` was the deleted openrouter-stub's
+    // fixture arithmetic (100 total − 12.5 used); a real balance moves with every run,
+    // so assert the SHAPE the card renders (`formatCreditRemaining`). This still fails
+    // loudly on the two ways this can actually break: "Credits unavailable" (the live
+    // GET /api/connections/openrouter/credits errored — e.g. a key real OpenRouter
+    // rejects) and "Checking credits…" (it never resolved).
+    expect(text).toMatch(/\$[\d,]+\.\d{2} credit remaining/);
+    expect(text).not.toContain("Credits unavailable");
+    // Gloo: the REAL stored clientId (round-tripped from the API, never a fixture).
     expect(text).toContain(GLOO_VALID_ID);
-    // GitHub: the stub's real login.
-    expect(text).toContain("@acme");
+    // GitHub: the login read back off the REAL installation.
+    expect(text).toContain(`@${await resolveGithubLogin()}`);
   });
 
   test("E-C5: disconnect clears both providers server-side", async () => {

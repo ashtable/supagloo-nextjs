@@ -9,7 +9,9 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:e2e:real": "vitest run --config vitest.e2e.real.config.ts",
+    "test:e2e:render": "vitest run --config vitest.e2e.render.config.ts"
   },
   "dependencies": {
     "@browserbasehq/stagehand": "^3.7.0",

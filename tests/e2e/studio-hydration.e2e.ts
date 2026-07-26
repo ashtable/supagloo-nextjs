@@ -2,15 +2,16 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type StagehandPage } from "./helpers";
+import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
-  completeGithubConnectViaCallback,
-  completeCreateRepoViaCallback,
-} from "./connect-helpers";
+  createProjectViaExistingEmptyRepo,
+  resolveInstallationId,
+} from "./github-e2e";
 
 /**
  * Task #27 — the REAL-STACK studio: hydration from the git manifest + a real commit,
  * exercised end to end (browser → BFF routes → supagloo-nodejs-api → Postgres +
- * github-stub + git-server → the DBOS git-ops commit worker) via the `?seed=` seam
+ * real github.com → the DBOS git-ops commit worker) via the `?seed=` seam
  * (design-delta §5.3 rows 3 & 6, §2.11). This is the real counterpart of the mock
  * studio specs (`studio-project.e2e.ts` etc.), which stay green untouched (a catalog
  * id in a demo build resolves to the bundled DEMO_STORYBOARD synchronously — the
@@ -22,30 +23,31 @@ import {
  * `POST /v1/projects/:id/commit` + ProjectJob poll (not the mocked setTimeout), and
  * that a committed edit survives a fresh re-open (the manifest is re-read from git).
  *
- * ── EXECUTION NOTE (in-flight-dblib-e2e-constraint) ──────────────────────────
- * Task #27 consumes NEW database-lib manifest/commit DTOs. Per the standing
- * constraint the CONTAINERIZED full stack cannot build against them until the db-lib
- * submodule SHA is bumped at the release step. Running this spec therefore requires:
- *   1. `next dev` on :3000 (global-setup spawns/reuses it);
- *   2. a LOCALLY-BUILT API (`node dist/server.js`, db-lib `dist/` copied into the API
- *      submodule checkout) + the studio env (GITHUB_* → github-stub, git-server);
- *   3. a running DBOS git-ops worker (so the commit job reaches `succeeded` and the
- *      manifest is actually rewritten on the branch), and — for the edit-a-scene
- *      path — a project whose repo manifest already has >=1 scene (a freshly
- *      SCAFFOLDED project is an EMPTY manifest until the generation flow runs, so the
- *      populated-manifest fixture is seeded/imported by the release-step harness).
- * Until that stack is stood up, this spec's EXECUTION is DEFERRED and the behavior is
- * proven meanwhile by the nextjs unit suite: the manifest⇄storyboard adapter
- * round-trip (`lib/studio/manifest-adapter.test.ts`), the studio-data effects
- * (`lib/studio/studio-data.test.ts`), the reducer commit-failure + `commitOutcome`
- * polled-job transitions (`lib/studio/reducer.test.ts`), and the wire-contract pins
- * (`lib/api/contracts.test.ts`). This file is the committed executable spec the
- * release step runs green.
+ * ── STACK (task 62 half A) ───────────────────────────────────────────────────
+ * There is no github-stub and no local git-server any more: every GitHub call in this
+ * spec reaches real `github.com` / `api.github.com`, and the `installationId` planted
+ * by `completeGithubConnectViaCallback` is DISCOVERED at runtime from
+ * `GET /app/installations` (the fabricated literal it used to plant was exactly plan
+ * row 62 item (d) — a permanent 404 on every installation-token mint).
  *
- * DELIBERATELY Gloo-free + deterministic (testid + `evaluate` + `data-*`, NOT
- * act/extract/observe — those need the Gloo LLM client the harness keeps degraded;
- * every prior studio + real-stack spec follows this convention). Per-run nonce.
- */
+ * The spec runs in the `test:e2e:real` lane (`vitest.e2e.real.config.ts`), whose
+ * `tests/e2e/global-setup.render.ts` brings up the ROOT Compose stack — postgres,
+ * minio, minio-init, migrate, the containerised api AND the `dbos` worker, which
+ * nothing used to start — and gates each of them, including a crash-loop check on the
+ * worker. It needs the root repo's gitignored `docker-compose.override.yml` so the
+ * api+dbos containers carry in-flight code, plus the root `.env` GitHub App
+ * credentials + `GITHUB_E2E_PAT_TOKEN` (loaded into this worker by
+ * `tests/e2e/load-root-env.ts`).
+ *
+ * Its project is acquired through the shared `createProjectViaExistingEmptyRepo`
+ * helper: a private throwaway repo the harness PAT-creates per run, picked via the
+ * wizard's already-shipping "use existing empty repo" tab. Fixture repos are never
+ * auto-removed — reclaim them with the root repo's interactive
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ *
+ * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
+ * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
+ * three times. The unit-level proofs named below still stand alongside it. */
 
 const BASE_URL = "http://localhost:3000";
 const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -107,16 +109,6 @@ async function waitForDataAttr(id: string, attr: string, expected: string, timeo
   }
   throw new Error(`[data-testid="${id}"] ${attr}="${last}" never became "${expected}"`);
 }
-async function waitForUrlIncludes(fragment: string, timeoutMs = 45_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = page.url();
-    if (last.includes(fragment)) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(`URL never included ${JSON.stringify(fragment)} (last: ${last})`);
-}
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -127,29 +119,34 @@ async function gotoWorkspace(url = SEED_URL) {
   throw new Error("workspace-home never rendered (is the API up + seed enabled?)");
 }
 
-/** Create a fresh real project via the create-new JIT hop and return its studio slug
- *  (the URL after "Open in studio"). */
-async function createProjectAndOpenStudio(repoName: string): Promise<string> {
-  await gotoWorkspace();
-  await waitForTestId("workspace-new-project");
-  await clickTestId("workspace-new-project");
-  await waitForTestId("new-project-wizard");
-  await page.evaluate((name) => {
-    const el = document.querySelector<HTMLInputElement>('[data-testid="new-repo-name"]');
-    if (!el) return;
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(el, name);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  }, repoName);
-  await clickTestId("new-project-cta");
-  await completeCreateRepoViaCallback(page, stagehand.context);
-  await waitForTestId("project-ready-card", 120_000);
-  await clickTestId("open-in-studio");
-  await waitForUrlIncludes("/studio/");
-  return page.url().split("/studio/")[1]?.split(/[?#]/)[0] ?? "";
+/**
+ * Create a fresh real project and open its studio, via the ONE shared helper in
+ * `tests/e2e/github-e2e.ts` (task-62 D14). This used to be a private copy that drove
+ * the wizard's create-NEW-repo tab and faked GitHub's user-authorization redirect with
+ * a literal `code`; against real GitHub that is `bad_verification_code`, and a
+ * containerised api has no seam to intercept the exchange. The helper instead
+ * PAT-creates a private throwaway repo per run and drives the wizard's already-shipping
+ * "use existing empty repo" tab (wireframe 13a), which POSTs straight to
+ * `/api/projects` with no consent hop. `slug` names the repo's purpose; the harness
+ * appends the per-run id (real GitHub 422s a duplicate repo name, and the scaffold's
+ * v0.0.0 commit is byte-deterministic, so a REUSED repo would reject a second run).
+ * Fixture repos are never auto-removed — reclaim them with the root repo's
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ */
+/**
+ * Returns the project id AND the repo's real `owner/name`. The full name has to come
+ * back from the helper: the fixture repo is named by the SHARED harness (its own run
+ * id and its own throwaway prefix), so this file's local `RUN_ID` — which only ever
+ * salts the `?nonce=` seed URL — cannot be used to reconstruct it.
+ */
+async function createProjectAndOpenStudio(
+  slug: string,
+): Promise<{ projectId: string; repoFullName: string }> {
+  const { projectId, repoFullName } = await createProjectViaExistingEmptyRepo(page, {
+    slug,
+    seedUrl: SEED_URL,
+  });
+  return { projectId, repoFullName };
 }
 
 beforeAll(async () => {
@@ -158,7 +155,12 @@ beforeAll(async () => {
   page = stagehand.context.pages()[0];
   await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
   await gotoWorkspace();
-  await completeGithubConnectViaCallback(stagehand.context, { installationId: "42" });
+  // The REAL installation id, discovered at runtime from `GET /app/installations`.
+  // The fabricated literal this used to plant is exactly what made every downstream
+  // installation-token mint a permanent 404 against real GitHub (plan row 62 item d).
+  await completeGithubConnectViaCallback(stagehand.context, {
+    installationId: await resolveInstallationId(),
+  });
 }, 120_000);
 
 afterAll(async () => {
@@ -167,13 +169,15 @@ afterAll(async () => {
 
 describe("Studio hydrates from the REAL manifest (not DEMO_STORYBOARD)", () => {
   test("E-SH1: opening a real scaffolded project reads its manifest from git (empty → the empty state, real identity)", async () => {
-    const slug = await createProjectAndOpenStudio(`hydrate-${RUN_ID}`);
+    const { projectId: slug, repoFullName } = await createProjectAndOpenStudio("hydrate");
     expect(slug.length).toBeGreaterThan(0);
 
     // The editor mounted from the REAL project (the mock catalog never had this slug).
     await waitForTestId("studio-frame");
-    // Identity comes from GET /v1/projects/:id, not the hardcoded mock.
-    expect(await testidText("studio-repo-path")).toContain(`/hydrate-${RUN_ID}`);
+    // Identity comes from GET /v1/projects/:id, not the hardcoded mock. Asserted against
+    // the repo the harness ACTUALLY created — owner and full name, per-run unique, so no
+    // mock catalog entry can satisfy it.
+    expect(await testidText("studio-repo-path")).toContain(repoFullName);
     // A freshly-scaffolded manifest is EMPTY → the empty state (proves we hydrated the
     // real empty manifest, NOT the 4-scene DEMO_STORYBOARD).
     expect(await countTestId("studio-empty")).toBeGreaterThan(0);

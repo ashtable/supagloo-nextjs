@@ -4,8 +4,12 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import { type StagehandPage } from "./helpers";
 import {
   completeGithubConnectViaCallback,
-  completeCreateRepoViaCallback,
+  connectOpenRouterViaProfile,
 } from "./connect-helpers";
+import {
+  createProjectViaExistingEmptyRepo,
+  resolveInstallationId,
+} from "./github-e2e";
 
 /**
  * Task #57 (item 1) — the REAL-STACK regression guard for the scripture-reattachment
@@ -77,16 +81,6 @@ async function waitForDataAttr(id: string, attr: string, expected: string, timeo
   }
   throw new Error(`[data-testid="${id}"] ${attr}="${last}" never became "${expected}"`);
 }
-async function waitForUrlIncludes(fragment: string, timeoutMs = 45_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = page.url();
-    if (last.includes(fragment)) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(`URL never included ${JSON.stringify(fragment)} (last: ${last})`);
-}
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -113,29 +107,26 @@ async function scriptureOfScene(
   });
 }
 
-/** Create a fresh real project via the create-new JIT hop, open it in the studio,
- *  and return its studio slug. */
-async function createProjectAndOpenStudio(repoName: string): Promise<string> {
-  await gotoWorkspace();
-  await waitForTestId("workspace-new-project");
-  await clickTestId("workspace-new-project");
-  await waitForTestId("new-project-wizard");
-  await page.evaluate((name) => {
-    const el = document.querySelector<HTMLInputElement>('[data-testid="new-repo-name"]');
-    if (!el) return;
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(el, name);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  }, repoName);
-  await clickTestId("new-project-cta");
-  await completeCreateRepoViaCallback(page, stagehand.context);
-  await waitForTestId("project-ready-card", 120_000);
-  await clickTestId("open-in-studio");
-  await waitForUrlIncludes("/studio/");
-  return page.url().split("/studio/")[1]?.split(/[?#]/)[0] ?? "";
+/**
+ * Create a fresh real project and open its studio, via the ONE shared helper in
+ * `tests/e2e/github-e2e.ts` (task-62 D14). This used to be a private copy that drove
+ * the wizard's create-NEW-repo tab and faked GitHub's user-authorization redirect with
+ * a literal `code`; against real GitHub that is `bad_verification_code`, and a
+ * containerised api has no seam to intercept the exchange. The helper instead
+ * PAT-creates a private throwaway repo per run and drives the wizard's already-shipping
+ * "use existing empty repo" tab (wireframe 13a), which POSTs straight to
+ * `/api/projects` with no consent hop. `slug` names the repo's purpose; the harness
+ * appends the per-run id (real GitHub 422s a duplicate repo name, and the scaffold's
+ * v0.0.0 commit is byte-deterministic, so a REUSED repo would reject a second run).
+ * Fixture repos are never auto-removed — reclaim them with the root repo's
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ */
+async function createProjectAndOpenStudio(slug: string): Promise<string> {
+  const { projectId } = await createProjectViaExistingEmptyRepo(page, {
+    slug,
+    seedUrl: SEED_URL,
+  });
+  return projectId;
 }
 
 /** Commit the current edit and wait for the version chip to go clean. */
@@ -162,8 +153,21 @@ beforeAll(async () => {
   page = stagehand.context.pages()[0];
   await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
   await gotoWorkspace();
-  await completeGithubConnectViaCallback(stagehand.context, { installationId: "42" });
-}, 120_000);
+  // The REAL installation id, discovered at runtime from `GET /app/installations`.
+  // The fabricated literal this used to plant is exactly what made every downstream
+  // installation-token mint a permanent 404 against real GitHub (plan row 62 item d).
+  await completeGithubConnectViaCallback(stagehand.context, {
+    installationId: await resolveInstallationId(),
+  });
+  // …and OpenRouter, WITHOUT WHICH THIS SPEC CANNOT RUN AT ALL: E-RS1 is *about* two
+  // real `storyboard` generations (plan-1, then the re-plan). The `?seed=` seam mints
+  // a user with no provider connections, so both would fail in the worker with
+  // `OpenRouterNotConnectedError`, surfacing only as a `script-input` that never
+  // arrives. The helper connects through the shipping profile card and shims ONLY
+  // OpenRouter's human-only consent hop; the stored key is the real
+  // OPENROUTER_E2E_TEST_API_KEY.
+  await connectOpenRouterViaProfile(stagehand.context, page);
+}, 300_000);
 
 afterAll(async () => {
   await stagehand?.close();
@@ -173,7 +177,7 @@ describe("Re-plan persists the fresh per-scene scripture, not a stale reattached
   test("E-RS1: re-plan (overlapping ids) → commit → re-open keeps s1's OWN reference/translation", async () => {
     // ── plan-1: create + generate + commit, so the manifest has committed scenes
     //    (ids s1…sN) for the re-plan to overlap ─────────────────────────────────
-    const slug = await createProjectAndOpenStudio(`replan-${RUN_ID}`);
+    const slug = await createProjectAndOpenStudio("replan");
     expect(slug.length).toBeGreaterThan(0);
     await waitForTestId("studio-frame");
     await waitForTestId("generate-storyboard");

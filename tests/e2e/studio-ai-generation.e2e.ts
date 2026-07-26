@@ -4,14 +4,18 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import { type StagehandPage } from "./helpers";
 import {
   completeGithubConnectViaCallback,
-  completeCreateRepoViaCallback,
+  connectOpenRouterViaProfile,
 } from "./connect-helpers";
+import {
+  createProjectViaExistingEmptyRepo,
+  resolveInstallationId,
+} from "./github-e2e";
 
 /**
  * Task #35 — the REAL-STACK studio AI wiring, exercised end to end (browser → BFF
- * routes → supagloo-nodejs-api → Postgres + github-stub/git-server → the DBOS
+ * routes → the containerised supagloo-nodejs-api → Postgres + real github.com → the DBOS
  * ai-generation worker calling REAL OpenRouter → MinIO) via the `?seed=` seam
- * (design-delta §5.3, §6b, §10). The commit's git path stays github-stub + git-server;
+ * (design-delta §5.3, §6b, §10). The commit's git path is a real push to github.com;
  * only the AI egress is live (§10).
  *
  * Two headline properties:
@@ -22,24 +26,31 @@ import {
  *  - E-AI2: the generated ref survives Commit + a fresh studio re-open (the manifest
  *    is re-read from git, so the persisted `visualAssetKey` is still there).
  *
- * ── EXECUTION NOTE (in-flight-dblib-e2e-constraint; same posture as tasks 27/28) ──
- * Running this requires the full real stack stood up: `next dev` (global-setup),
- * a locally-built API (`node dist/server.js`) carrying the merged task-31/32 AI
- * routes + real OpenRouter creds, a running DBOS **ai-generation** worker (so an
- * `image` generation reaches `succeeded` with a real MinIO `resultAssetKey`), and a
- * DBOS **git-ops commit** worker (so Commit lands). Until that stack is stood up the
- * spec's EXECUTION is DEFERRED to the release step; the behavior is proven meanwhile
- * by the nextjs unit suite (`lib/studio/ai-generation-data.test.ts`,
- * `lib/studio/reducer.test.ts` generation machine + outcome mappers,
- * `lib/studio/storyboard.test.ts` transforms, `lib/studio/manifest-adapter.test.ts`
- * reroll→serialize persistence, `lib/api/ai-config.test.ts`, `lib/api/contracts.test.ts`).
+ * ── STACK (task 62 half A) ───────────────────────────────────────────────────
+ * There is no github-stub and no local git-server any more: every GitHub call in this
+ * spec reaches real `github.com` / `api.github.com`, and the `installationId` planted
+ * by `completeGithubConnectViaCallback` is DISCOVERED at runtime from
+ * `GET /app/installations` (the fabricated literal it used to plant was exactly plan
+ * row 62 item (d) — a permanent 404 on every installation-token mint).
  *
- * DELIBERATELY Gloo-free + deterministic (testid + `evaluate` + `data-*`, NOT
- * act/extract/observe) — the same convention as every prior studio + real-stack spec
- * (act/extract/observe need the degraded Gloo LLM client, and every load-bearing
- * assertion here is a precise data-attribute / element check, not natural language).
- * Per-run nonce.
- */
+ * The spec runs in the `test:e2e:real` lane (`vitest.e2e.real.config.ts`), whose
+ * `tests/e2e/global-setup.render.ts` brings up the ROOT Compose stack — postgres,
+ * minio, minio-init, migrate, the containerised api AND the `dbos` worker, which
+ * nothing used to start — and gates each of them, including a crash-loop check on the
+ * worker. It needs the root repo's gitignored `docker-compose.override.yml` so the
+ * api+dbos containers carry in-flight code, plus the root `.env` GitHub App
+ * credentials + `GITHUB_E2E_PAT_TOKEN` (loaded into this worker by
+ * `tests/e2e/load-root-env.ts`).
+ *
+ * Its project is acquired through the shared `createProjectViaExistingEmptyRepo`
+ * helper: a private throwaway repo the harness PAT-creates per run, picked via the
+ * wizard's already-shipping "use existing empty repo" tab. Fixture repos are never
+ * auto-removed — reclaim them with the root repo's interactive
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ *
+ * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
+ * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
+ * three times. The unit-level proofs named below still stand alongside it. */
 
 const BASE_URL = "http://localhost:3000";
 const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -106,16 +117,6 @@ async function waitForVisualAssetKey(timeoutMs = 240_000): Promise<string> {
   }
   throw new Error(`scene-inspector data-visual-asset-key never populated (last: ${last})`);
 }
-async function waitForUrlIncludes(fragment: string, timeoutMs = 45_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = "";
-  while (Date.now() < deadline) {
-    last = page.url();
-    if (last.includes(fragment)) return;
-    await page.waitForTimeout(200);
-  }
-  throw new Error(`URL never included ${JSON.stringify(fragment)} (last: ${last})`);
-}
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -126,34 +127,53 @@ async function gotoWorkspace(url = SEED_URL) {
   throw new Error("workspace-home never rendered (is the API up + seed enabled?)");
 }
 
-/** Create a fresh real project via the create-new JIT hop, open it in the studio,
- *  and return its studio slug. */
-async function createProjectAndOpenStudio(repoName: string): Promise<string> {
-  await gotoWorkspace();
-  await waitForTestId("workspace-new-project");
-  await clickTestId("workspace-new-project");
-  await waitForTestId("new-project-wizard");
-  await page.evaluate((name) => {
-    const el = document.querySelector<HTMLInputElement>('[data-testid="new-repo-name"]');
-    if (!el) return;
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(el, name);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  }, repoName);
-  await clickTestId("new-project-cta");
-  await completeCreateRepoViaCallback(page, stagehand.context);
-  await waitForTestId("project-ready-card", 120_000);
-  await clickTestId("open-in-studio");
-  await waitForUrlIncludes("/studio/");
-  return page.url().split("/studio/")[1]?.split(/[?#]/)[0] ?? "";
+/**
+ * Create a fresh real project and open its studio, via the ONE shared helper in
+ * `tests/e2e/github-e2e.ts` (task-62 D14). This used to be a private copy that drove
+ * the wizard's create-NEW-repo tab and faked GitHub's user-authorization redirect with
+ * a literal `code`; against real GitHub that is `bad_verification_code`, and a
+ * containerised api has no seam to intercept the exchange. The helper instead
+ * PAT-creates a private throwaway repo per run and drives the wizard's already-shipping
+ * "use existing empty repo" tab (wireframe 13a), which POSTs straight to
+ * `/api/projects` with no consent hop. `slug` names the repo's purpose; the harness
+ * appends the per-run id (real GitHub 422s a duplicate repo name, and the scaffold's
+ * v0.0.0 commit is byte-deterministic, so a REUSED repo would reject a second run).
+ * Fixture repos are never auto-removed — reclaim them with the root repo's
+ * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ */
+async function createProjectAndOpenStudio(slug: string): Promise<string> {
+  const { projectId } = await createProjectViaExistingEmptyRepo(page, {
+    slug,
+    seedUrl: SEED_URL,
+  });
+  return projectId;
 }
 
-/** Open a studio that HAS scenes: either a provided populated-manifest fixture
- *  (`SUPAGLOO_E2E_STUDIO_SLUG`, fast) or a fresh project whose storyboard is
- *  generated via the real `storyboard` kind from the empty state. Returns the slug. */
+/** The id of the scene the studio currently has selected, read off the shipping
+ *  scene-tree's `data-selected` row. The inspector renders whichever scene this is,
+ *  so every per-scene assertion is really an assertion about THIS id. */
+async function selectedSceneId(): Promise<string> {
+  return page.evaluate(
+    () =>
+      document
+        .querySelector<HTMLElement>('[data-testid="scene-tree-row"][data-selected="true"]')
+        ?.getAttribute("data-scene-id") ?? "",
+  );
+}
+
+/** Commit the working manifest and wait for the branch chip to settle clean.
+ *  Mirrors the sibling `studio-replan-scripture.e2e.ts` helper of the same name. */
+async function commitAndWaitClean() {
+  await clickTestId("commit-button");
+  await waitForDataAttr("version-branch-chip", "data-dirty", "false", 180_000);
+  expect(await countTestId("commit-error")).toBe(0);
+}
+
+/** Open a studio that HAS scenes, COMMITTED — i.e. the same starting point in both
+ *  branches: a project whose scenes are persisted in git and whose working tree is
+ *  clean. Either a provided populated-manifest fixture (`SUPAGLOO_E2E_STUDIO_SLUG`,
+ *  fast) or a fresh project whose storyboard is generated via the real `storyboard`
+ *  kind from the empty state. Returns the slug. */
 async function openStudioWithScenes(): Promise<string> {
   const fixture = process.env.SUPAGLOO_E2E_STUDIO_SLUG;
   if (fixture) {
@@ -163,13 +183,23 @@ async function openStudioWithScenes(): Promise<string> {
     await waitForTestId("script-input", 60_000);
     return fixture;
   }
-  const slug = await createProjectAndOpenStudio(`aigen-${RUN_ID}`);
+  const slug = await createProjectAndOpenStudio("aigen");
   await waitForTestId("studio-frame");
   // A freshly-scaffolded project is empty → the first-time "Generate storyboard"
   // entry point runs a REAL `storyboard` generation; scenes appear when it lands.
   await waitForTestId("generate-storyboard");
   await clickTestId("generate-storyboard");
   await waitForTestId("script-input", 240_000);
+  // …and COMMIT that plan before handing the studio back. A generation writes into
+  // the WORKING manifest, so a just-generated storyboard legitimately leaves the
+  // project dirty — exactly the property E-AI1 asserts two steps later for the visual
+  // reroll ("the new ref dirtied the project"). Without this commit the caller's
+  // `data-dirty === "false"` precondition is simply false, and, worse, the later
+  // dirty assertion would pass vacuously on the storyboard's dirt rather than on the
+  // reroll's. Committing here makes both branches start from the same committed,
+  // clean project and keeps every downstream assertion about the reroll alone.
+  // (`studio-replan-scripture.e2e.ts` commits after its first plan for the same reason.)
+  await commitAndWaitClean();
   return slug;
 }
 
@@ -179,8 +209,21 @@ beforeAll(async () => {
   page = stagehand.context.pages()[0];
   await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
   await gotoWorkspace();
-  await completeGithubConnectViaCallback(stagehand.context, { installationId: "42" });
-}, 120_000);
+  // The REAL installation id, discovered at runtime from `GET /app/installations`.
+  // The fabricated literal this used to plant is exactly what made every downstream
+  // installation-token mint a permanent 404 against real GitHub (plan row 62 item d).
+  await completeGithubConnectViaCallback(stagehand.context, {
+    installationId: await resolveInstallationId(),
+  });
+  // …and OpenRouter, WITHOUT WHICH EVERY GENERATION IN THIS SPEC IS DEAD. The `?seed=`
+  // seam mints a user with no provider connections at all, so both generations below
+  // (the storyboard from the empty state, and the reroll) would fail in the worker
+  // with `OpenRouterNotConnectedError` — visible in the browser only as a
+  // `script-input` that never appears, i.e. a 240 s timeout with no attribution.
+  // The helper connects through the shipping profile card and shims ONLY OpenRouter's
+  // human-only consent hop; the key it stores is the real OPENROUTER_E2E_TEST_API_KEY.
+  await connectOpenRouterViaProfile(stagehand.context, page);
+}, 300_000);
 
 afterAll(async () => {
   await stagehand?.close();
@@ -194,6 +237,16 @@ describe("Reroll visual → preview updates from a real MinIO asset, and survive
     // A scene is selected and clean; no visual generated yet.
     await waitForTestId("scene-inspector");
     expect(await dataAttr("version-branch-chip", "data-dirty")).toBe("false");
+    expect(await dataAttr("scene-inspector", "data-visual-asset-key")).toBe("");
+
+    // WHICH scene the reroll is about to target. Captured, not assumed: the studio
+    // deliberately selects DIFFERENT scenes in the two situations this test walks
+    // through — `STORYBOARD_GENERATED` selects `scenes[0]` (reducer.ts), while a cold
+    // `initialStudioState` selects `scenes[1]` ("2nd scene by index (matches 5a)").
+    // So the scene rerolled below is NOT the scene the re-opened studio will select,
+    // and E-AI2 has to re-select this one before reading the persisted key back.
+    const targetSceneId = await selectedSceneId();
+    expect(targetSceneId.length).toBeGreaterThan(0);
 
     // ── E-AI1: real reroll → preview updates from a MinIO asset ────────────────
     await clickTestId("reroll-visual");
@@ -225,6 +278,31 @@ describe("Reroll visual → preview updates from a real MinIO asset, and survive
       await fresh.goto(`${BASE_URL}/studio/${slug}?seed=authed-returning&nonce=${RUN_ID}`, {
         waitUntil: "load",
       });
+      // Wait for the re-read manifest to render, then SELECT THE SCENE WE REROLLED —
+      // via the shipping scene-tree row, the same affordance a user clicks. A cold
+      // open lands on `scenes[1]`, so reading the inspector as-is would ask an
+      // untouched scene whether it kept a key it never had (a guaranteed "" that
+      // looks like a persistence failure). Selecting first is what makes this
+      // assertion about persistence rather than about default selection.
+      const rowDeadline = Date.now() + 60_000;
+      let selected = false;
+      while (Date.now() < rowDeadline) {
+        const clicked = await fresh.evaluate((id: string) => {
+          const row = document.querySelector<HTMLElement>(
+            `[data-testid="scene-tree-row"][data-scene-id="${id}"]`,
+          );
+          if (!row) return false;
+          row.click();
+          return true;
+        }, targetSceneId);
+        if (clicked) {
+          selected = true;
+          break;
+        }
+        await fresh.waitForTimeout(300);
+      }
+      expect(selected).toBe(true);
+
       const deadline = Date.now() + 60_000;
       let persisted: string | null = null;
       while (Date.now() < deadline) {

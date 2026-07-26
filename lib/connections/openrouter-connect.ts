@@ -26,8 +26,13 @@ export const OPENROUTER_CALLBACK_PATH = "/connect/openrouter/callback";
 
 /** localStorage key the verifier is stashed under between authorize and callback.
  *  localStorage (not sessionStorage) so the popup callback tab can read what the
- *  opener wrote (same origin, shared). Cleared immediately after the exchange. */
-const VERIFIER_STORAGE_KEY = "supagloo.openrouter.pkce_verifier";
+ *  opener wrote (same origin, shared). Cleared immediately after the exchange.
+ *
+ *  EXPORTED for the e2e connect helper only (`tests/e2e/connect-helpers.ts`): the
+ *  helper must wait until the opener has actually stashed a verifier before it drives
+ *  the callback page, and re-typing the literal there would let the two drift apart
+ *  into a silently-dead barrier. Product code should keep using the accessors below. */
+export const VERIFIER_STORAGE_KEY = "supagloo.openrouter.pkce_verifier";
 
 /** Six U+2022 bullets — the exact §9-Q5 mask body. */
 const MASK_BODY = "•".repeat(6);
