@@ -74,6 +74,21 @@ export default function WatchView({ itemId }: { itemId: string }) {
   const streamRef = useRef<StreamState | null>(null);
   const signingRef = useRef(false);
   const errorResignedRef = useRef(false);
+  /**
+   * How many re-signs have FAILED since the last good one.
+   *
+   * A failed `sign()` leaves the stream state untouched — it has no new URL to record —
+   * so `shouldResignStreamUrl` keeps answering "yes" to the same stale `signedAt` on
+   * every 5-second tick. Without a record of the ATTEMPT that is an unbounded poll:
+   * twelve requests a minute at an endpoint that is already failing, for as long as the
+   * tab stays open, with nobody watching.
+   *
+   * A counter rather than a bumped `signedAt` because `signedAt` describes a URL we
+   * hold; there is no new URL to describe, and writing one in would make the state lie
+   * about the thing it exists to track. This is a property of the POLLER, so it lives
+   * beside it. Reset by any successful sign and by `Try again`.
+   */
+  const resignFailuresRef = useRef(0);
   const votingRef = useRef(false);
   /** The playhead, mirrored without state: `timeupdate` fires ~4×/second and nothing
    *  above the player displays it. */
@@ -104,6 +119,7 @@ export default function WatchView({ itemId }: { itemId: string }) {
     setStream(null);
     streamRef.current = null;
     errorResignedRef.current = false;
+    resignFailuresRef.current = 0;
     setPlayerFailed(false);
 
     void (async () => {
@@ -134,9 +150,14 @@ export default function WatchView({ itemId }: { itemId: string }) {
         const signed = await fetchStreamUrl(itemId);
         if (!aliveRef.current) return;
         if (!signed) {
+          // Record the ATTEMPT, because there is no new URL to record. This is the
+          // only thing standing between a failing presign endpoint and a permanent
+          // 5-second poll — see `resignFailuresRef`.
+          resignFailuresRef.current += 1;
           setPlayerFailed(true);
           return;
         }
+        resignFailuresRef.current = 0;
         const signedAt = Date.now();
         const expiresAt = Date.parse(signed.expiresAt);
         // Trust the server's own expiry when it parses; fall back to the documented
@@ -167,6 +188,10 @@ export default function WatchView({ itemId }: { itemId: string }) {
     const timer = setInterval(() => {
       const current = streamRef.current;
       if (!current) return;
+      // The AUTOMATIC check gives up after a few consecutive failures. Only this
+      // caller is bounded: `onRetry` and the element-error path call `sign` directly,
+      // so `Try again` is always live no matter how many attempts the poller spent.
+      if (resignFailuresRef.current >= MAX_AGE_RESIGN_FAILURES) return;
       if (
         shouldResignStreamUrl({
           signedAt: current.signedAt,
@@ -202,6 +227,9 @@ export default function WatchView({ itemId }: { itemId: string }) {
 
   const onRetry = useCallback(() => {
     errorResignedRef.current = false;
+    // An explicit retry re-arms the automatic check too: the viewer is telling us the
+    // conditions may have changed, and the budget exists to stop UNATTENDED polling.
+    resignFailuresRef.current = 0;
     setPlayerFailed(false);
     void sign(currentTimeRef.current);
   }, [sign]);
@@ -359,6 +387,17 @@ const DEFAULT_STREAM_TTL_SECONDS = 120;
 /** How often the age check runs. Well inside the 15 s safety margin, so a re-sign is
  *  decided with room to complete before the URL it replaces expires. */
 const RESIGN_POLL_MS = 5_000;
+
+/**
+ * How many consecutive failed re-signs the AUTOMATIC age check spends before it stops.
+ *
+ * Three, because a re-sign fails for two kinds of reason and they want opposite
+ * answers: a blip (one dropped connection) is worth another go seconds later, and an
+ * outage is worth nothing at all. Three attempts covers the blip and costs fifteen
+ * seconds; the fourth would be the start of an unattended poll. The viewer's own
+ * `Try again` is not subject to it.
+ */
+const MAX_AGE_RESIGN_FAILURES = 3;
 
 const CENTRED_NOTE = {
   flex: 1,

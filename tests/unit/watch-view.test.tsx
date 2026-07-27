@@ -513,3 +513,77 @@ describe("U-WV8: the scrub track is operable from the keyboard", () => {
     expect(video.currentTime).toBe(0);
   });
 });
+
+/**
+ * U-WV9 — THE AGE-BASED RE-SIGN IS BOUNDED.
+ *
+ * `sign()`'s failure branch sets `playerFailed` and returns, leaving the stream state
+ * exactly as it was. The 5-second age check then reads that untouched state, finds it
+ * still older than the safety margin, and asks again. And again — twelve requests a
+ * minute, for as long as the tab is open, at a BFF that is by definition already
+ * failing. A viewer who walks away from a watch page leaves a client hammering it.
+ *
+ * Fake timers rather than a real wait: the first re-sign is due ~105 s in, and the
+ * claim is about what happens over the minutes after that. `Try again` remains the
+ * deliberate retry and is asserted here too — bounding the automatic loop must not
+ * cost the user their way out.
+ */
+describe("U-WV9: a failing age-based re-sign cannot poll forever", () => {
+  it("stops after a bounded number of attempts, and Try again still works", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchGalleryItem.mockResolvedValue(item());
+      fetchStreamUrl.mockResolvedValueOnce(
+        stream("https://s3.example/one?X-Amz-Signature=a"),
+      );
+
+      const container = await open();
+      expect(fetchStreamUrl).toHaveBeenCalledTimes(1);
+
+      // From here the presign endpoint is down: every re-sign answers null.
+      fetchStreamUrl.mockResolvedValue(null);
+
+      // Past the safety margin (120 - 15 = 105 s), so the age check starts asking…
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(110_000);
+      });
+      expect(
+        fetchStreamUrl.mock.calls.length,
+        "the age check never re-signed at all",
+      ).toBeGreaterThan(1);
+
+      // …and now a full further minute — twelve more ticks of the 5 s poll — during
+      // which a viewer is doing nothing at all. Whatever the budget is, it is spent by
+      // the end of this.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      const settled = fetchStreamUrl.mock.calls.length;
+      // A handful of attempts, not a poll rate. At 12 ticks a minute the unbounded
+      // version reached 15 by this point and kept going.
+      expect(
+        settled,
+        "the age check is polling rather than giving up — this is the unbounded loop",
+      ).toBeLessThanOrEqual(5);
+
+      // Three more minutes changes nothing: the bound is a bound, not a delay.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(180_000);
+      });
+      expect(fetchStreamUrl.mock.calls.length).toBe(settled);
+
+      // The viewer's way out is untouched, and it re-arms the automatic check.
+      const failed = byTestId(container, "gallery-watch-player-error");
+      expect(failed.textContent).toContain("That video didn't load.");
+      fetchStreamUrl.mockResolvedValueOnce(
+        stream("https://s3.example/two?X-Amz-Signature=b"),
+      );
+      await click(byTestId(container, "gallery-watch-player-retry"));
+      await flush();
+      expect(fetchStreamUrl.mock.calls.length).toBe(settled + 1);
+      expect(queryTestId(container, "gallery-watch-player-error")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
