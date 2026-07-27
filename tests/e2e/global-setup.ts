@@ -5,9 +5,10 @@ const BASE_URL = "http://localhost:3000";
 
 /**
  * Load `.env.local` into THIS process's env before we spawn `next dev`, so the
- * spawned server inherits the app's server env — notably YV_APP_KEY, which
- * `app/layout.tsx` requires at module scope (it throws otherwise, and the app
- * renders a 500 `/_error` page). globalSetup runs in Vitest's main process,
+ * spawned server inherits the app's server env — notably YV_APP_KEY, without
+ * which `instrumentation.ts` refuses to boot: it logs one redacted line and
+ * exits 1, so `next dev` dies rather than serving anything (R4344-1).
+ * globalSetup runs in Vitest's main process,
  * which does NOT execute the worker's `load-env.ts` setupFile, so we must load
  * the env here too. Node >= 20.12 ships `process.loadEnvFile`.
  */
@@ -23,10 +24,12 @@ function loadEnvLocal(): void {
 }
 
 /**
- * True only if the dev server answers `GET /` with a healthy 2xx. A crashing or
- * keyless server (e.g. `app/layout.tsx`'s YV_APP_KEY guard throwing) serves a
- * 500 `/_error` overlay — that must NOT count as "up", or we would reuse a
- * broken server and produce wrong-reason failures. `response.ok` gates reuse.
+ * True only if the dev server answers `GET /` with a healthy 2xx. `response.ok`
+ * (not "the port is listening") gates reuse because a server can be bound and
+ * still be useless: any render-time throw in the tree serves a 500 `/_error`
+ * overlay, and reusing that would produce wrong-reason failures everywhere. The
+ * specific keyless case now exits instead (see `loadEnvLocal` above), but the
+ * 2xx gate is the general guard and stays.
  */
 async function serverIsUp(): Promise<boolean> {
   try {
