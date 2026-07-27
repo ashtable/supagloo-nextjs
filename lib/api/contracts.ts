@@ -833,6 +833,22 @@ export type GalleryVisibility = z.infer<typeof GalleryVisibilitySchema>;
  *
  *  `videoAssetKey`, `ownerId` and `viewCount` are deliberately NOT on this DTO — see
  *  the API's `toGalleryItemDto`. Playback goes through `stream-url`. */
+/** The public shape of an item's creator (mirrors db-lib `GalleryOwnerSchema`).
+ *
+ *  Extracted rather than inlined so the CARD DTO and the WATCH-PAGE DTO provably share
+ *  a base: the detail shape is the card's owner plus a count, and a reader can see that
+ *  from the types instead of comparing two literals.
+ *
+ *  There is NO `@handle` here, and the API records the same gap in its own
+ *  `toGalleryItemDto`: the design draws `@maryk`, `User` has no handle column, and
+ *  inventing one at the wire is how a UI starts asserting an identity the database
+ *  cannot back. */
+export const GalleryOwnerSchema = z.object({
+  displayName: z.string(),
+  avatarInitials: z.string(),
+});
+export type GalleryOwner = z.infer<typeof GalleryOwnerSchema>;
+
 export const GalleryItemDtoSchema = z.object({
   id: z.string(),
   renderJobId: z.string(),
@@ -849,12 +865,86 @@ export const GalleryItemDtoSchema = z.object({
   thumbnailUrl: z.string().nullable(),
   rank: z.number().int().nullable(),
   viewerHasUpvoted: z.boolean(),
-  owner: z.object({
-    displayName: z.string(),
-    avatarInitials: z.string(),
-  }),
+  owner: GalleryOwnerSchema,
 });
 export type GalleryItemDto = z.infer<typeof GalleryItemDtoSchema>;
+
+// ── Turn 16a: the watch page's detail contract ───────────────────────────────
+//
+// Mirrors db-lib `GalleryMakingOf*` / `GalleryItemDetail*`. This BFF validates rather
+// than trusts, for the ordinary reason every mirror in this file exists — but note
+// what it deliberately does NOT do: it does not re-enforce db-lib's jsonb-safety
+// bounds (the control-character class, the 20 000-character cap). Those are WRITE-side
+// gates protecting a Postgres column; by the time a value reaches this reader it is
+// already stored, and refusing to render a row the database accepted would turn a
+// server-side bound into a blank page. The bounds this side keeps are the ones that
+// change MEANING: the version literal and the required-but-nullable key.
+
+/** One tile on the HOW IT WAS MADE grid (mirrors db-lib `GalleryMakingOfSceneSchema`).
+ *
+ *  `index` is 1-based and is the number PRINTED on the tile, not an array offset. There
+ *  is no image reference and never will be one: the tiles are deterministic gradients
+ *  derived from the index (`lib/gallery/scene-poster.ts`), which is what keeps a public
+ *  page from presigning N objects to render N decorations. */
+export const GalleryMakingOfSceneSchema = z.object({
+  index: z.number().int().min(1),
+  name: z.string().min(1),
+  durationSeconds: z.number().positive(),
+});
+export type GalleryMakingOfScene = z.infer<typeof GalleryMakingOfSceneSchema>;
+
+/** `GalleryItem.makingOf` — the publish-time manifest snapshot the watch page renders.
+ *
+ *  `version` is the literal `1` and REJECTS anything else, which is the entire reason to
+ *  carry a version at all: without it, a v2 snapshot written by a newer API is half-read
+ *  by this reader — known fields parse, unknown ones are stripped — and the page renders
+ *  a confident lie about how the video was made. Rejecting is what lets
+ *  `fetchGalleryItem` degrade to `null` and the sections simply not appear.
+ *
+ *  Every optional value is `T | null`, never `""` or an absent key: "there is no music
+ *  style" and "the music style is empty" must not be the same wire value, because one
+ *  renders no chip and the other renders a blank one. */
+export const GalleryMakingOfSchema = z.object({
+  version: z.literal(1),
+  capturedAt: z.string(),
+  scriptureText: z.string().nullable(),
+  narratorVoiceLabel: z.string().nullable(),
+  musicStyle: z.string().nullable(),
+  captionsOn: z.boolean(),
+  scenes: z.array(GalleryMakingOfSceneSchema),
+});
+export type GalleryMakingOf = z.infer<typeof GalleryMakingOfSchema>;
+
+/** `GET /v1/gallery/:id` — the WATCH PAGE's item. A strict widening of the card DTO.
+ *
+ *  Exactly two fields more than a card, and both are per-item costs the GRID must not
+ *  pay: `makingOf` is a jsonb blob nobody needs 24 of, and `publicVideoCount` is a
+ *  `COUNT(*)` — 24 of those per listing page, for a number no card renders.
+ *
+ *  `makingOf` is REQUIRED-BUT-NULLABLE, never optional. `null` is a permanent,
+ *  first-class case (every item published before the column existed, plus any publish
+ *  whose best-effort manifest read failed) and it means "we do not have this". An
+ *  ABSENT key means the payload is not a detail item at all — most likely a card DTO
+ *  served where a detail one was promised — and that must be a parse failure, not a
+ *  silently missing section. */
+export const GalleryItemDetailDtoSchema = GalleryItemDtoSchema.extend({
+  makingOf: GalleryMakingOfSchema.nullable(),
+  owner: GalleryOwnerSchema.extend({
+    /** How many PUBLIC items this owner has. `unlisted` items are excluded: the number
+     *  sits on a public page beside a creator's name, so counting items a visitor
+     *  cannot reach would overstate them to everyone, the owner included. */
+    publicVideoCount: z.number().int().min(0),
+  }),
+});
+export type GalleryItemDetailDto = z.infer<typeof GalleryItemDetailDtoSchema>;
+
+/** `GET /v1/gallery/:id` response — a `{ item }` envelope like every sibling. */
+export const GalleryItemDetailResponseSchema = z.object({
+  item: GalleryItemDetailDtoSchema,
+});
+export type GalleryItemDetailResponse = z.infer<
+  typeof GalleryItemDetailResponseSchema
+>;
 
 /** `POST /v1/renders/:id/gallery` (201), `GET /v1/gallery/:id`, and BOTH upvote routes.
  *  The vote routes return the CURRENT item — count and `viewerHasUpvoted` re-read after

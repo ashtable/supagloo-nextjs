@@ -485,7 +485,21 @@ describe("browse the gallery signed out", () => {
     expect(await attrOf(`gallery-upvote-${id}`, "data-voted")).toBe("false");
   });
 
-  test("E-GU11: the ▶ opens the player and the video actually loads metadata", async () => {
+  /**
+   * DELIBERATELY REWRITTEN, not deleted (Turn 16a, slice C7).
+   *
+   * This case used to open `gallery-player-modal.tsx` — row 41's explicitly-flagged
+   * placeholder for an undesigned detail view — and prove real playback inside it. 16a
+   * designs the detail view as a real page, so the modal is gone and the `▶` is a
+   * `<Link>`. What remains true HERE is the one thing this spec still owns: the grid's
+   * play affordance leads to the watch page.
+   *
+   * The real playback proof (a presigned public-endpoint URL, `readyState > 0`, and
+   * therefore that the seeded S3 object genuinely exists) did not disappear with the
+   * modal — it moved to `gallery-watch.e2e.ts`'s `E-GW3`, on the surface that now
+   * plays the video.
+   */
+  test("E-GU11: the ▶ navigates to the item's watch page", async () => {
     await clickTestId("modal-close").catch(() => undefined); // dismiss the prompt if open
     await page.waitForTimeout(200);
     await clickTestId("gallery-sort-popular");
@@ -493,41 +507,14 @@ describe("browse the gallery signed out", () => {
     const id = (await cardIds())[0];
 
     await clickTestId(`gallery-play-${id}`);
-    await waitForTestId("gallery-player", 15_000);
-    await waitForTestId("gallery-player-video", 15_000);
+    await waitForHydrated(page, "gallery-watch", { timeoutMs: 60_000 });
+    expect(await page.evaluate(() => window.location.pathname)).toBe(`/gallery/${id}`);
+    // The retired modal must not come back with it.
+    expect(await countTestId("gallery-player")).toBe(0);
 
-    const src = await page.evaluate(
-      () =>
-        document.querySelector<HTMLVideoElement>(
-          '[data-testid="gallery-player-video"]',
-        )?.currentSrc ?? "",
-    );
-    // The presigned URL points at the PUBLIC S3 endpoint (MinIO in Compose), never at
-    // the app origin — the browser fetches the object directly.
-    expect(src).toMatch(/^https?:\/\//);
-    expect(src).not.toContain(BASE_URL);
-    expect(src).toContain("X-Amz-Signature");
-
-    // `readyState > 0` (HAVE_METADATA) rather than a play assertion: headless autoplay
-    // is unreliable, but a genuinely playable object always reaches metadata. This is
-    // ALSO the only assertion that would catch a missing S3 object, because
-    // `presignPublicKey` signs locally and returns 200 either way.
-    const deadline = Date.now() + 20_000;
-    let readyState = 0;
-    while (Date.now() < deadline) {
-      readyState = await page.evaluate(
-        () =>
-          document.querySelector<HTMLVideoElement>(
-            '[data-testid="gallery-player-video"]',
-          )?.readyState ?? 0,
-      );
-      if (readyState > 0) break;
-      await page.waitForTimeout(250);
-    }
-    expect(readyState, "the <video> never loaded metadata").toBeGreaterThan(0);
-
-    await clickTestId("modal-close");
-    await h.waitForGone("gallery-player");
+    await page.goto(`${BASE_URL}/gallery`, { waitUntil: "load" });
+    await waitForHydrated(page, "gallery-grid", { timeoutMs: 60_000 });
+    await waitForGridSettled();
   });
 
   test("E-GU13a: 'Gallery' is a real link from the landing nav", async () => {
@@ -695,6 +682,111 @@ describe("Your videos", () => {
     expect(await testidText(`your-videos-duration-${first.renderJobId}`)).toBe(
       `${mins}:${secs}`,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Turn 17b card 4a — the gallery's ZERO-ITEM states (slice C9).
+//
+// LAST IN THE FILE, and that placement is load-bearing: E-GU15 installs a context-wide
+// `window.fetch` shim to manufacture a failed listing, and Stagehand v3 is a CDP
+// understudy with no Playwright `route()` and no way to REMOVE an init script. The shim
+// therefore has to be the last thing this file does. It fails exactly ONE `/api/gallery`
+// request per page load, which is also what makes `Try again` a real recovery rather than
+// a second red.
+//
+// Numbering note: the plan named these E-GU12/E-GU13; both ids were already taken in this
+// file (Your videos, and the two nav-link cases), so they are E-GU14/E-GU15 here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("the gallery with nothing to show", () => {
+  beforeAll(async () => {
+    await stagehand.context.clearCookies();
+  }, 60_000);
+
+  test("E-GU14: a search with no matches shows NOTHING HERE YET. with the term quoted, and Clear filters restores the grid", async () => {
+    await gotoGallery();
+    await waitForCardCount(fixtures.pageSize);
+
+    await clickTestId("gallery-search-toggle");
+    await waitForTestId("gallery-search-input");
+
+    // The run nonce guarantees a miss: no fixture description or title can contain it,
+    // and `assertNoForeignGalleryItems` already proved nothing else is in the listing.
+    const missingTerm = `Habakkuk${RUN_ID}`;
+    await typeIntoSearch(missingTerm);
+    await waitForTestId("gallery-empty", 30_000);
+
+    expect(await testidText("gallery-empty-title")).toBe("NOTHING HERE YET.");
+    // The searched term is printed back, quoted and bold — the reader's own word is what
+    // tells them the search ran and found nothing, rather than the page being broken.
+    expect(await testidText("gallery-empty-term")).toBe(missingTerm);
+    expect(await testidText("gallery-empty-copy")).toContain(
+      `No public videos match "${missingTerm}".`,
+    );
+    // 4a draws no error affordance, and this is not an error.
+    expect(await countTestId("gallery-error")).toBe(0);
+    expect(await countTestId("gallery-retry")).toBe(0);
+    expect(await countTestId("gallery-create-verse")).toBe(1);
+
+    // `Clear filters` clears BOTH halves — the committed query AND the search box. If it
+    // cleared only the query, the still-populated input would re-commit the same term
+    // 250ms later and put the user straight back here.
+    await clickTestId("gallery-clear-filters");
+    await waitForCardCount(fixtures.pageSize);
+    expect(await countTestId("gallery-empty")).toBe(0);
+    expect(await page.evaluate(() => {
+      const el = document.querySelector<HTMLInputElement>(
+        '[data-testid="gallery-search-input"]',
+      );
+      return el?.value ?? "";
+    })).toBe("");
+  });
+
+  test("E-GU15: a failed listing renders the ERROR state with Try again — a different state from the empty card", async () => {
+    // One failed `/api/gallery` per page load. Stagehand v3 has no `route()`, so the
+    // established seam here is a `window.fetch` shim injected before page scripts run
+    // (the same technique `connect-helpers.ts` uses for OpenRouter's PKCE exchange).
+    await stagehand.context.addInitScript(() => {
+      const orig = window.fetch.bind(window);
+      let remaining = 1;
+      window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : (input as Request).url;
+        if (url && url.includes("/api/gallery?") && remaining > 0) {
+          remaining -= 1;
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: "e2e_injected_failure" }), {
+              status: 500,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }
+        return orig(input as RequestInfo, init);
+      }) as typeof window.fetch;
+    });
+
+    await page.goto(`${BASE_URL}/gallery`, { waitUntil: "load" });
+    await waitForHydrated(page, "gallery-grid", { timeoutMs: 60_000 });
+    await waitForTestId("gallery-error", 30_000);
+
+    // THE CLAIM: an error is NOT an empty gallery. "Nothing here yet" would state that
+    // the community has published nothing, which is a lie about other people's work —
+    // what actually happened is that we do not know.
+    expect(await countTestId("gallery-empty")).toBe(0);
+    expect(await countTestId("gallery-empty-title")).toBe(0);
+    expect(await countTestId("gallery-clear-filters")).toBe(0);
+    expect(await testidText("gallery-error")).toContain("The gallery didn't load.");
+    expect(await countTestId("gallery-retry")).toBe(1);
+
+    // And the way out genuinely works — the shim only ate the first request.
+    await clickTestId("gallery-retry");
+    await waitForCardCount(fixtures.pageSize);
+    expect(await countTestId("gallery-error")).toBe(0);
   });
 });
 

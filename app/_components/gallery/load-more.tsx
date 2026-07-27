@@ -8,7 +8,10 @@
  * rather than "this page was short". Hiding on it is therefore honest — there is no
  * `hasMore` flag that could disagree.
  *
- * The loading + error states are INVENTED (design-delta §5 designs neither).
+ * The loading + error states are INVENTED (design-delta §2.7 / §9-Q3 — NOT "§5", which is
+ * "System architecture (target)" and declares nothing out of scope; miscitation corrected
+ * 2026-07-26). Turn 17b designs a gallery empty state (card 4a) but still draws neither of
+ * these two, so they stay invented.
  */
 export default function LoadMore({
   hasMore,

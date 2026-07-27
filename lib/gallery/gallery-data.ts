@@ -17,13 +17,17 @@
  */
 import {
   GalleryDeleteResponseSchema,
+  GalleryItemDetailResponseSchema,
   GalleryItemResponseSchema,
   GalleryListResponseSchema,
   GalleryStreamUrlResponseSchema,
+  ProjectListResponseSchema,
   RenderJobListResponseSchema,
+  type GalleryItemDetailDto,
   type GalleryItemDto,
   type GalleryListResponse,
   type GalleryStreamUrlResponse,
+  type ProjectDto,
   type PublishGalleryItemRequest,
   type RenderJobDto,
 } from "../api/contracts";
@@ -65,7 +69,45 @@ export async function fetchGalleryPage(
   }
 }
 
+/**
+ * `GET /api/gallery/:id` → ONE item's watch-page detail, or null on ANY failure.
+ *
+ * This function and its BFF route were both deleted in row 41, and the deletion said
+ * exactly what would bring them back: *"if a detail page is ever designed"*. Turn 16a
+ * is that page, so they are back — five lines each, as promised, rather than the dead
+ * code they were.
+ *
+ * It parses against the DETAIL schema, not the card one, and that is load-bearing: the
+ * realistic wire drift here is being handed a card DTO (a perfectly valid gallery item,
+ * missing `makingOf` and `owner.publicVideoCount`), which would otherwise render
+ * `undefined public videos` on a public page. A body that fails the detail shape is a
+ * `null` and a not-found state, never a half-parsed object.
+ *
+ * Uncached for the same reason the listing is: the response carries the viewer's own
+ * `viewerHasUpvoted`, so a cached one would render somebody else's pill.
+ */
+export async function fetchGalleryItem(
+  id: string,
+  deps: FetchDep = {},
+): Promise<GalleryItemDetailDto | null> {
+  const doFetch = doFetchOf(deps);
+  try {
+    const res = await doFetch(`/api/gallery/${encodeURIComponent(id)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const parsed = GalleryItemDetailResponseSchema.safeParse(await readJson(res));
+    return parsed.success ? parsed.data.item : null;
+  } catch {
+    return null;
+  }
+}
+
 /** `GET /api/gallery/:id/stream-url` → a 120s presigned GET for the mp4, or null.
+ *
+ *  Its ONE caller is now the watch page (`/gallery/[id]`), which is also the only
+ *  surface a viewer sits on for longer than the presign lives — so that page re-signs on
+ *  a schedule rather than assuming one URL lasts a session.
  *
  *  NOTE for anyone debugging a silent player: this endpoint signs LOCALLY, so it
  *  answers 200 whether or not the object exists. A missing object shows up only as a
@@ -114,19 +156,67 @@ export async function removeUpvote(
   );
 }
 
-/** `POST /api/renders/:id/gallery` → the new 201 item, or null (409 already published,
- *  409 not publishable, 422 underivable book, anything else). */
+/**
+ * The publish call's two outcomes, kept DISTINGUISHABLE all the way to the dialog.
+ *
+ * This is the one mutating call in this module that does not collapse a failure to
+ * `null`, and the reason is specific: the api answers a publish refusal with three
+ * different, individually actionable messages (`render_not_publishable`,
+ * `already_published`, `scripture_book_underivable`), the BFF passes status + body
+ * through verbatim, and a dialog that flattened all three into one house sentence would
+ * throw away the only thing that tells the user what to do next. "That didn't publish"
+ * is not a reason.
+ */
+export type PublishOutcome =
+  | { ok: true; item: GalleryItemDto }
+  | { ok: false; message: string };
+
+/** What we say when the api said nothing usable (a dead upstream, an HTML error page,
+ *  a body that is not the error envelope). Deliberately actionable, not an apology. */
+export const PUBLISH_FALLBACK_MESSAGE =
+  "That didn't publish. Check the title and passage, then try again.";
+
+/** `POST /api/renders/:id/gallery` → the new 201 item, or the api's own refusal message
+ *  (409 already published, 409 not publishable, 422 underivable book, anything else). */
 export async function publishRenderToGallery(
   renderJobId: string,
   body: PublishGalleryItemRequest,
   deps: FetchDep = {},
-): Promise<GalleryItemDto | null> {
-  return itemRequest(
-    `/api/renders/${encodeURIComponent(renderJobId)}/gallery`,
-    "POST",
-    body,
-    deps,
-  );
+): Promise<PublishOutcome> {
+  const doFetch = doFetchOf(deps);
+  try {
+    const res = await doFetch(
+      `/api/renders/${encodeURIComponent(renderJobId)}/gallery`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const payload = await readJson(res);
+    if (!res.ok) return { ok: false, message: errorMessageOf(payload) };
+    const parsed = GalleryItemResponseSchema.safeParse(payload);
+    return parsed.success
+      ? { ok: true, item: parsed.data.item }
+      : { ok: false, message: PUBLISH_FALLBACK_MESSAGE };
+  } catch {
+    return { ok: false, message: PUBLISH_FALLBACK_MESSAGE };
+  }
+}
+
+/** Pull the api's `message` out of its error envelope. Falls back to the machine `error`
+ *  code only when there is no prose — a bare code is still more informative than a
+ *  house sentence, because it is searchable. */
+function errorMessageOf(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return PUBLISH_FALLBACK_MESSAGE;
+  const body = payload as { message?: unknown; error?: unknown };
+  if (typeof body.message === "string" && body.message.trim().length > 0) {
+    return body.message;
+  }
+  if (typeof body.error === "string" && body.error.trim().length > 0) {
+    return body.error;
+  }
+  return PUBLISH_FALLBACK_MESSAGE;
 }
 
 /** `DELETE /api/gallery/:id` → true only on a real `{ ok: true }`. Un-publishing frees
@@ -162,11 +252,33 @@ export async function fetchMyRenders(deps: FetchDep = {}): Promise<RenderJobDto[
   }
 }
 
-/** The shared `{ item }`-envelope request every single-item route uses.
+/**
+ * `GET /api/projects` → the caller's projects. `[]` — never null, never a throw — on any
+ * failure, for the same reason `fetchMyRenders` returns `[]`: 16b's PROJECT picker joins
+ * these onto the renders purely to NAME them, so an unreachable list must degrade the
+ * labels, never the list of publishable renders (`buildProjectOptions` falls back to the
+ * project id). A publishable render disappearing because a naming call failed would be
+ * the worse failure by far.
+ */
+export async function fetchMyProjects(deps: FetchDep = {}): Promise<ProjectDto[]> {
+  const doFetch = doFetchOf(deps);
+  try {
+    const res = await doFetch("/api/projects", { cache: "no-store" });
+    if (!res.ok) return [];
+    const parsed = ProjectListResponseSchema.safeParse(await readJson(res));
+    return parsed.success ? parsed.data.projects : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The shared `{ item }`-envelope request the MUTATING single-item routes use.
  *
- *  All three remaining callers MUTATE, so there is no cache branch here: `cache` only
- *  ever mattered for the GET that `fetchGalleryItem` used to make, and that function is
- *  gone with the item-detail page that never got designed. */
+ *  All three callers mutate, so there is no cache branch here — a POST/DELETE has
+ *  nothing to cache. The one GET that reads a single item, `fetchGalleryItem`, does not
+ *  go through this helper at all: it parses the wider DETAIL schema and passes
+ *  `cache: "no-store"` itself. (An earlier revision of this docblock said the GET no
+ *  longer existed; Turn 16a's watch page brought it back.) */
 async function itemRequest(
   url: string,
   method: "POST" | "DELETE",

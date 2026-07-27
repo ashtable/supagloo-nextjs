@@ -17,6 +17,36 @@ import { createPortal } from "react-dom";
  * chrome (+ the ✕ close button, only when dismissible) — that's modal chrome,
  * shared by every standalone connect modal. The wizard passes no `title`; its
  * own 6px progress bar is wizard-specific chrome rendered by its children.
+ *
+ * ── THE PANEL IS BOUNDED BY THE VIEWPORT, AND ITS BODY SCROLLS ─────────────
+ * Everything below the header lives in its own scroll region, and the panel is
+ * capped at the viewport height minus the backdrop's own padding.
+ *
+ * That is not polish. Without the cap, a panel taller than the viewport simply
+ * OVERFLOWS a `position: fixed` backdrop that nothing can scroll — the document
+ * behind it is not what is overflowing, so the page scrollbar cannot reach it.
+ * Whatever sits at the bottom of the panel is then unreachable on a phone: the
+ * 16b publish dialog's entire Publish/Cancel row was off-screen at 375×667,
+ * which means the dialog could be filled in and not submitted.
+ *
+ * Three pieces, each load-bearing:
+ *   1. `maxHeight` on the panel, so it can never exceed the backdrop's content
+ *      box, and `display: flex` + `flexDirection: column` so the cap is shared
+ *      out between a fixed header and an elastic body;
+ *   2. `minHeight: 0` on that body — a flex child's default `min-height: auto`
+ *      refuses to shrink below its content, which silently defeats the cap;
+ *   3. `overflowY: auto` on the BACKDROP plus `margin: auto` (rather than
+ *      `alignItems: center`) on the panel. `100vh` is not always the visible
+ *      height — mobile browser chrome makes it larger — so the cap alone can
+ *      still leave a panel taller than what the viewer can see. A centered flex
+ *      item overflows equally in both directions and puts its TOP out of reach;
+ *      `margin: auto` centers when there is room and stays reachable when there
+ *      is not, with the backdrop's own scroll as the way to it.
+ *
+ * The header is `flex: none`, so `modal-close` stays put while the body moves.
+ * A modal that draws its OWN chrome inside `children` (the two wizards) scrolls
+ * that chrome with the content; that is the deliberate trade for one rule here
+ * rather than a header slot every consumer has to opt into.
  */
 export default function Modal({
   open,
@@ -92,9 +122,12 @@ export default function Modal({
         inset: 0,
         background: "rgba(0,0,0,.55)",
         display: "flex",
-        alignItems: "center",
+        // NOT `alignItems: center` — see the docblock. `margin: auto` on the panel
+        // centers it while leaving both edges reachable when it does not fit.
         justifyContent: "center",
-        padding: 24,
+        overflowY: "auto",
+        overscrollBehavior: "contain",
+        padding: BACKDROP_PADDING,
         zIndex: 100,
       }}
     >
@@ -110,6 +143,12 @@ export default function Modal({
         style={{
           width,
           maxWidth: "100%",
+          // The cap + the centering, together. `margin: auto` is what replaces the
+          // backdrop's old `alignItems: center`.
+          maxHeight: `calc(100vh - ${BACKDROP_PADDING * 2}px)`,
+          margin: "auto",
+          display: "flex",
+          flexDirection: "column",
           background: "var(--sg-bg)",
           color: "var(--sg-fg)",
           borderRadius: 18,
@@ -124,6 +163,7 @@ export default function Modal({
           <div
             style={{
               height: 56,
+              flex: "none",
               display: "flex",
               alignItems: "center",
               padding: "0 22px 0 26px",
@@ -166,9 +206,27 @@ export default function Modal({
             )}
           </div>
         )}
-        {children}
+        {/* The scroll region. `minHeight: 0` is what makes the panel's cap bite: a
+            flex child defaults to `min-height: auto`, which refuses to shrink below
+            its content and would push the action row straight back off-screen. */}
+        <div
+          data-testid={`${testId}-body`}
+          style={{
+            flex: "1 1 auto",
+            minHeight: 0,
+            overflowY: "auto",
+            overscrollBehavior: "contain",
+          }}
+        >
+          {children}
+        </div>
       </div>
     </div>,
     document.body,
   );
 }
+
+/** The gutter between the panel and the viewport edge, on every side. Named because
+ *  the panel's `maxHeight` has to subtract exactly twice it — a literal in two places
+ *  is a literal that drifts. */
+const BACKDROP_PADDING = 24;

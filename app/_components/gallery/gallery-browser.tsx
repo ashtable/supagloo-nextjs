@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import GalleryHeader from "./gallery-header";
 import GalleryFilterRow from "./gallery-filter-row";
 import GalleryGrid from "./gallery-grid";
-import GalleryPlayerModal from "./gallery-player-modal";
 import LoadMore from "./load-more";
-import ShareYoursDialog from "./share-yours-dialog";
+import PublishToGalleryDialog from "./publish-to-gallery-dialog";
 import SigninPrompt from "./signin-prompt";
 import { useSession } from "../session-provider";
 import {
@@ -21,7 +21,6 @@ import {
 } from "@/lib/gallery/gallery-model";
 import {
   fetchGalleryPage,
-  fetchStreamUrl,
   removeUpvote,
   sendUpvote,
 } from "@/lib/gallery/gallery-data";
@@ -45,8 +44,9 @@ import type { GalleryItemDto } from "@/lib/api/contracts";
  * it into another pages a DIFFERENT ordering (the API rejects it outright).
  */
 export default function GalleryBrowser() {
-  const { session } = useSession();
+  const { session, sessionResolved } = useSession();
   const isAuthed = session.isAuthed;
+  const router = useRouter();
 
   const [mounted, setMounted] = useState(false);
   const [state, setState] = useState(() => initialQueryState<GalleryItemDto>());
@@ -68,12 +68,22 @@ export default function GalleryBrowser() {
    */
   const [attempt, setAttempt] = useState(0);
 
-  const [player, setPlayer] = useState<{
-    item: GalleryItemDto;
-    url: string | null;
-  } | null>(null);
-  const [promptOpen, setPromptOpen] = useState(false);
-  const [shareOpen, setShareOpen] = useState(false);
+  /** Which action sent an anonymous visitor to the sign-in prompt, or `null` if it is
+   *  closed. `/gallery` is public and BOTH of its signed-in actions live on it, so the
+   *  prompt has to say which one is being asked for. */
+  const [promptReason, setPromptReason] = useState<"upvote" | "publish" | null>(null);
+  /**
+   * The visitor has asked to share — an INTENT, not a decision.
+   *
+   * Which surface that intent becomes is derived below rather than chosen in the click
+   * handler, and the difference is a real bug. `session.isAuthed` is false both for an
+   * anonymous visitor AND for a signed-in one whose `GET /api/me` probe has not landed
+   * yet, so a handler that branches on it at click time sends a signed-in user to the
+   * sign-in prompt — and, having already decided, leaves them there. Deriving it means
+   * the answer simply arrives: the intent survives the probe and resolves into the
+   * right surface, with no dead click and no flash of the wrong one.
+   */
+  const [shareRequested, setShareRequested] = useState(false);
 
   /** Monotonic token for the CURRENT page-1 request. An in-flight fetch whose token is
    *  stale (the user switched sort mid-request) must never write into the grid. */
@@ -160,6 +170,18 @@ export default function GalleryBrowser() {
   /** The error state's only way out. */
   const onRetry = useCallback(() => setAttempt((a) => a + 1), []);
 
+  /**
+   * 4a's `Clear filters`. Resets BOTH halves of the filter — the committed query state
+   * AND the search box — because the box is debounced INTO the query: clearing only the
+   * query would let the still-populated input re-commit the same term 250 ms later and
+   * put the user straight back on the empty state they just left.
+   */
+  const onClearFilters = useCallback(() => {
+    setSearchInput("");
+    setState(initialQueryState<GalleryItemDto>());
+    setAttempt((a) => a + 1);
+  }, []);
+
   const onLoadMore = useCallback(async () => {
     const cursor = state.cursor;
     if (loadingMore || !cursor) return;
@@ -206,7 +228,7 @@ export default function GalleryBrowser() {
     async (item: GalleryItemDto) => {
       const outcome = anonVoteOutcome(isAuthed, item.viewerHasUpvoted);
       if (outcome === "prompt") {
-        setPromptOpen(true);
+        setPromptReason("upvote");
         return;
       }
 
@@ -236,7 +258,7 @@ export default function GalleryBrowser() {
             ...s,
             items: replaceItem(s.items, revertVote(optimistic, snapshot)),
           }));
-          setPromptOpen(true);
+          setPromptReason("upvote");
           return;
         }
 
@@ -256,15 +278,27 @@ export default function GalleryBrowser() {
     [isAuthed],
   );
 
-  const onPlay = useCallback(async (item: GalleryItemDto) => {
-    setPlayer({ item, url: null });
-    const signed = await fetchStreamUrl(item.id);
-    setPlayer((p) => (p && p.item.id === item.id ? { ...p, url: signed?.url ?? null } : p));
-  }, []);
+  /**
+   * The share intent, resolved. Both are `false`/`null` while the session probe is
+   * still in flight — that window is the only honest "we don't know yet", and it is
+   * milliseconds long. Nothing opens, nothing is decided, and one render later the
+   * answer picks a side.
+   */
+  const shareOpen = shareRequested && sessionResolved && isAuthed;
+  const promptFor: "upvote" | "publish" | null =
+    promptReason ?? (shareRequested && sessionResolved && !isAuthed ? "publish" : null);
 
   return (
     <>
-      <GalleryHeader onShareYours={() => setShareOpen(true)} />
+      {/*
+        `＋ Share yours` is in the PUBLIC header, so an anonymous visitor sees it and
+        will press it. Ungated it opened the 16b dialog, whose first act is to load the
+        caller's renders and projects — two 401s — and which then stated "No finished
+        videos yet". That sentence is false for a visitor who has plenty and is merely
+        signed out, and it offers them nothing to do about it. Signing in IS the next
+        step here, so the CTA leads to it.
+      */}
+      <GalleryHeader onShareYours={() => setShareRequested(true)} />
       <GalleryFilterRow
         sort={state.sort}
         onSortChange={onSortChange}
@@ -277,10 +311,10 @@ export default function GalleryBrowser() {
           items={state.items}
           loading={loading}
           error={failed}
-          searching={state.q.length > 0}
+          searchTerm={state.q}
           voting={voting}
           onRetry={onRetry}
-          onPlay={onPlay}
+          onClearFilters={onClearFilters}
           onVote={onVote}
         />
       )}
@@ -292,13 +326,34 @@ export default function GalleryBrowser() {
         onLoadMore={() => void onLoadMore()}
       />
 
-      <GalleryPlayerModal
-        item={player?.item ?? null}
-        url={player?.url ?? null}
-        onClose={() => setPlayer(null)}
+      <SigninPrompt
+        open={promptFor !== null}
+        reason={promptFor ?? "upvote"}
+        onClose={() => {
+          setPromptReason(null);
+          setShareRequested(false);
+        }}
       />
-      <SigninPrompt open={promptOpen} onClose={() => setPromptOpen(false)} />
-      <ShareYoursDialog open={shareOpen} onClose={() => setShareOpen(false)} />
+      {/*
+        `＋ Share yours` now opens the REAL 16b dialog — with a PROJECT picker, which is
+        exactly what retires the placeholder that used to say "go to Your videos and pick
+        one". Mounted only while open, so closing it is a full reset of its own state
+        (the dialog's inner `key=` handles the switch-project reset while it is open).
+
+        On success we go to the published thing: "Published" that leaves you where you
+        were is indistinguishable from nothing having happened, and the watch page is the
+        public URL the user is about to share.
+      */}
+      {shareOpen && (
+        <PublishToGalleryDialog
+          open
+          onClose={() => setShareRequested(false)}
+          onPublished={(item) => {
+            setShareRequested(false);
+            router.push(`/gallery/${item.id}`);
+          }}
+        />
+      )}
     </>
   );
 }

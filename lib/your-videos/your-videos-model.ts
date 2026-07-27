@@ -1,8 +1,10 @@
 /**
  * The pure "Your videos" model (Row 41, plan §5.2) — no React, no DOM.
  *
- * `/your-videos` has no wireframe (design-delta §5 puts it out of scope), so the page
- * adapts 10a's `recent-projects.tsx` grid. What deserves a model rather than JSX is the
+ * `/your-videos` has no wireframe (design-delta §2.7 / §9-Q3 put it out of scope — NOT
+ * "§5", which is "System architecture (target)" and declares nothing out of scope;
+ * miscitation corrected 2026-07-26, and Turns 16/17 still do not draw this screen), so
+ * the page adapts 10a's `recent-projects.tsx` grid. What deserves a model rather than JSX is the
  * mapping from a wire `RenderJobDto` to what a card actually renders — and one rule in
  * particular:
  *

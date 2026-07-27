@@ -56,6 +56,9 @@ import {
   GalleryVisibilitySchema,
   GalleryItemDtoSchema,
   GalleryItemResponseSchema,
+  GalleryItemDetailDtoSchema,
+  GalleryItemDetailResponseSchema,
+  GalleryMakingOfSchema,
   GalleryListResponseSchema,
   GalleryDeleteResponseSchema,
   GalleryStreamUrlResponseSchema,
@@ -975,5 +978,146 @@ describe("gallery wire DTOs (mirror of the API's rows-39/40 shapes)", () => {
       "translation",
       "visibility",
     ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Turn 16a — the WATCH PAGE's detail DTO (slice C4)
+//
+// `GET /v1/gallery/:id` widened from the card DTO to a strict superset of it. These
+// mirrors are pinned against verbatim copies of db-lib's `GalleryItemDetailDtoSchema`
+// / `GalleryMakingOfSchema` payloads, so an API-side change breaks this suite rather
+// than the watch page.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("gallery detail DTO (mirror of db-lib's GalleryItemDetail* shapes)", () => {
+  const validMakingOf = {
+    version: 1,
+    capturedAt: "2026-07-26T09:59:00.000Z",
+    scriptureText:
+      "In the beginning God created the heaven and the earth. And God said, Let there be light: and there was light.",
+    narratorVoiceLabel: "Dramatic baritone",
+    musicStyle: "Orchestral",
+    captionsOn: true,
+    scenes: [
+      { index: 1, name: "Void", durationSeconds: 7 },
+      { index: 2, name: "Deep", durationSeconds: 8 },
+      { index: 3, name: "Spirit", durationSeconds: 8 },
+      { index: 4, name: "Light", durationSeconds: 9 },
+    ],
+  };
+
+  const validDetailItem = {
+    id: "gal_1",
+    renderJobId: "rj_1",
+    projectId: "prj_1",
+    title: "Let there be light",
+    description: "",
+    scriptureReference: "Genesis 1:1-4",
+    scriptureBook: "GEN",
+    translation: "KJV",
+    durationSeconds: 32,
+    visibility: "public",
+    publishedAt: "2026-07-20T09:14:00.000Z",
+    upvoteCount: 2412,
+    thumbnailUrl:
+      "http://localhost:9000/supagloo-dev/renders/rj_1/thumb.jpg?X-Amz-Signature=deadbeef",
+    rank: null,
+    viewerHasUpvoted: true,
+    owner: { displayName: "Mary Kanu", avatarInitials: "MK", publicVideoCount: 14 },
+    makingOf: validMakingOf,
+  };
+
+  it("GalleryItemDetailDtoSchema parses the watch-page payload", () => {
+    const dto = GalleryItemDetailDtoSchema.parse(validDetailItem);
+    expect(dto.owner.publicVideoCount).toBe(14);
+    expect(dto.makingOf?.scenes).toHaveLength(4);
+    expect(dto.makingOf?.scenes[3].name).toBe("Light");
+  });
+
+  it("REQUIRES makingOf — nullable, but never an absent key", () => {
+    // Required-but-nullable is what stops a mapper silently forgetting the field:
+    // "we have no snapshot" and "the mapper dropped it" must not look the same.
+    expect(
+      GalleryItemDetailDtoSchema.parse({ ...validDetailItem, makingOf: null }).makingOf,
+    ).toBeNull();
+    const { makingOf: _omit, ...noKey } = validDetailItem;
+    void _omit;
+    expect(GalleryItemDetailDtoSchema.safeParse(noKey).success).toBe(false);
+  });
+
+  it("REQUIRES owner.publicVideoCount — a plain CARD payload FAILS the detail DTO", () => {
+    // The widening is additive but not optional: the two DTOs are genuinely different
+    // types, and a card served where a detail item was promised must be a parse
+    // failure, not a page rendering `undefined public videos`.
+    const cardOwner = { displayName: "Mary Kanu", avatarInitials: "MK" };
+    expect(
+      GalleryItemDetailDtoSchema.safeParse({ ...validDetailItem, owner: cardOwner })
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts every field the CARD DTO accepts (the widening is additive)", () => {
+    // Nothing a card can send becomes invalid here — otherwise the same row could not
+    // serve both surfaces.
+    const card = GalleryItemDtoSchema.parse(validDetailItem);
+    const detail = GalleryItemDetailDtoSchema.parse(validDetailItem);
+    for (const key of Object.keys(card) as (keyof typeof card)[]) {
+      if (key === "owner") continue;
+      expect(detail[key]).toEqual(card[key]);
+    }
+    expect(detail.owner.displayName).toBe(card.owner.displayName);
+    expect(detail.owner.avatarInitials).toBe(card.owner.avatarInitials);
+  });
+
+  it("GalleryMakingOfSchema pins `version` to the literal 1", () => {
+    // Without the literal, a v2 snapshot written by a newer API is HALF-read by this
+    // reader — known fields parse, unknown ones are stripped — and the page renders a
+    // confident lie. Rejecting is what lets the client degrade to null.
+    expect(GalleryMakingOfSchema.parse(validMakingOf).version).toBe(1);
+    expect(
+      GalleryMakingOfSchema.safeParse({ ...validMakingOf, version: 2 }).success,
+    ).toBe(false);
+  });
+
+  it("GalleryMakingOfSchema allows the honest EMPTY snapshot", () => {
+    // No scripture text, no voice, no music, captions off, no scenes: a manifest that
+    // simply had none of it. That is not an error and must not read as one.
+    const empty = {
+      version: 1,
+      capturedAt: "2026-07-26T09:59:00.000Z",
+      scriptureText: null,
+      narratorVoiceLabel: null,
+      musicStyle: null,
+      captionsOn: false,
+      scenes: [],
+    };
+    expect(GalleryMakingOfSchema.parse(empty).scenes).toEqual([]);
+  });
+
+  it("GalleryMakingOfSchema rejects a scene with a zero index or a non-positive duration", () => {
+    // `index` is the number PRINTED on the tile (1-based), and a 0.0s tile would be a
+    // lie about the video's own timeline.
+    expect(
+      GalleryMakingOfSchema.safeParse({
+        ...validMakingOf,
+        scenes: [{ index: 0, name: "Void", durationSeconds: 7 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      GalleryMakingOfSchema.safeParse({
+        ...validMakingOf,
+        scenes: [{ index: 1, name: "Void", durationSeconds: 0 }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("GalleryItemDetailResponseSchema is a keyed envelope, never a bare item", () => {
+    expect(
+      GalleryItemDetailResponseSchema.parse({ item: validDetailItem }).item.id,
+    ).toBe("gal_1");
+    expect(GalleryItemDetailResponseSchema.safeParse(validDetailItem).success).toBe(
+      false,
+    );
   });
 });

@@ -15,7 +15,10 @@ import { describe, expect, it, vi } from "vitest";
  * of a gallery.
  */
 import {
+  PUBLISH_FALLBACK_MESSAGE,
+  fetchGalleryItem,
   fetchGalleryPage,
+  fetchMyProjects,
   fetchMyRenders,
   fetchStreamUrl,
   publishRenderToGallery,
@@ -45,6 +48,25 @@ const ITEM = {
   owner: { displayName: "Grace Hopper", avatarInitials: "GH" },
 };
 
+/** Verbatim copy of `GET /v1/gallery/:id`'s item — the card DTO plus the two fields
+ *  only the watch page pays for: the manifest snapshot and the owner's public count. */
+const DETAIL_ITEM = {
+  ...ITEM,
+  owner: { displayName: "Grace Hopper", avatarInitials: "GH", publicVideoCount: 14 },
+  makingOf: {
+    version: 1,
+    capturedAt: "2026-07-26T09:59:00.000Z",
+    scriptureText: "In the beginning God created the heaven and the earth.",
+    narratorVoiceLabel: "Dramatic baritone",
+    musicStyle: "Orchestral",
+    captionsOn: true,
+    scenes: [
+      { index: 1, name: "Void", durationSeconds: 7 },
+      { index: 2, name: "Deep", durationSeconds: 8 },
+    ],
+  },
+};
+
 const RENDER = {
   id: "rj_1",
   projectId: "prj_1",
@@ -66,6 +88,23 @@ const RENDER = {
   createdAt: "2026-07-26T09:00:00.000Z",
   startedAt: "2026-07-26T09:00:01.000Z",
   completedAt: "2026-07-26T09:00:30.000Z",
+};
+
+/** A `ProjectDto` as `GET /api/projects` returns it — 16b's PROJECT ▾ joins these onto
+ *  the renders to build the `<slug> · v<semver>` label. */
+const PROJECT = {
+  id: "prj_1",
+  slug: "psalm-121",
+  name: "Psalm 121",
+  repoOwner: "ashsrinivas",
+  repoName: "psalm-121",
+  repoVisibility: "private" as const,
+  createdFrom: "blank" as const,
+  currentBranch: "v0.0.2",
+  thumbnailAssetKey: null,
+  lastRenderJobId: null,
+  lastOpenedAt: "2026-07-26T09:00:00.000Z",
+  createdAt: "2026-07-01T09:00:00.000Z",
 };
 
 /** A `fetch` stand-in that records its calls and answers with one canned response. */
@@ -276,23 +315,83 @@ describe("publishRenderToGallery", () => {
 
   it("POSTs the publish body to the render-scoped route and returns the 201 item", async () => {
     const { fetchImpl, calls } = stubFetch({ status: 201, json: { item: ITEM } });
-    const item = await publishRenderToGallery("rj_1", body, { fetchImpl });
+    const outcome = await publishRenderToGallery("rj_1", body, { fetchImpl });
     expect(calls[0].url).toBe("/api/renders/rj_1/gallery");
     expect(calls[0].init?.method).toBe("POST");
     expect(JSON.parse(String(calls[0].init?.body))).toEqual(body);
-    expect(item?.id).toBe("gal_1");
+    expect(outcome).toEqual({ ok: true, item: expect.objectContaining({ id: "gal_1" }) });
   });
 
-  it("returns null on a 409 already_published / 422 underivable book / rejection", async () => {
-    for (const status of [409, 422]) {
-      const { fetchImpl } = stubFetch({ status, json: { error: "nope" } });
+  /**
+   * The ONE mutating call here that does not collapse to `null` (slice C8).
+   *
+   * The api distinguishes three publish refusals and the BFF passes status + body
+   * through verbatim; flattening them into a house sentence would discard the only
+   * thing that tells the user what to do — "already published" and "we can't tell which
+   * book that is" have completely different fixes.
+   */
+  it("carries the api's own refusal message through, per refusal", async () => {
+    const refusals = [
+      { status: 409, error: "already_published", message: "render is already published to the gallery" },
+      { status: 409, error: "render_not_publishable", message: "render is not publishable" },
+      { status: 422, error: "scripture_book_underivable", message: "cannot derive a scripture book from the reference" },
+    ];
+    for (const refusal of refusals) {
+      const { fetchImpl } = stubFetch({
+        status: refusal.status,
+        json: { error: refusal.error, message: refusal.message },
+      });
       await expect(
         publishRenderToGallery("rj_1", body, { fetchImpl }),
-      ).resolves.toBeNull();
+      ).resolves.toEqual({ ok: false, message: refusal.message });
     }
+  });
+
+  it("falls back to the machine code when there is no prose, and to a house sentence when there is neither", async () => {
+    // A searchable code still beats "something went wrong".
     await expect(
-      publishRenderToGallery("rj_1", body, { fetchImpl: rejectingFetch }),
-    ).resolves.toBeNull();
+      publishRenderToGallery("rj_1", body, {
+        fetchImpl: stubFetch({ status: 409, json: { error: "already_published" } }).fetchImpl,
+      }),
+    ).resolves.toEqual({ ok: false, message: "already_published" });
+
+    // A 502 from the proxy, an HTML error page, a dead network: no envelope at all.
+    for (const fetchImpl of [
+      stubFetch({ status: 500, json: {} }).fetchImpl,
+      stubFetch({ status: 502, json: null }).fetchImpl,
+      rejectingFetch,
+    ]) {
+      const outcome = await publishRenderToGallery("rj_1", body, { fetchImpl });
+      expect(outcome).toEqual({ ok: false, message: PUBLISH_FALLBACK_MESSAGE });
+    }
+
+    // A 201 whose body is NOT a gallery item is a failure, not a silent success.
+    await expect(
+      publishRenderToGallery("rj_1", body, {
+        fetchImpl: stubFetch({ status: 201, json: { item: { id: "gal_1" } } }).fetchImpl,
+      }),
+    ).resolves.toEqual({ ok: false, message: PUBLISH_FALLBACK_MESSAGE });
+  });
+});
+
+// ── fetchMyProjects — 16b's PROJECT ▾ join (slice C8) ────────────────────────
+
+describe("fetchMyProjects", () => {
+  it("GETs the uncached project list and unwraps `{ projects }`", async () => {
+    const { fetchImpl, calls } = stubFetch({ json: { projects: [PROJECT] } });
+    await expect(fetchMyProjects({ fetchImpl })).resolves.toEqual([PROJECT]);
+    expect(calls[0].url).toBe("/api/projects");
+    expect(calls[0].init?.cache).toBe("no-store");
+  });
+
+  it("returns [] on a 401, a malformed body and a rejection — a naming call must never hide a publishable render", async () => {
+    for (const fetchImpl of [
+      stubFetch({ status: 401, json: { error: "unauthorized" } }).fetchImpl,
+      stubFetch({ json: { projects: [{ id: "p1" }] } }).fetchImpl,
+      rejectingFetch,
+    ]) {
+      await expect(fetchMyProjects({ fetchImpl })).resolves.toEqual([]);
+    }
   });
 });
 
@@ -341,5 +440,117 @@ describe("fetchMyRenders", () => {
       fetchMyRenders({ fetchImpl: stubFetch({ text: "<html>" }).fetchImpl }),
     ).resolves.toEqual([]);
     await expect(fetchMyRenders({ fetchImpl: rejectingFetch })).resolves.toEqual([]);
+  });
+});
+
+// ── U-FGI1…U-FGI4: fetchGalleryItem (Turn 16a, slice C4) ─────────────────────
+//
+// The single-item read, back after row 41 deliberately deleted it. Its own docblock
+// named the condition for its return — "if a detail page is ever designed" — and Turn
+// 16a is that page. It obeys the same never-throws contract as every sibling: `/gallery`
+// and `/gallery/:id` are the app's only PUBLIC pages, and a thrown parse error inside a
+// client effect is a blank screen, not an error message.
+
+describe("U-FGI1 fetchGalleryItem", () => {
+  it("GETs /api/gallery/:id and returns the parsed DETAIL item on 200", async () => {
+    const { fetchImpl, calls } = stubFetch({ json: { item: DETAIL_ITEM } });
+    const item = await fetchGalleryItem("gal_1", { fetchImpl });
+
+    expect(calls[0].url).toBe("/api/gallery/gal_1");
+    expect(item).not.toBeNull();
+    expect(item!.title).toBe("Wilderness");
+    // The two fields a CARD does not carry — the whole reason this DTO is separate.
+    expect(item!.owner.publicVideoCount).toBe(14);
+    expect(item!.makingOf?.scenes).toHaveLength(2);
+    expect(item!.makingOf?.scenes[1]).toEqual({
+      index: 2,
+      name: "Deep",
+      durationSeconds: 8,
+    });
+  });
+
+  it("percent-encodes the id (it lands in the path, not a query value)", async () => {
+    const { fetchImpl, calls } = stubFetch({ json: { item: DETAIL_ITEM } });
+    await fetchGalleryItem("gal/../secret", { fetchImpl });
+    expect(calls[0].url).toBe("/api/gallery/gal%2F..%2Fsecret");
+  });
+
+  it("is UNCACHED — the response carries the viewer's own vote state", async () => {
+    // A cached detail response would render somebody else's pill, exactly as it would
+    // in the listing (`fetchGalleryPage` makes the same call for the same reason).
+    const { fetchImpl, calls } = stubFetch({ json: { item: DETAIL_ITEM } });
+    await fetchGalleryItem("gal_1", { fetchImpl });
+    expect((calls[0].init as RequestInit | undefined)?.cache).toBe("no-store");
+  });
+});
+
+describe("U-FGI2 fetchGalleryItem never throws", () => {
+  it("returns null on a 404 (unknown id — the API denies uniformly)", async () => {
+    const { fetchImpl } = stubFetch({ status: 404, json: { error: "not_found" } });
+    await expect(fetchGalleryItem("nope", { fetchImpl })).resolves.toBeNull();
+  });
+
+  it("returns null on a 500 and on a dead network", async () => {
+    await expect(
+      fetchGalleryItem("gal_1", {
+        fetchImpl: stubFetch({ status: 500, json: {} }).fetchImpl,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      fetchGalleryItem("gal_1", { fetchImpl: rejectingFetch }),
+    ).resolves.toBeNull();
+  });
+
+  it("returns null on a NON-JSON body (an HTML error page from a proxy)", async () => {
+    const { fetchImpl } = stubFetch({ text: "<!doctype html><h1>502</h1>" });
+    await expect(fetchGalleryItem("gal_1", { fetchImpl })).resolves.toBeNull();
+  });
+});
+
+describe("U-FGI3 fetchGalleryItem degrades on wire drift", () => {
+  it("returns null — not a half-parsed object — when the body fails the detail schema", async () => {
+    // A CARD payload is the realistic drift: it is a valid gallery item and would
+    // parse under the listing's schema, but it carries no `makingOf` and no
+    // `publicVideoCount`. Accepting it would render `undefined public videos`.
+    const { fetchImpl } = stubFetch({ json: { item: ITEM } });
+    await expect(fetchGalleryItem("gal_1", { fetchImpl })).resolves.toBeNull();
+  });
+
+  it("returns null on a bare item (no `{ item }` envelope)", async () => {
+    const { fetchImpl } = stubFetch({ json: DETAIL_ITEM });
+    await expect(fetchGalleryItem("gal_1", { fetchImpl })).resolves.toBeNull();
+  });
+
+  it("returns null on a makingOf whose version is not the literal 1", async () => {
+    // The version literal is the whole point of carrying a version: a v2 snapshot
+    // half-read by this reader would render a confident lie.
+    const { fetchImpl } = stubFetch({
+      json: {
+        item: { ...DETAIL_ITEM, makingOf: { ...DETAIL_ITEM.makingOf, version: 2 } },
+      },
+    });
+    await expect(fetchGalleryItem("gal_1", { fetchImpl })).resolves.toBeNull();
+  });
+});
+
+describe("U-FGI4 fetchGalleryItem and the pre-existing row", () => {
+  it("parses an item whose makingOf is null", async () => {
+    // Every item published before the snapshot column existed reads back null, and so
+    // does any publish whose best-effort manifest read failed. It is a permanent,
+    // first-class case — the page omits those sections rather than erroring.
+    const { fetchImpl } = stubFetch({
+      json: { item: { ...DETAIL_ITEM, makingOf: null } },
+    });
+    const item = await fetchGalleryItem("gal_1", { fetchImpl });
+    expect(item).not.toBeNull();
+    expect(item!.makingOf).toBeNull();
+    expect(item!.owner.publicVideoCount).toBe(14);
+  });
+
+  it("REQUIRES the makingOf key — an omitted key is drift, not an empty snapshot", async () => {
+    const { makingOf: _omit, ...noKey } = DETAIL_ITEM;
+    void _omit;
+    const { fetchImpl } = stubFetch({ json: { item: noKey } });
+    await expect(fetchGalleryItem("gal_1", { fetchImpl })).resolves.toBeNull();
   });
 });
