@@ -32,9 +32,10 @@ export default defineConfig({
     environment: "node",
     include: ["tests/e2e/**/*.e2e.ts"],
     exclude: [
-      // ── the ten real-stack specs (lane 2: vitest.e2e.real.config.ts) ──
+      // ── the eleven real-stack specs (lane 2: vitest.e2e.real.config.ts) ──
       "tests/e2e/bff-session.e2e.ts",
       "tests/e2e/gallery.e2e.ts",
+      "tests/e2e/gallery-watch.e2e.ts",
       "tests/e2e/github-connect.e2e.ts",
       "tests/e2e/openrouter-gloo-connect.e2e.ts",
       "tests/e2e/project-wizards-real.e2e.ts",

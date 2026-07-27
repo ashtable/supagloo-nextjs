@@ -41,6 +41,11 @@ export default defineConfig({
       // migrate, api) and the ROOT repo's `tests/support/gallery-e2e-seed.mjs`, but NOT
       // GitHub and NOT a provider: nothing here scaffolds a repo or runs a generation.
       "tests/e2e/gallery.e2e.ts",
+      // Turn 16a — the watch page at `/gallery/[id]`. Same dependencies as the spec
+      // above (Compose + the ROOT repo's gallery seed helper), plus it is the one place
+      // the seeded mp4 is actually fetched by a browser: slice C7 retired the modal, so
+      // `E-GU11`'s playback proof moved here as `E-GW3`.
+      "tests/e2e/gallery-watch.e2e.ts",
       "tests/e2e/github-connect.e2e.ts",
       "tests/e2e/openrouter-gloo-connect.e2e.ts",
       "tests/e2e/project-wizards-real.e2e.ts",
