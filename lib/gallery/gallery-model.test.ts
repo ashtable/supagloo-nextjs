@@ -29,6 +29,8 @@ import {
   anonVoteOutcome,
   appendPage,
   buildGalleryQuery,
+  formatExactUpvoteCount,
+  formatRelativeTime,
   formatUpvoteCount,
   galleryDurationLabel,
   initialQueryState,
@@ -399,6 +401,112 @@ describe("galleryDurationLabel", () => {
     // badge would be a lie about the video's length (the task-38 framesTotal lesson).
     expect(galleryDurationLabel(0)).toBeNull();
     expect(galleryDurationLabel(-5)).toBeNull();
+  });
+});
+
+// ── U-UC1 / U-UC2: the EXACT upvote count (Turn 16a, slice C5) ───────────────
+//
+// The watch page draws `▲ 2,412`; the card draws `▲ 2.4k`. That is a real divergence
+// in the design (Step 4 §1.4b calls it out), and the resolution is one formatter per
+// SURFACE rather than one formatter that guesses. Both rules are asserted in the same
+// tests so neither can drift into the other.
+
+describe("U-UC1 formatExactUpvoteCount coexists with formatUpvoteCount", () => {
+  it("renders 2412 as `2,412` while the card still renders `2.4k`", () => {
+    expect(formatExactUpvoteCount(2412)).toBe("2,412");
+    expect(formatUpvoteCount(2412)).toBe("2.4k");
+  });
+});
+
+describe("U-UC2 formatExactUpvoteCount groups at every magnitude", () => {
+  it("never abbreviates", () => {
+    expect(formatExactUpvoteCount(0)).toBe("0");
+    expect(formatExactUpvoteCount(999)).toBe("999");
+    expect(formatExactUpvoteCount(1000)).toBe("1,000");
+    expect(formatExactUpvoteCount(1234567)).toBe("1,234,567");
+    expect(formatExactUpvoteCount(1_000_000)).toBe("1,000,000");
+    // The property, stated: no output ever carries the abbreviation suffixes.
+    for (const n of [0, 999, 1000, 2412, 999_999, 1_234_567]) {
+      expect(formatExactUpvoteCount(n)).not.toMatch(/[km]$/);
+    }
+  });
+
+  it("uses a COMMA regardless of the runtime's locale", () => {
+    // `toLocaleString()` would render `2.412` under de-DE and `2 412` under fr-FR. The
+    // design draws a comma, and a public page must not separate thousands differently
+    // for different visitors.
+    expect(formatExactUpvoteCount(2412)).toBe("2,412");
+    expect(formatExactUpvoteCount(2412)).not.toContain(".");
+  });
+
+  it("floors fractions and clamps negatives, exactly as the abbreviating rule does", () => {
+    expect(formatExactUpvoteCount(12.9)).toBe("12");
+    expect(formatExactUpvoteCount(-3)).toBe("0");
+    expect(formatExactUpvoteCount(Number.NaN)).toBe("0");
+  });
+});
+
+// ── U-RT1 / U-RT2: relative time (`shared 6 days ago`) ───────────────────────
+
+describe("U-RT1 formatRelativeTime", () => {
+  const NOW = new Date("2026-07-26T12:00:00.000Z");
+  const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+
+  const SECOND = 1000;
+  const MINUTE = 60 * SECOND;
+  const HOUR = 60 * MINUTE;
+  const DAY = 24 * HOUR;
+
+  it("renders the design's `6 days ago`, and the rest of the ladder", () => {
+    expect(formatRelativeTime(ago(0), NOW)).toBe("just now");
+    expect(formatRelativeTime(ago(20 * SECOND), NOW)).toBe("just now");
+    expect(formatRelativeTime(ago(3 * MINUTE), NOW)).toBe("3 minutes ago");
+    expect(formatRelativeTime(ago(6 * DAY), NOW)).toBe("6 days ago");
+    expect(formatRelativeTime(ago(31 * DAY), NOW)).toBe("1 month ago");
+  });
+
+  it("singularises the count", () => {
+    expect(formatRelativeTime(ago(1 * MINUTE), NOW)).toBe("1 minute ago");
+    expect(formatRelativeTime(ago(1 * HOUR), NOW)).toBe("1 hour ago");
+    expect(formatRelativeTime(ago(1 * DAY), NOW)).toBe("1 day ago");
+    expect(formatRelativeTime(ago(400 * DAY), NOW)).toBe("1 year ago");
+  });
+
+  it("crosses each unit boundary at the value the unit names", () => {
+    expect(formatRelativeTime(ago(59 * SECOND), NOW)).toBe("just now");
+    expect(formatRelativeTime(ago(60 * SECOND), NOW)).toBe("1 minute ago");
+    expect(formatRelativeTime(ago(59 * MINUTE), NOW)).toBe("59 minutes ago");
+    expect(formatRelativeTime(ago(60 * MINUTE), NOW)).toBe("1 hour ago");
+    expect(formatRelativeTime(ago(23 * HOUR), NOW)).toBe("23 hours ago");
+    expect(formatRelativeTime(ago(24 * HOUR), NOW)).toBe("1 day ago");
+  });
+
+  it("accepts the DTO's ISO string, a Date and an epoch millisecond count", () => {
+    // `publishedAt` arrives as an ISO string on the wire; the component may already
+    // hold a Date. One formatter, three honest inputs.
+    const then = NOW.getTime() - 6 * DAY;
+    expect(formatRelativeTime(new Date(then).toISOString(), NOW)).toBe("6 days ago");
+    expect(formatRelativeTime(new Date(then), NOW)).toBe("6 days ago");
+    expect(formatRelativeTime(then, NOW)).toBe("6 days ago");
+  });
+
+  it("returns null for an unparseable timestamp rather than a confident lie", () => {
+    // Same rule as `galleryDurationLabel`: when there is no honest value, the caller
+    // omits the fragment instead of printing `NaN days ago`.
+    expect(formatRelativeTime("not a date", NOW)).toBeNull();
+    expect(formatRelativeTime("", NOW)).toBeNull();
+    expect(formatRelativeTime(Number.NaN, NOW)).toBeNull();
+  });
+});
+
+describe("U-RT2 formatRelativeTime under clock skew", () => {
+  it("renders a FUTURE timestamp as `just now`, never `in -2 days`", () => {
+    // `publishedAt` is stamped by the API's clock and compared against the BROWSER's.
+    // A few seconds of skew is ordinary; rendering it as negative time is not.
+    const now = new Date("2026-07-26T12:00:00.000Z");
+    const future = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString();
+    expect(formatRelativeTime(future, now)).toBe("just now");
+    expect(formatRelativeTime(new Date(now.getTime() + 5000), now)).toBe("just now");
   });
 });
 

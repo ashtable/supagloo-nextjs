@@ -57,6 +57,87 @@ export function formatUpvoteCount(n: number): string {
   return `${(v / 1_000_000).toFixed(1)}m`;
 }
 
+/**
+ * `2412` → `"2,412"`. The WATCH PAGE's count, never abbreviated.
+ *
+ * This is a second formatter on purpose, not a duplicate. Step 4 §1.4b draws `▲ 2,412`
+ * on the watch page while 15a's card and 17a's card both draw `▲ 2.4k`, and the reason
+ * holds up: a card is one of 24 competing for width and only needs an order of
+ * magnitude, while the detail page is about ONE item and rounding its count down to
+ * "2.4k" throws away the exact number a creator is actually watching. One rule per
+ * surface beats one rule that guesses which surface it is on.
+ *
+ * The separator is a hard-coded comma, NOT `toLocaleString()`: an implicit locale would
+ * render `2.412` under de-DE and `2 412` under fr-FR, so the same public page would
+ * group thousands differently for different visitors and, worse, `2.412` reads as a
+ * decimal to an en-US visitor. Flooring and the clamp-at-zero match
+ * {@link formatUpvoteCount} exactly — the two must agree about what a count IS, and
+ * disagree only about how much of it to print.
+ */
+export function formatExactUpvoteCount(n: number): string {
+  const v = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** Anything a timestamp can arrive as: the wire's ISO string, an already-parsed `Date`,
+ *  or epoch milliseconds. */
+export type TimeInput = string | number | Date;
+
+const RELATIVE_UNITS: readonly { seconds: number; name: string }[] = [
+  { seconds: 60, name: "minute" },
+  { seconds: 60 * 60, name: "hour" },
+  { seconds: 24 * 60 * 60, name: "day" },
+  // A "month" here is 30 days and a "year" 365. Both are approximations, and they are
+  // the RIGHT approximations for this surface: nobody reads "shared 2 months ago" as a
+  // calendar claim, and computing real calendar months would make the label depend on
+  // which months the interval happened to span.
+  { seconds: 30 * 24 * 60 * 60, name: "month" },
+  { seconds: 365 * 24 * 60 * 60, name: "year" },
+];
+
+/**
+ * `"6 days ago"` — the creator row's `shared X ago` fragment (Step 4 §1.4b).
+ *
+ * The verb ("shared") stays in the component: this is the relative interval, and the
+ * same interval reads "published X ago" or "rendered X ago" elsewhere.
+ *
+ * Returns **null** when there is no honest answer — an unparseable timestamp, a NaN
+ * clock. Same rule as {@link galleryDurationLabel}: the caller omits the fragment rather
+ * than printing `NaN days ago`, because a broken timestamp should cost one line of the
+ * creator row, not the page.
+ *
+ * A FUTURE timestamp renders `"just now"`. `publishedAt` is stamped by the API's clock
+ * and compared here against the BROWSER's, so a few seconds of skew is ordinary — and
+ * "in -2 days" is a worse answer to skew than "just now" by every measure.
+ */
+export function formatRelativeTime(then: TimeInput, now: TimeInput): string | null {
+  const thenMs = toEpochMs(then);
+  const nowMs = toEpochMs(now);
+  if (thenMs === null || nowMs === null) return null;
+
+  const elapsedSeconds = (nowMs - thenMs) / 1000;
+  if (elapsedSeconds < 60) return "just now";
+
+  let unit = RELATIVE_UNITS[0];
+  for (const candidate of RELATIVE_UNITS) {
+    if (elapsedSeconds >= candidate.seconds) unit = candidate;
+  }
+
+  const count = Math.floor(elapsedSeconds / unit.seconds);
+  return `${count} ${unit.name}${count === 1 ? "" : "s"} ago`;
+}
+
+/** Any {@link TimeInput} → epoch milliseconds, or null if it is not a real instant. */
+function toEpochMs(value: TimeInput): number | null {
+  const ms =
+    value instanceof Date
+      ? value.getTime()
+      : typeof value === "number"
+        ? value
+        : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 // ── rank badges ──────────────────────────────────────────────────────────────
 
 /** Ranks past this get no badge. A podium, not a leaderboard. */
