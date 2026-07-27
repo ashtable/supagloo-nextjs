@@ -75,6 +75,20 @@ export async function type(element: HTMLElement, value: string): Promise<void> {
   });
 }
 
+/** Pick a `<select>`'s value the way React sees it: the native setter (React overrides
+ *  `value` on the DOM node, exactly as it does for `<input>`) followed by a bubbling
+ *  `change` event, which is what React's `onChange` is actually wired to for a select. */
+export async function selectOption(element: HTMLElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLSelectElement.prototype,
+    "value",
+  )?.set;
+  await act(async () => {
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 /** Flush pending microtasks + effects without advancing anything else. */
 export async function flush(): Promise<void> {
   await act(async () => {
