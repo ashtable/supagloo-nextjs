@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { byTestId, click, deferred, flush, mount } from "./support/render";
+import {
+  byTestId,
+  click,
+  deferred,
+  flush,
+  mount,
+  type as typeText,
+} from "./support/render";
 import type { GalleryItemDto, GalleryListResponse } from "@/lib/api/contracts";
 
 /**
@@ -18,19 +25,47 @@ import type { GalleryItemDto, GalleryListResponse } from "@/lib/api/contracts";
  * tests hold a request open by hand and interact underneath it.
  */
 
-const { fetchGalleryPage, fetchStreamUrl, sendUpvote, removeUpvote } = vi.hoisted(() => ({
+// `fetchStreamUrl` is NOT mocked here any more: slice C7 moved playback to
+// `/gallery/[id]`, so the browser no longer signs anything. Listing it would be a mock
+// for a call this component can no longer make.
+const {
+  fetchGalleryPage,
+  sendUpvote,
+  removeUpvote,
+  fetchMyRenders,
+  fetchMyProjects,
+  publishRenderToGallery,
+  push,
+} = vi.hoisted(() => ({
   fetchGalleryPage: vi.fn(),
-  fetchStreamUrl: vi.fn(),
   sendUpvote: vi.fn(),
   removeUpvote: vi.fn(),
+  fetchMyRenders: vi.fn(),
+  fetchMyProjects: vi.fn(),
+  publishRenderToGallery: vi.fn(),
+  push: vi.fn(),
 }));
 
 vi.mock("@/lib/gallery/gallery-data", () => ({
   fetchGalleryPage,
-  fetchStreamUrl,
   sendUpvote,
   removeUpvote,
+  // Slice C8: `＋ Share yours` now opens the real 16b dialog, which loads the caller's
+  // renders + projects to build its PROJECT picker.
+  fetchMyRenders,
+  fetchMyProjects,
+  publishRenderToGallery,
 }));
+
+vi.mock("@/lib/studio/studio-data", () => ({
+  fetchVersions: vi.fn(async () => []),
+  fetchManifest: vi.fn(async () => ({ ok: false, reason: "github_not_connected" })),
+}));
+
+// `useRouter` throws outside an app-router provider. The component genuinely navigates
+// after a successful publish, so the router is stubbed rather than the call avoided —
+// and the navigation itself is asserted below.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
 // The real provider drags in `@youversion/platform-react-ui` and a live cookie probe.
 // `GalleryBrowser` reads exactly one field off it.
@@ -242,5 +277,71 @@ describe("GalleryBrowser — double-clicked upvote", () => {
 
     vote.resolve(item({ id: "gal_1", upvoteCount: 4, viewerHasUpvoted: true, rank: null }));
     await flush();
+  });
+});
+
+/**
+ * Slice C8 — the header CTA's terminus.
+ *
+ * `＋ Share yours` used to open a 440px apology that linked to another page. It now opens
+ * the real 16b dialog, and a successful publish leaves you looking at the thing you just
+ * published — "Published" that leaves you where you were is indistinguishable from
+ * nothing having happened.
+ */
+describe("GalleryBrowser — ＋ Share yours opens 16b and lands on the new item", () => {
+  it("opens the publish dialog with a PROJECT picker, then routes to the item's watch page", async () => {
+    fetchGalleryPage.mockResolvedValue(page([item({ id: "gal_1" })], null));
+    fetchMyRenders.mockResolvedValue([
+      {
+        id: "rj_1",
+        projectId: "prj_1",
+        versionId: "ver_1",
+        status: "completed" as const,
+        framesDone: 300,
+        framesTotal: 300,
+        outputSpec: {
+          width: 1080,
+          height: 1920,
+          fps: 30,
+          aspectRatio: "9:16",
+          codec: "h264",
+        },
+        outputAssetKey: "renders/rj_1/output.mp4",
+        thumbnailAssetKey: "renders/rj_1/thumb.jpg",
+        runInBackground: false,
+        error: null,
+        createdAt: "2026-07-20T10:00:00.000Z",
+        startedAt: "2026-07-20T10:00:00.000Z",
+        completedAt: "2026-07-20T10:05:00.000Z",
+      },
+    ]);
+    fetchMyProjects.mockResolvedValue([]);
+    publishRenderToGallery.mockResolvedValue({
+      ok: true,
+      item: item({ id: "gal_new", renderJobId: "rj_1" }),
+    });
+
+    const container = await open();
+    await flush();
+
+    await click(byTestId(container, "gallery-share-yours"));
+    await flush();
+    await flush();
+
+    // The placeholder's testid must NOT come back with it.
+    expect(document.body.querySelector('[data-testid="gallery-share-dialog"]')).toBeNull();
+    const picker = byTestId(document.body, "publish-project") as HTMLSelectElement;
+    expect(picker.value).toBe("rj_1");
+    // Both joins missed (no projects, no versions), and the render is STILL offered —
+    // a publishable video must never vanish because a naming call failed.
+    expect(picker.selectedOptions[0].textContent).toContain("prj_1");
+
+    await typeText(byTestId(document.body, "publish-title"), "In the beginning");
+    await typeText(byTestId(document.body, "publish-passage"), "Genesis 1:1-5");
+    await click(byTestId(document.body, "publish-consent"));
+    await click(byTestId(document.body, "publish-submit"));
+    await flush();
+
+    expect(push).toHaveBeenCalledWith("/gallery/gal_new");
   });
 });
