@@ -4,8 +4,10 @@ import Modal from "../modal";
 import SignInButton from "../sign-in-button";
 
 /**
- * UNDESIGNED (design-delta §5) — there is no designed prompt for an anonymous voter, so
- * this is a minimal placeholder built from the shared `Modal` + the existing
+ * UNDESIGNED (design-delta §2.7 / §9-Q3 — NOT "§5", which is "System architecture
+ * (target)" and declares nothing out of scope; miscitation corrected 2026-07-26). There
+ * is no designed prompt for an anonymous voter — Turns 16 and 17 do not draw one either
+ * — so this is a minimal placeholder built from the shared `Modal` + the existing
  * `SignInButton`, flagged for the design pass.
  *
  * It exists because the alternative is worse: an anonymous click on an upvote pill has
