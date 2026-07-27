@@ -95,6 +95,20 @@ interface SessionContextValue {
   /** False until after the client mount effect — first paint is always signed-out. */
   mounted: boolean;
   session: Session;
+  /**
+   * Has this client FINISHED working out whether the visitor is signed in?
+   *
+   * `session.isAuthed` is `false` in two completely different situations: "this
+   * visitor is anonymous" and "we have not asked yet". Everything that merely
+   * *renders* can treat them the same — signed-out chrome is the honest first paint
+   * either way. Anything that ACTS on the answer cannot: a control that decides
+   * during the `GET /api/me` probe sends a signed-in user down the anonymous path,
+   * and the decision is already made by the time the truth arrives.
+   *
+   * True once the probe settles (whatever it settled to), and immediately in the
+   * pure-client `?mock=` mode, which asks nobody.
+   */
+  sessionResolved: boolean;
   firstSignIn: boolean;
   /** True only in the pure-client `?mock=` demo mode (`NEXT_PUBLIC_SUPAGLOO_DEMO=1`).
    *  The project wizards branch on this: mock → the fake ticker + mock repos; real/
@@ -128,6 +142,9 @@ const SessionContext = createContext<SessionContextValue | null>(null);
 export function SessionProvider({ children }: { children: ReactNode }) {
   const yv = useYVAuth();
   const [mounted, setMounted] = useState(false);
+  /** Set once the session-establishing effect below has finished, however it
+   *  finished. See `SessionContextValue.sessionResolved`. */
+  const [probeSettled, setProbeSettled] = useState(false);
   const [search, setSearch] = useState("");
   const [onboardedOverride, setOnboardedOverride] = useState(false);
   // Server-driven session state (Task 23): the AuthUser resolved from the BFF
@@ -184,46 +201,53 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
 
     void (async () => {
-      const seed = parseSeedRequest(search, DEMO_FLAG);
-      if (seed) {
-        if (bootstrappedRef.current) return;
-        bootstrappedRef.current = true;
-        try {
-          const res = await fetch("/api/test/seed", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ scenario: seed.scenario, nonce: readNonce(search) }),
-          });
-          if (res.ok) await loadMe();
-        } catch {
-          /* seam disabled / API down → stay signed-out */
-        }
-        return;
-      }
-
-      if (yv.auth.isAuthenticated && accessToken) {
-        if (bootstrappedRef.current) return;
-        bootstrappedRef.current = true;
-        try {
-          const res = await fetch("/api/auth/session", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ accessToken }),
-          });
-          if (res.ok) {
-            const data = (await res.json()) as { user?: AuthUserLike };
-            if (data.user) setUser(data.user);
+      // Whatever happens below — a seed, an exchange, a bare probe, a thrown fetch —
+      // this client has now formed its answer. `finally`, because every branch in here
+      // returns early and a flag that only the happy path sets is a flag that hangs.
+      try {
+        const seed = parseSeedRequest(search, DEMO_FLAG);
+        if (seed) {
+          if (bootstrappedRef.current) return;
+          bootstrappedRef.current = true;
+          try {
+            const res = await fetch("/api/test/seed", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ scenario: seed.scenario, nonce: readNonce(search) }),
+            });
+            if (res.ok) await loadMe();
+          } catch {
+            /* seam disabled / API down → stay signed-out */
           }
-        } catch {
-          /* exchange failed → stay signed-out */
+          return;
         }
-        return;
-      }
 
-      // No mock, no seed, not YouVersion-authed → probe for an existing cookie
-      // session once (does NOT latch bootstrappedRef, so a later sign-in can still
-      // exchange).
-      await loadMe();
+        if (yv.auth.isAuthenticated && accessToken) {
+          if (bootstrappedRef.current) return;
+          bootstrappedRef.current = true;
+          try {
+            const res = await fetch("/api/auth/session", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ accessToken }),
+            });
+            if (res.ok) {
+              const data = (await res.json()) as { user?: AuthUserLike };
+              if (data.user) setUser(data.user);
+            }
+          } catch {
+            /* exchange failed → stay signed-out */
+          }
+          return;
+        }
+
+        // No mock, no seed, not YouVersion-authed → probe for an existing cookie
+        // session once (does NOT latch bootstrappedRef, so a later sign-in can still
+        // exchange).
+        await loadMe();
+      } finally {
+        if (active) setProbeSettled(true);
+      }
     })();
 
     return () => {
@@ -529,6 +553,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const value: SessionContextValue = {
     mounted,
     session,
+    // `?mock=` resolves instantly: it asks nobody, so there is nothing to wait for.
+    sessionResolved:
+      mounted && (parseMockSession(search, DEMO_FLAG) !== null || probeSettled),
     firstSignIn: computeFirstSignIn(session) && onboardingResolved,
     isMock: mounted && parseMockSession(search, DEMO_FLAG) !== null,
     connections,
