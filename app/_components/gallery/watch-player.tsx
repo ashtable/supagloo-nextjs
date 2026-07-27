@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   formatPlayerTime,
+  keyboardSeekTarget,
   progressPercent,
   seekTargetFromClick,
 } from "@/lib/gallery/watch-player";
@@ -190,7 +191,24 @@ export default function WatchPlayer({
     setCurrentTime(target);
   }, []);
 
+  /**
+   * The scrub track's KEYBOARD half. `role="slider"` and `tabIndex={0}` promise that
+   * this control is operable without a pointer; this is the code that keeps the promise
+   * (`keyboardSeekTarget` owns the map, and the `null` it can return is what leaves
+   * Tab, Escape and page-scrolling keys to the browser).
+   */
+  const onScrubKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const target = keyboardSeekTarget(event.key, video.currentTime, video.duration);
+    if (target === null) return;
+    event.preventDefault();
+    video.currentTime = target;
+    setCurrentTime(target);
+  }, []);
+
   const percent = progressPercent(currentTime, duration);
+  const timecode = `${formatPlayerTime(currentTime)} / ${formatPlayerTime(duration)}`;
   const ready = src !== null && !failed;
 
   return (
@@ -347,12 +365,24 @@ export default function WatchPlayer({
             left: 0,
             right: 0,
             bottom: 0,
-            padding: "14px 16px",
+            // 5 + the scrub's own 9px of top padding = the 14px §1.3 draws above the
+            // bar. The hit target grew; the drawing did not move.
+            padding: "5px 16px 14px",
             background: "linear-gradient(transparent,rgba(0,0,0,.7))",
           }}
         >
+          {/*
+            THE SCRUB CONTROL. The interactive element is this OUTER box, not the 4px
+            bar, so the hit target is 22px tall — the bar is what you see, the padding
+            is what you can hit. A 4px target is under every touch guideline there is,
+            and on a phone the difference between a seek and a mis-tap is most of it.
+
+            `aria-valuetext` carries the timecode because `aria-valuenow` is a
+            PERCENTAGE: "16" read aloud tells a screen-reader user nothing about where
+            in the video they are. Both are present — the percentage is what the slider
+            range means, the text is what a person needs.
+          */}
           <div
-            ref={trackRef}
             data-testid="gallery-watch-scrub"
             role="slider"
             tabIndex={0}
@@ -360,47 +390,54 @@ export default function WatchPlayer({
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(percent)}
+            aria-valuetext={timecode}
             onClick={onSeek}
-            className="cursor-pointer"
-            style={{
-              position: "relative",
-              height: 4,
-              borderRadius: 3,
-              background: "rgba(255,255,255,.28)",
-            }}
+            onKeyDown={onScrubKeyDown}
+            className="cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white"
+            style={{ padding: "9px 0" }}
           >
             <div
-              data-testid="gallery-watch-scrub-fill"
+              ref={trackRef}
               style={{
-                position: "absolute",
-                left: 0,
-                top: 0,
-                bottom: 0,
-                width: `${percent}%`,
-                // Gold→red, per 16a. 13b draws the reverse; the watch page uses this one.
-                background: "linear-gradient(90deg,#d4a24c,#c0392b)",
+                position: "relative",
+                height: 4,
                 borderRadius: 3,
+                background: "rgba(255,255,255,.28)",
               }}
-            />
-            <div
-              aria-hidden
-              style={{
-                position: "absolute",
-                left: `${percent}%`,
-                top: "50%",
-                transform: "translate(-50%,-50%)",
-                width: 11,
-                height: 11,
-                borderRadius: "50%",
-                background: "#fff",
-              }}
-            />
+            >
+              <div
+                data-testid="gallery-watch-scrub-fill"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: `${percent}%`,
+                  // Gold→red, per 16a. 13b draws the reverse; the watch page uses this one.
+                  background: "linear-gradient(90deg,#d4a24c,#c0392b)",
+                  borderRadius: 3,
+                }}
+              />
+              <div
+                aria-hidden
+                style={{
+                  position: "absolute",
+                  left: `${percent}%`,
+                  top: "50%",
+                  transform: "translate(-50%,-50%)",
+                  width: 11,
+                  height: 11,
+                  borderRadius: "50%",
+                  background: "#fff",
+                }}
+              />
+            </div>
           </div>
 
           <div
             className="flex items-center"
             style={{
-              marginTop: 9,
+              // The 9px §1.3 draws below the bar is now the scrub's bottom padding.
               gap: 10,
               color: "#fff",
               fontFamily: "monospace",
@@ -417,9 +454,9 @@ export default function WatchPlayer({
             >
               {playing ? "❚❚" : "▶"}
             </button>
-            <span data-testid="gallery-watch-timecode">
-              {`${formatPlayerTime(currentTime)} / ${formatPlayerTime(duration)}`}
-            </span>
+            {/* The same string the slider announces through `aria-valuetext` — one
+                readout, so the eye and the screen reader cannot disagree. */}
+            <span data-testid="gallery-watch-timecode">{timecode}</span>
             <div style={{ flex: 1 }} />
             <button
               type="button"

@@ -85,6 +85,79 @@ export function seekTargetFromClick(
   return Math.min(Math.max(fraction, 0), 1) * duration;
 }
 
+/**
+ * One arrow press, in seconds. Five is the convention every video player on the web
+ * uses for an arrow key, and at this product's scale (a seeded clip is seconds long,
+ * a real one tens of seconds) it is a step you can actually land on a phrase with.
+ */
+export const SEEK_STEP_SECONDS = 5;
+
+/**
+ * One Page press. Deliberately only twice the arrow step rather than the 30–60 s a
+ * feature-length player would use: these are short-form 9:16 videos, and a page key
+ * that always lands on 0:00 or the end is Home and End wearing a different hat.
+ */
+export const SEEK_PAGE_SECONDS = 10;
+
+/**
+ * Where a KEY press on the scrub track should seek to, in seconds — or `null` when the
+ * key is not one this control owns.
+ *
+ * The scrub track carries `role="slider"` and `tabIndex={0}`. Both are promises: a
+ * slider is operable from the keyboard, and a focusable thing does something when you
+ * type at it. Until this existed the track had a click handler and nothing else, so a
+ * screen-reader user was told they had a seek control they could not move — the role
+ * was announcing a capability the component did not have.
+ *
+ * `null` is as load-bearing as the numbers. The component calls `preventDefault` only
+ * when this answers, so every key this control does not own keeps its browser default:
+ * Tab still leaves, Escape still closes, and the page still scrolls. A slider that ate
+ * unrelated keys would be a worse trap than no handler at all.
+ *
+ * An unusable duration (NaN before `loadedmetadata`, `Infinity` for an unknown-length
+ * source, zero) also answers `null` rather than 0 — there is no interval to seek
+ * within yet, and rewinding a viewer who pressed `→` a moment too early is a wrong
+ * answer, not a safe default. A nonsense `currentTime` is read as the start, which is
+ * the same thing the element itself reports before it knows better.
+ */
+export function keyboardSeekTarget(
+  key: string,
+  currentTime: number,
+  duration: number,
+): number | null {
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+
+  const from = Number.isFinite(currentTime) && currentTime > 0 ? currentTime : 0;
+  let target: number;
+  switch (key) {
+    // ARIA's rule for a horizontal slider: Up increases along with Right.
+    case "ArrowRight":
+    case "ArrowUp":
+      target = from + SEEK_STEP_SECONDS;
+      break;
+    case "ArrowLeft":
+    case "ArrowDown":
+      target = from - SEEK_STEP_SECONDS;
+      break;
+    case "PageUp":
+      target = from + SEEK_PAGE_SECONDS;
+      break;
+    case "PageDown":
+      target = from - SEEK_PAGE_SECONDS;
+      break;
+    case "Home":
+      target = 0;
+      break;
+    case "End":
+      target = duration;
+      break;
+    default:
+      return null;
+  }
+
+  return Math.min(Math.max(target, 0), duration);
+}
+
 export interface ResignDecision {
   /** Epoch milliseconds at which the current URL was signed; `null` if nothing is
    *  signed yet. */

@@ -722,6 +722,77 @@ describe("watch a gallery item signed out", () => {
     expect(after, `the timecode stayed at ${before} for the whole clip`).not.toBe(before);
   });
 
+  /**
+   * E-GW4b — THE SCRUB TRACK IS OPERABLE FROM A REAL KEYBOARD.
+   *
+   * The track carries `role="slider"` and `tabIndex={0}`, which together tell a screen
+   * reader and a keyboard user that this is a seek control they can move. It had a
+   * click handler and nothing else, so anyone not holding a mouse was told about a
+   * capability that did not exist.
+   *
+   * `page.keyPress` is CDP `Input.dispatchKeyEvent` — a real key through the browser's
+   * own input pipeline, not a synthesised DOM event — which is the half of the claim
+   * `tests/unit/watch-view.test.tsx` U-WV8 structurally cannot make. U-WV8 owns the
+   * key MAP (five-second steps, page jumps, the clamps), because the seeded mp4 is one
+   * second long and every offset here collapses onto the same two numbers.
+   *
+   * So this asserts the two transitions that ARE unambiguous at one second: a seek key
+   * takes a paused player from the start to the end, and Home brings it back.
+   */
+  test("E-GW4b: a real key press on the focused scrub track seeks the video", async () => {
+    await gotoWatch(subject.id);
+    await waitForTestId("gallery-watch-video", 30_000);
+
+    // Metadata, not playback: the duration is what a seek is measured against.
+    const metaDeadline = Date.now() + 30_000;
+    let state = await videoState();
+    while (Date.now() < metaDeadline && !Number.isFinite(state.duration)) {
+      await page.waitForTimeout(200);
+      state = await videoState();
+    }
+    expect(Number.isFinite(state.duration), "the video never reported a duration").toBe(true);
+    expect(state.currentTime).toBe(0);
+
+    // Focusable at all — the other half of what `tabIndex={0}` promises.
+    const focused = await page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="gallery-watch-scrub"]');
+      el?.focus();
+      return document.activeElement?.getAttribute("data-testid") ?? null;
+    });
+    expect(focused, "the scrub track cannot take keyboard focus").toBe(
+      "gallery-watch-scrub",
+    );
+
+    const before = await attrOf("gallery-watch-scrub", "aria-valuetext");
+    expect(before, "the slider announces no position").toMatch(/^\d+:\d{2} \/ \d+:\d{2}$/);
+
+    // One arrow step is 5 s and the fixture clip is ~1 s, so this clamps to the end —
+    // which at this scale is the only movement that cannot be confused with drift.
+    await page.keyPress("ArrowRight");
+    let seekDeadline = Date.now() + 10_000;
+    let after = await videoState();
+    while (Date.now() < seekDeadline && after.currentTime === 0) {
+      await page.waitForTimeout(100);
+      after = await videoState();
+    }
+    expect(after.currentTime, "ArrowRight did not move the playhead").toBeGreaterThan(0);
+    expect(await attrOf("gallery-watch-scrub", "aria-valuetext")).not.toBe(before);
+    // The visible transport agrees with the element — a keyboard user is not seeking
+    // blind.
+    expect(await testidText("gallery-watch-timecode")).toBe(
+      await attrOf("gallery-watch-scrub", "aria-valuetext"),
+    );
+
+    await page.keyPress("Home");
+    seekDeadline = Date.now() + 10_000;
+    let home = await videoState();
+    while (Date.now() < seekDeadline && home.currentTime !== 0) {
+      await page.waitForTimeout(100);
+      home = await videoState();
+    }
+    expect(home.currentTime, "Home did not return to the start").toBe(0);
+  });
+
   test("E-GW5: ⑂ Remix this is present, disabled, and clicking it changes nothing", async () => {
     await gotoWatch(subject.id);
     await waitForTestId("gallery-watch-remix");

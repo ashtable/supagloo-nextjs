@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act } from "react";
-import { byTestId, click, flush, mount, queryTestId } from "./support/render";
+import { byTestId, click, flush, mount, press, queryTestId } from "./support/render";
 import type {
   GalleryItemDetailDto,
   GalleryMakingOf,
@@ -397,5 +397,119 @@ describe("U-WV7: the scene grid prints the design's tile format", () => {
     expect(first.style.background).toContain("rgb(42, 26, 46)");
     expect(last.style.background).toContain("rgb(255, 232, 168)");
     expect(first.style.background).not.toBe(last.style.background);
+  });
+});
+
+/**
+ * U-WV8 — THE SCRUB TRACK IS A REAL SLIDER.
+ *
+ * `role="slider"` + `tabIndex={0}` are a contract with assistive tech and with anyone
+ * who does not use a mouse: this control is focusable, and a slider moves with the
+ * arrow keys. The component shipped with a click handler and NOTHING else, so the role
+ * announced a seek control that could not be seeked. That is worse than an unlabelled
+ * div — it is a promise the DOM makes on the component's behalf and the component
+ * breaks.
+ *
+ * Unit-lane rather than e2e for the same reason U-WV5 is: it is about what a key press
+ * does to `video.currentTime`, which needs a `<video>` whose duration is known, and the
+ * one-second fixture mp4 makes every offset in a real run round to the same number.
+ * `gallery-watch.e2e.ts` E-GW4b still proves a real key from a real keyboard reaches
+ * it; this proves the map.
+ */
+describe("U-WV8: the scrub track is operable from the keyboard", () => {
+  /** Mount, load metadata, and hand back the element + its scrub track. */
+  async function player(durationSeconds = 32) {
+    fetchGalleryItem.mockResolvedValue(item());
+    const container = await open();
+    const video = byTestId(container, "gallery-watch-video") as HTMLVideoElement;
+    // jsdom reports `duration: NaN` forever — it has no media pipeline — so the number
+    // the component reads is defined here, exactly as a loaded source would report it.
+    Object.defineProperty(video, "duration", {
+      value: durationSeconds,
+      configurable: true,
+    });
+    await act(async () => {
+      video.dispatchEvent(new Event("loadedmetadata"));
+    });
+    return { container, video, scrub: byTestId(container, "gallery-watch-scrub") };
+  }
+
+  it("declares itself focusable and a slider", async () => {
+    const { scrub } = await player();
+    expect(scrub.getAttribute("role")).toBe("slider");
+    expect(scrub.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("seeks with the arrows, PageUp/PageDown, Home and End", async () => {
+    const { video, scrub } = await player(32);
+
+    await press(scrub, "ArrowRight");
+    expect(video.currentTime).toBe(5);
+    await press(scrub, "ArrowRight");
+    expect(video.currentTime).toBe(10);
+    await press(scrub, "ArrowLeft");
+    expect(video.currentTime).toBe(5);
+
+    await press(scrub, "PageUp");
+    expect(video.currentTime).toBe(15);
+    await press(scrub, "PageDown");
+    expect(video.currentTime).toBe(5);
+
+    await press(scrub, "End");
+    expect(video.currentTime).toBe(32);
+    await press(scrub, "Home");
+    expect(video.currentTime).toBe(0);
+  });
+
+  it("moves the fill it draws, not just the element underneath", async () => {
+    // The transport has to agree with the media element, or a keyboard user seeks
+    // blind: the number moved but the only visible feedback did not.
+    const { container, scrub } = await player(32);
+    await press(scrub, "ArrowRight");
+    await flush();
+    expect(byTestId(container, "gallery-watch-scrub-fill").style.width).toBe(
+      `${(5 / 32) * 100}%`,
+    );
+    expect(byTestId(container, "gallery-watch-timecode").textContent).toBe(
+      "0:05 / 0:32",
+    );
+  });
+
+  it("announces the position as a TIME, not as a bare percentage", async () => {
+    // `aria-valuenow="16"` read aloud is "16" — of what? `aria-valuetext` is the whole
+    // reason a screen-reader user knows where in the video they just landed.
+    const { scrub } = await player(32);
+    await press(scrub, "ArrowRight");
+    await flush();
+    expect(scrub.getAttribute("aria-valuetext")).toBe("0:05 / 0:32");
+    expect(scrub.getAttribute("aria-valuenow")).toBe("16");
+  });
+
+  it("claims the keys it handles and leaves every other key alone", async () => {
+    const { video, scrub } = await player(32);
+
+    const handled = await press(scrub, "ArrowRight");
+    expect(handled.defaultPrevented).toBe(true);
+
+    // Tab must still move focus, Escape must still reach whatever is listening, and
+    // the page must still scroll. A slider that swallows them is a keyboard trap.
+    for (const key of ["Tab", "Escape", "Enter", "a"]) {
+      const event = await press(scrub, key);
+      expect(event.defaultPrevented, key).toBe(false);
+    }
+    expect(video.currentTime).toBe(5);
+  });
+
+  it("does nothing at all before the duration is known", async () => {
+    // `duration` is NaN until `loadedmetadata`. Seeking to 0 here would silently rewind
+    // a viewer who pressed → during the first moments of playback.
+    fetchGalleryItem.mockResolvedValue(item());
+    const container = await open();
+    const video = byTestId(container, "gallery-watch-video") as HTMLVideoElement;
+    const scrub = byTestId(container, "gallery-watch-scrub");
+
+    const event = await press(scrub, "ArrowRight");
+    expect(event.defaultPrevented).toBe(false);
+    expect(video.currentTime).toBe(0);
   });
 });

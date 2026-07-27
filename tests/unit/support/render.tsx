@@ -89,6 +89,24 @@ export async function selectOption(element: HTMLElement, value: string): Promise
   });
 }
 
+/**
+ * Press a key ON an element and flush. A real bubbling `KeyboardEvent`, because React's
+ * `onKeyDown` is a delegated listener at the root — calling the prop directly would
+ * prove nothing about the key ever reaching it, and would skip `preventDefault`
+ * entirely. The returned event is the one that was dispatched, so a caller can assert
+ * whether the handler claimed the key or let the browser keep it.
+ */
+export async function press(
+  element: HTMLElement,
+  key: string,
+): Promise<KeyboardEvent> {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  await act(async () => {
+    element.dispatchEvent(event);
+  });
+  return event;
+}
+
 /** Flush pending microtasks + effects without advancing anything else. */
 export async function flush(): Promise<void> {
   await act(async () => {

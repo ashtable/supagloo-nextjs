@@ -27,7 +27,10 @@ import { describe, expect, it } from "vitest";
  */
 import {
   RESIGN_SAFETY_MARGIN_SECONDS,
+  SEEK_PAGE_SECONDS,
+  SEEK_STEP_SECONDS,
   formatPlayerTime,
+  keyboardSeekTarget,
   progressPercent,
   seekTargetFromClick,
   shouldResignStreamUrl,
@@ -194,5 +197,72 @@ describe("U-WP6 shouldResignStreamUrl with nothing signed yet", () => {
     expect(
       shouldResignStreamUrl({ signedAt: 2_000_000, now: 1_000_000, ttlSeconds: 120 }),
     ).toBe(false);
+  });
+});
+
+// ── U-WP7: keyboardSeekTarget ────────────────────────────────────────────────
+
+/**
+ * The scrub track claims `role="slider"` and takes focus. That is a PROMISE to a
+ * keyboard and to a screen reader: a slider is operable with the arrow keys. Until
+ * this function existed the track had no key handler at all, so the role was a lie —
+ * a sighted mouse user could seek and nobody else could.
+ *
+ * The map lives here rather than in the component for the same reason the rest of this
+ * module does: it is arithmetic over two numbers a `<video>` reports, and it is the
+ * part that can be wrong.
+ */
+describe("U-WP7 keyboardSeekTarget", () => {
+  const DURATION = 32;
+
+  it("steps forward and back by SEEK_STEP_SECONDS on the arrow keys", () => {
+    expect(keyboardSeekTarget("ArrowRight", 10, DURATION)).toBe(10 + SEEK_STEP_SECONDS);
+    expect(keyboardSeekTarget("ArrowLeft", 10, DURATION)).toBe(10 - SEEK_STEP_SECONDS);
+    // ARIA's rule for a horizontal slider: Up increases with Right, Down with Left.
+    expect(keyboardSeekTarget("ArrowUp", 10, DURATION)).toBe(10 + SEEK_STEP_SECONDS);
+    expect(keyboardSeekTarget("ArrowDown", 10, DURATION)).toBe(10 - SEEK_STEP_SECONDS);
+  });
+
+  it("jumps by the larger SEEK_PAGE_SECONDS on PageUp/PageDown", () => {
+    expect(SEEK_PAGE_SECONDS).toBeGreaterThan(SEEK_STEP_SECONDS);
+    expect(keyboardSeekTarget("PageUp", 12, DURATION)).toBe(12 + SEEK_PAGE_SECONDS);
+    expect(keyboardSeekTarget("PageDown", 12, DURATION)).toBe(12 - SEEK_PAGE_SECONDS);
+  });
+
+  it("Home is the start and End is the very end", () => {
+    expect(keyboardSeekTarget("Home", 20, DURATION)).toBe(0);
+    expect(keyboardSeekTarget("End", 2, DURATION)).toBe(DURATION);
+  });
+
+  it("clamps at both ends rather than seeking outside the clip", () => {
+    // Held-down arrows at either end are ordinary input, not an edge case.
+    expect(keyboardSeekTarget("ArrowLeft", 1, DURATION)).toBe(0);
+    expect(keyboardSeekTarget("ArrowRight", DURATION - 1, DURATION)).toBe(DURATION);
+    expect(keyboardSeekTarget("PageDown", 3, DURATION)).toBe(0);
+    expect(keyboardSeekTarget("PageUp", DURATION - 2, DURATION)).toBe(DURATION);
+  });
+
+  it("returns null for a key it does not own, so the browser keeps its default", () => {
+    // The component only calls `preventDefault` when this answers a number. A slider
+    // that swallowed Tab, or space, or a page-scrolling key it does nothing with, would
+    // be a worse trap for a keyboard user than no handler at all.
+    for (const key of ["Tab", "Enter", " ", "a", "Escape", "ArrowRightRight"]) {
+      expect(keyboardSeekTarget(key, 10, DURATION), key).toBeNull();
+    }
+  });
+
+  it("returns null while the duration is unknown — there is nothing to seek within", () => {
+    // `duration` is NaN until `loadedmetadata`, and `Infinity` for an unknown-length
+    // source. Answering 0 would silently rewind a viewer who pressed → too early.
+    expect(keyboardSeekTarget("ArrowRight", 0, Number.NaN)).toBeNull();
+    expect(keyboardSeekTarget("ArrowRight", 0, Number.POSITIVE_INFINITY)).toBeNull();
+    expect(keyboardSeekTarget("End", 0, 0)).toBeNull();
+  });
+
+  it("treats a nonsense currentTime as the start rather than propagating it", () => {
+    expect(keyboardSeekTarget("ArrowRight", Number.NaN, DURATION)).toBe(
+      SEEK_STEP_SECONDS,
+    );
+    expect(keyboardSeekTarget("ArrowRight", -4, DURATION)).toBe(SEEK_STEP_SECONDS);
   });
 });
