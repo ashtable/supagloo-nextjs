@@ -20,6 +20,8 @@
  * A real discovery endpoint is the correct long-term fix (tracked as a follow-up).
  */
 
+import { redactSecrets } from "../logging/redact";
+
 type EnvSource = Record<string, string | undefined>;
 
 export type GenerationKind =
@@ -69,21 +71,39 @@ const LOG_PREFIX = "[supagloo:ai-config]";
 
 /** Emit one distinguishable line naming the resolution path for `what` (model/provider):
  *  the `SUPAGLOO_AI_..._<KIND>` override, or the built-in fallback (which also names the
- *  var to set). This is the observability the task-35 review flagged as missing. */
+ *  var to set). This is the observability the task-35 review flagged as missing.
+ *
+ *  Task 43 / R4344-9: the line goes through `redactSecrets` against the SAME env source the
+ *  resolution read. The interpolated `value` is operator-supplied — nothing stops a
+ *  deployment from pointing `SUPAGLOO_AI_MODEL_<KIND>` at a value that is also held by a
+ *  secret-named variable (an id with an embedded key, a copy-paste, a proxy URL carrying
+ *  `user:pass@`) — and this is the only `console.*` in `lib/`, so it is the only place that
+ *  could put such a value into a log. Redacting here is what makes
+ *  `tests/unit/boot-hardening.test.ts`'s claim about this log site non-vacuous: before it,
+ *  that case passed because the string never contained a secret, not because anything
+ *  removed one. It cannot corrupt an ordinary model id: needles are values ≥ 8 chars held by
+ *  SECRET/TOKEN/…-named vars, plus `scheme://user:pass@` and `Bearer <token>` shapes. */
 function logResolution(
   what: "model" | "provider",
   kind: GenerationKind,
   envKey: string,
   overridden: boolean,
   value: string,
+  env: EnvSource,
 ): void {
   if (overridden) {
     console.info(
-      `${LOG_PREFIX} ${what} for kind "${kind}" resolved via ${envKey} override -> ${value}`,
+      redactSecrets(
+        `${LOG_PREFIX} ${what} for kind "${kind}" resolved via ${envKey} override -> ${value}`,
+        env,
+      ),
     );
   } else {
     console.info(
-      `${LOG_PREFIX} ${what} for kind "${kind}" resolved via built-in fallback -> ${value} (set ${envKey} to use a different one)`,
+      redactSecrets(
+        `${LOG_PREFIX} ${what} for kind "${kind}" resolved via built-in fallback -> ${value} (set ${envKey} to use a different one)`,
+        env,
+      ),
     );
   }
 }
@@ -101,12 +121,19 @@ export function resolveGenerationTarget(
   const providerKey = `SUPAGLOO_AI_PROVIDER_${key}`;
   const providerOverride = nonEmpty(env[providerKey]);
   const provider = providerOverride ?? DEFAULT_GENERATION_PROVIDERS[kind];
-  logResolution("provider", kind, providerKey, providerOverride !== undefined, provider);
+  logResolution(
+    "provider",
+    kind,
+    providerKey,
+    providerOverride !== undefined,
+    provider,
+    env,
+  );
 
   const modelKey = `SUPAGLOO_AI_MODEL_${key}`;
   const modelOverride = nonEmpty(env[modelKey]);
   const model = modelOverride ?? DEFAULT_GENERATION_MODELS[kind];
-  logResolution("model", kind, modelKey, modelOverride !== undefined, model);
+  logResolution("model", kind, modelKey, modelOverride !== undefined, model, env);
 
   return { provider, model };
 }
