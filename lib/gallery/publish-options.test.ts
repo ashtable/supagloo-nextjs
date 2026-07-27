@@ -213,6 +213,7 @@ describe("canSubmitPublish", () => {
     renderId: "rj_1",
     title: "The Lord Is My Shepherd",
     passage: "Psalm 23:1–6",
+    translation: "KJV",
     consent: true,
     busy: false,
   };
@@ -230,6 +231,22 @@ describe("canSubmitPublish", () => {
     expect(canSubmitPublish({ ...ready, busy: true })).toBe(false);
     // And there must be something to publish.
     expect(canSubmitPublish({ ...ready, renderId: null })).toBe(false);
+  });
+
+  it("U-PO6b: is FALSE for an empty TRANSLATION — `Other…` leaves the field blank", () => {
+    /*
+     * R-U3. The dropdown's `Other…` escape sets the translation to `""` and reveals a
+     * free-text box, and nothing made the user fill it in. Submitting there sends
+     * `translation: ""` at `TranslationSchema = z.string().min(1)`, so the api answers
+     * a 400 whose body is a schema complaint — a refusal the dialog then prints
+     * verbatim, about a field the form never said was required.
+     *
+     * The gate belongs on the same side as every other required field: a disabled
+     * button that says "not yet" beats a live one that says "the server disagrees".
+     */
+    expect(canSubmitPublish({ ...ready, translation: "" })).toBe(false);
+    expect(canSubmitPublish({ ...ready, translation: "   " })).toBe(false);
+    expect(canSubmitPublish({ ...ready, translation: "NRSVUE" })).toBe(true);
   });
 });
 
@@ -276,5 +293,57 @@ describe("manifestPrefill", () => {
     // No scenes at all (a freshly-scaffolded project) prefills nothing.
     expect(manifestPrefill(manifest([]))).toEqual({ passage: null, translation: null });
     expect(manifestPrefill(null)).toEqual({ passage: null, translation: null });
+  });
+});
+
+// ── R-U4: the manifest ref a prefill must read at ────────────────────────────
+
+describe("U-PO11: an option carries the RENDER'S OWN version branch", () => {
+  /**
+   * The dialog prefills PASSAGE and TRANSLATION by reading the project's manifest at a
+   * git ref. It read `Project.currentBranch` — where the project is NOW.
+   *
+   * A render is a snapshot of one `ProjectVersion`. Publish a video made from v0.1.0
+   * while the project has moved on to v0.2.0 (a different passage, a re-planned
+   * storyboard) and `currentBranch` describes a DIFFERENT VIDEO. The prefilled string
+   * is what the server derives `scriptureBook` from and what prints verbatim on the
+   * public card, so the wrong ref publishes a video under someone else's passage — the
+   * same class of mistake the `key=`-reset comment in the dialog exists to prevent, one
+   * layer down.
+   */
+  const projects = [project({ id: "prj_1", slug: "psalm-121", currentBranch: "v0.2.0" })];
+  const versions = new Map<string, readonly ProjectVersionDto[]>([
+    [
+      "prj_1",
+      [
+        version({ id: "ver_1", projectId: "prj_1", semver: "0.1.0", branchName: "v0.1.0" }),
+        version({ id: "ver_2", projectId: "prj_1", semver: "0.2.0", branchName: "v0.2.0" }),
+      ],
+    ],
+  ]);
+
+  it("uses the version the render was made from, not where the project is now", () => {
+    const [option] = buildProjectOptions({
+      renders: [render({ id: "rj_old", versionId: "ver_1" })],
+      projects,
+      versions,
+    });
+    expect(option.manifestRef).toBe("v0.1.0");
+    expect(option.manifestRef).not.toBe("v0.2.0");
+  });
+
+  it("is NULL when the version cannot be resolved — blank beats a ref for other content", () => {
+    // The module's rule for the LABEL is "degrade, never drop", because an ugly name
+    // still names the right video. The rule for the REF is the opposite, and it is
+    // `manifestPrefill`'s own: blank beats wrong. Falling back to `currentBranch` here
+    // would be choosing to prefill from content we know is not this render's.
+    const [option] = buildProjectOptions({
+      renders: [render({ id: "rj_x", versionId: "ver_missing" })],
+      projects,
+      versions,
+    });
+    expect(option).toBeTruthy();
+    expect(option.renderId).toBe("rj_x");
+    expect(option.manifestRef).toBeNull();
   });
 });

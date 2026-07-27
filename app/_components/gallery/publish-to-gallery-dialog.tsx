@@ -12,7 +12,7 @@ import {
   translationOptions,
   type PublishProjectOption,
 } from "@/lib/gallery/publish-options";
-import type { GalleryItemDto, ProjectDto, ProjectVersionDto } from "@/lib/api/contracts";
+import type { GalleryItemDto, ProjectVersionDto } from "@/lib/api/contracts";
 
 /**
  * Turn 16b — THE publish-to-gallery dialog (Step 4 §2; plan slice C8).
@@ -73,7 +73,6 @@ export default function PublishToGalleryDialog({
   onPublished: (item: GalleryItemDto) => void;
 }) {
   const [options, setOptions] = useState<PublishProjectOption[] | null>(null);
-  const [projects, setProjects] = useState<readonly ProjectDto[]>([]);
   const [selected, setSelected] = useState<string | null>(initialRenderId);
 
   // The three reads that make the D8 join, fired once per OPEN. No new API field: the
@@ -96,7 +95,6 @@ export default function PublishToGalleryDialog({
       );
       if (!active) return;
       const versions = new Map<string, readonly ProjectVersionDto[]>(versionLists);
-      setProjects(projectList);
       setOptions(buildProjectOptions({ renders, projects: projectList, versions }));
     })();
 
@@ -120,8 +118,15 @@ export default function PublishToGalleryDialog({
   }, [options, initialRenderId]);
 
   const chosen = options?.find((o) => o.renderId === selected) ?? null;
-  const manifestRef =
-    projects.find((p) => p.id === chosen?.projectId)?.currentBranch ?? null;
+  /**
+   * The ref the prefill reads at is the chosen RENDER'S OWN version branch, never the
+   * project's `currentBranch`. A render is a snapshot of one version; a project that
+   * has since moved on describes a different video, and prefilling `PASSAGE` from it
+   * would put another passage into the field the public card prints. `null` means "we
+   * could not identify the version", and the prefill simply does not run — see
+   * `PublishProjectOption.manifestRef`.
+   */
+  const manifestRef = chosen?.manifestRef ?? null;
 
   return (
     <Modal
@@ -219,7 +224,14 @@ function PublishBody({
     [usingOther, translation, manifestTranslation],
   );
 
-  const ready = canSubmitPublish({ renderId: selected, title, passage, consent, busy });
+  const ready = canSubmitPublish({
+    renderId: selected,
+    title,
+    passage,
+    translation,
+    consent,
+    busy,
+  });
 
   const submit = useCallback(async () => {
     if (!selected) return;
@@ -421,9 +433,10 @@ function PublishBody({
           {"I confirm this video follows the "}
           {/* NOT a link: there is no community-guidelines page to point at. */}
           <b style={{ color: "var(--sg-fg)" }}>{"community guidelines"}</b>
-          {" and that I hold the "}
-          <b style={{ color: "var(--sg-fg)" }}>{"rights"}</b>
-          {" to any material I added."}
+          {/* R-U8: §2.4 bolds `community guidelines` and NOTHING else. Two emphases
+              in one sentence is no emphasis — and the second one was ours, not the
+              design's. */}
+          {" and that I hold the rights to any material I added."}
         </span>
       </label>
 

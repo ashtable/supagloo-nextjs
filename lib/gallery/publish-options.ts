@@ -36,6 +36,23 @@ export interface PublishProjectOption {
   label: string;
   /** The cover frame's S3 key, presignable through the owner-scoped download route. */
   thumbnailAssetKey: string | null;
+  /**
+   * The git ref whose manifest describes THIS render — the branch of the
+   * `ProjectVersion` it was made from — or `null` when that version cannot be resolved.
+   *
+   * Deliberately NOT `Project.currentBranch`. A render is a snapshot of one version;
+   * the project may have moved on to a different passage, a different storyboard, a
+   * different video entirely. Prefilling `PASSAGE` from where the project is NOW puts
+   * another video's reference into the field the server derives `scriptureBook` from
+   * and the public card prints verbatim.
+   *
+   * `null` rather than a fallback, and that asymmetry with `label` is on purpose: an
+   * unresolved LABEL still names the right video, so it degrades. An unresolved REF has
+   * no degraded form — reading a branch we know is not this render's is not a worse
+   * name, it is different content. `manifestPrefill`'s own rule applies: blank beats
+   * wrong.
+   */
+  manifestRef: string | null;
   /** True only when BOTH joins resolved — the label is trustworthy. */
   resolved: boolean;
 }
@@ -71,8 +88,12 @@ export function buildProjectOptions(
 ): PublishProjectOption[] {
   const slugById = new Map(input.projects.map((p) => [p.id, p.slug]));
   const semverById = new Map<string, string>();
+  const branchById = new Map<string, string>();
   for (const list of input.versions.values()) {
-    for (const v of list) semverById.set(v.id, v.semver);
+    for (const v of list) {
+      semverById.set(v.id, v.semver);
+      branchById.set(v.id, v.branchName);
+    }
   }
 
   const seen = new Set<string>();
@@ -96,6 +117,7 @@ export function buildProjectOptions(
         projectId: render.projectId,
         label: `${slugPart} · ${versionPart}`,
         thumbnailAssetKey: render.thumbnailAssetKey,
+        manifestRef: branchById.get(render.versionId) ?? null,
         resolved: slug !== undefined && semver !== undefined,
       },
       sortAt: Date.parse(render.completedAt ?? render.createdAt),
@@ -155,14 +177,20 @@ export function translationOptions(input: {
  * Both divergences are deliberate:
  *  - a pre-ticked agreement is a dark pattern (it records an agreement nobody made), so
  *    the box ships UNCHECKED, which only means something if it also gates;
- *  - `title` and `scriptureReference` are `.trim().min(1)` upstream, so a whitespace-only
- *    value is a 400 — better to keep the button honest than to spend a round trip
- *    learning what the schema already told us.
+ *  - `title`, `scriptureReference` and `translation` are all `.trim().min(1)` upstream,
+ *    so a whitespace-only value is a 400 — better to keep the button honest than to
+ *    spend a round trip learning what the schema already told us.
+ *
+ * TRANSLATION is the one of the three with no visible empty state. The dropdown always
+ * shows something, so it LOOKS filled; picking `Other…` sets it to `""` and reveals a
+ * free-text box the user can leave blank. Without this check that submits, and the api
+ * answers with a schema complaint about a field the form never marked as required.
  */
 export function canSubmitPublish(input: {
   renderId: string | null;
   title: string;
   passage: string;
+  translation: string;
   consent: boolean;
   busy: boolean;
 }): boolean {
@@ -171,6 +199,7 @@ export function canSubmitPublish(input: {
   if (!input.consent) return false;
   if (input.title.trim().length === 0) return false;
   if (input.passage.trim().length === 0) return false;
+  if (input.translation.trim().length === 0) return false;
   return true;
 }
 
