@@ -4,3 +4,19 @@ node_modules
 npm-debug.log
 Dockerfile
 .dockerignore
+
+# Task 43 — keep local secrets out of the image build entirely.
+#
+# The builder stage is a bare `COPY . .`, so an untracked `.env.local` on the developer's
+# disk was being copied into a build layer, where `next build` would additionally INLINE
+# its NEXT_PUBLIC_* values into the shipped client bundle. The runner stage never copies
+# it forward, so the final image was clean — but the build layer was not, and the bundle
+# carried whichever redirect URL that particular laptop happened to have.
+#
+# Nothing is lost by excluding it: YV_APP_KEY reaches the container as a RUNTIME env from
+# the compose `nextjs` service (D43.3), and `app/providers.tsx`'s `||` fallback is exactly
+# the mechanism that makes an unset build-time NEXT_PUBLIC_YV_AUTH_REDIRECT_URL resolve to
+# the runtime origin.
+.env
+.env.local
+.env.*.local
