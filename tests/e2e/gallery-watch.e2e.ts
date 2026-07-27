@@ -306,6 +306,67 @@ async function valueOf(testId: string): Promise<string> {
   }, testId);
 }
 
+/** A control's viewport-relative box. `null` when it is not in the DOM at all, which a
+ *  caller must distinguish from "present but out of view" — those are different bugs. */
+async function boxOfTestId(id: string): Promise<null | {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+  width: number;
+  height: number;
+}> {
+  return page.evaluate((sel) => {
+    const el = document.querySelector<HTMLElement>(`[data-testid="${sel}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      top: r.top,
+      bottom: r.bottom,
+      left: r.left,
+      right: r.right,
+      width: r.width,
+      height: r.height,
+    };
+  }, id);
+}
+
+/** Ask the browser to bring a control into view, through whatever scroll container
+ *  actually owns it. The whole of W5 is that a `position: fixed` backdrop with no
+ *  scroll container of its own leaves this with nothing to scroll. */
+async function scrollTestIdIntoView(id: string): Promise<void> {
+  await page.evaluate((sel) => {
+    document
+      .querySelector<HTMLElement>(`[data-testid="${sel}"]`)
+      ?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, id);
+  await page.waitForTimeout(150);
+}
+
+/** Which `data-testid` is actually on top at this point — real hit-testing, so an
+ *  element that is inside the viewport but underneath something else does not pass for
+ *  "reachable". */
+async function topmostTestIdAt(x: number, y: number): Promise<string | null> {
+  return page.evaluate(
+    ({ px, py }) => {
+      const el = document.elementFromPoint(px, py);
+      return el?.closest("[data-testid]")?.getAttribute("data-testid") ?? null;
+    },
+    { px: x, py: y },
+  );
+}
+
+/** Does the DOCUMENT scroll sideways? Never acceptable at any width. */
+async function bodyScrollsHorizontally(): Promise<boolean> {
+  return page.evaluate(() => {
+    const doc = document.documentElement;
+    return (
+      doc.scrollWidth > doc.clientWidth + 1 ||
+      document.body.scrollWidth > doc.clientWidth + 1
+    );
+  });
+}
+
 async function attrOf(id: string, attr: string): Promise<string | null> {
   return page.evaluate(
     ({ sel, a }) =>
@@ -1147,5 +1208,118 @@ describe("publish to the gallery through the 16b dialog", () => {
     expect(await valueOf("publish-passage")).toBe("");
     expect(await propOf("publish-consent", "checked")).toBe(false);
     expect(await propOf("publish-submit", "disabled")).toBe(true);
+  });
+
+  /**
+   * E-GP8 — THE PHONE VIEWPORTS. This is the case whose absence let the whole action
+   * row ship off-screen.
+   *
+   * Every other case in this file runs at 1440×1000, where the 16b dialog fits with
+   * room to spare, so none of them can see the defect: the shared `Modal` painted its
+   * panel into a `position: fixed` backdrop with no scroll container of its own, so a
+   * panel taller than the viewport simply extended past the bottom of the screen with
+   * nothing — not the page, not the backdrop — able to scroll to it. At 375×667 the
+   * dialog could be completely filled in and never submitted.
+   *
+   * The claim is deliberately about REACHABILITY, not about pixels: bring the control
+   * into view the way a person's thumb would, then require that the browser's own
+   * hit-testing puts it on top at its centre. A geometry-only assertion would pass for
+   * a button sitting under the scrim.
+   */
+  test("E-GP8: on phone viewports Publish and ✕ are both reachable, and nothing scrolls sideways", async () => {
+    // Three real handset viewports: the classic 4.7", a modern iPhone with the browser
+    // chrome subtracted, and the Android baseline that is still the narrowest thing
+    // worth supporting.
+    const phones = [
+      { label: "375×667", width: 375, height: 667 },
+      { label: "390×664", width: 390, height: 664 },
+      { label: "360×640", width: 360, height: 640 },
+    ];
+
+    try {
+      for (const phone of phones) {
+        await page.setViewportSize(phone.width, phone.height);
+        await openPublishDialogFromGallery();
+
+        // ✕ is modal chrome and is PINNED — it must be in view with nothing scrolled.
+        const close = await boxOfTestId("modal-close");
+        expect(close, `${phone.label}: modal-close is not in the DOM`).toBeTruthy();
+        expect(close!.top, `${phone.label}: ✕ is above the viewport`).toBeGreaterThanOrEqual(0);
+        expect(
+          close!.bottom,
+          `${phone.label}: ✕ is below the fold (bottom ${close!.bottom} > ${phone.height})`,
+        ).toBeLessThanOrEqual(phone.height);
+
+        // Publish sits at the very bottom of the body, which is the part that scrolls.
+        await scrollTestIdIntoView("publish-submit");
+        const submit = await boxOfTestId("publish-submit");
+        expect(submit, `${phone.label}: publish-submit is not in the DOM`).toBeTruthy();
+        expect(
+          submit!.bottom,
+          `${phone.label}: Publish is off the bottom of the screen (bottom ${submit!.bottom} > ${phone.height}) — it cannot be tapped`,
+        ).toBeLessThanOrEqual(phone.height);
+        expect(submit!.top, `${phone.label}: Publish is above the viewport`).toBeGreaterThanOrEqual(0);
+        expect(submit!.width, `${phone.label}: Publish has no width`).toBeGreaterThan(0);
+
+        // Cancel travels with it — the row is one control group, not one button.
+        const cancel = await boxOfTestId("publish-cancel");
+        expect(cancel!.bottom, `${phone.label}: Cancel is off the bottom`).toBeLessThanOrEqual(
+          phone.height,
+        );
+
+        // Not merely inside the box — genuinely on top, per the browser's own hit test.
+        const hit = await topmostTestIdAt(
+          submit!.left + submit!.width / 2,
+          submit!.top + submit!.height / 2,
+        );
+        expect(hit, `${phone.label}: something else is on top of Publish`).toBe(
+          "publish-submit",
+        );
+
+        // ✕ is still where it was after the body scrolled — the header is pinned.
+        const closeAfter = await boxOfTestId("modal-close");
+        expect(closeAfter!.top, `${phone.label}: ✕ scrolled away with the body`).toBe(
+          close!.top,
+        );
+
+        // A dialog that fits the width of the screen: no sideways scroll, ever.
+        expect(
+          await bodyScrollsHorizontally(),
+          `${phone.label}: the document scrolls horizontally`,
+        ).toBe(false);
+        expect(
+          submit!.right,
+          `${phone.label}: Publish overflows the right edge`,
+        ).toBeLessThanOrEqual(phone.width);
+      }
+
+      // …and the reachable control is genuinely OPERABLE, not just visible. Re-publishing
+      // the render E-GP4 already published is the one click that proves the tap lands
+      // while creating nothing: the api answers `already_published`, which is a refusal,
+      // not a row. (Skipped if E-GP4 did not run — this must never depend on the leftover
+      // being there.)
+      if (publishedItemIds.size > 0) {
+        await page.setViewportSize(375, 667);
+        await openPublishDialogFromGallery();
+        await selectByTestId("publish-project", freed.renderJobId);
+        await typeIntoTestId("publish-title", `${publishedTitle} on a phone`);
+        await typeIntoTestId("publish-passage", "Psalm 23:1-6");
+        await clickTestId("publish-consent");
+        await scrollTestIdIntoView("publish-submit");
+        try {
+          await clickTestId("publish-submit");
+        } finally {
+          await registerPublishedByTitlePrefix(`${publishedTitle} on a phone`, 3_000);
+        }
+        await waitForTestId("publish-error", 30_000);
+        expect(await testidText("publish-error")).toBe(
+          "render is already published to the gallery",
+        );
+      }
+    } finally {
+      // Every later file in this lane inherits the viewport; restoring it is not
+      // tidiness.
+      await page.setViewportSize(VIEWPORT.width, VIEWPORT.height);
+    }
   });
 });
