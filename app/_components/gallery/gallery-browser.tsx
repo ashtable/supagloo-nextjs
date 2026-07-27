@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import GalleryHeader from "./gallery-header";
 import GalleryFilterRow from "./gallery-filter-row";
 import GalleryGrid from "./gallery-grid";
-import GalleryPlayerModal from "./gallery-player-modal";
 import LoadMore from "./load-more";
-import ShareYoursDialog from "./share-yours-dialog";
+import PublishToGalleryDialog from "./publish-to-gallery-dialog";
 import SigninPrompt from "./signin-prompt";
 import { useSession } from "../session-provider";
 import {
@@ -21,7 +21,6 @@ import {
 } from "@/lib/gallery/gallery-model";
 import {
   fetchGalleryPage,
-  fetchStreamUrl,
   removeUpvote,
   sendUpvote,
 } from "@/lib/gallery/gallery-data";
@@ -47,6 +46,7 @@ import type { GalleryItemDto } from "@/lib/api/contracts";
 export default function GalleryBrowser() {
   const { session } = useSession();
   const isAuthed = session.isAuthed;
+  const router = useRouter();
 
   const [mounted, setMounted] = useState(false);
   const [state, setState] = useState(() => initialQueryState<GalleryItemDto>());
@@ -68,10 +68,6 @@ export default function GalleryBrowser() {
    */
   const [attempt, setAttempt] = useState(0);
 
-  const [player, setPlayer] = useState<{
-    item: GalleryItemDto;
-    url: string | null;
-  } | null>(null);
   const [promptOpen, setPromptOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
 
@@ -159,6 +155,18 @@ export default function GalleryBrowser() {
 
   /** The error state's only way out. */
   const onRetry = useCallback(() => setAttempt((a) => a + 1), []);
+
+  /**
+   * 4a's `Clear filters`. Resets BOTH halves of the filter — the committed query state
+   * AND the search box — because the box is debounced INTO the query: clearing only the
+   * query would let the still-populated input re-commit the same term 250 ms later and
+   * put the user straight back on the empty state they just left.
+   */
+  const onClearFilters = useCallback(() => {
+    setSearchInput("");
+    setState(initialQueryState<GalleryItemDto>());
+    setAttempt((a) => a + 1);
+  }, []);
 
   const onLoadMore = useCallback(async () => {
     const cursor = state.cursor;
@@ -256,12 +264,6 @@ export default function GalleryBrowser() {
     [isAuthed],
   );
 
-  const onPlay = useCallback(async (item: GalleryItemDto) => {
-    setPlayer({ item, url: null });
-    const signed = await fetchStreamUrl(item.id);
-    setPlayer((p) => (p && p.item.id === item.id ? { ...p, url: signed?.url ?? null } : p));
-  }, []);
-
   return (
     <>
       <GalleryHeader onShareYours={() => setShareOpen(true)} />
@@ -277,10 +279,10 @@ export default function GalleryBrowser() {
           items={state.items}
           loading={loading}
           error={failed}
-          searching={state.q.length > 0}
+          searchTerm={state.q}
           voting={voting}
           onRetry={onRetry}
-          onPlay={onPlay}
+          onClearFilters={onClearFilters}
           onVote={onVote}
         />
       )}
@@ -292,13 +294,27 @@ export default function GalleryBrowser() {
         onLoadMore={() => void onLoadMore()}
       />
 
-      <GalleryPlayerModal
-        item={player?.item ?? null}
-        url={player?.url ?? null}
-        onClose={() => setPlayer(null)}
-      />
       <SigninPrompt open={promptOpen} onClose={() => setPromptOpen(false)} />
-      <ShareYoursDialog open={shareOpen} onClose={() => setShareOpen(false)} />
+      {/*
+        `＋ Share yours` now opens the REAL 16b dialog — with a PROJECT picker, which is
+        exactly what retires the placeholder that used to say "go to Your videos and pick
+        one". Mounted only while open, so closing it is a full reset of its own state
+        (the dialog's inner `key=` handles the switch-project reset while it is open).
+
+        On success we go to the published thing: "Published" that leaves you where you
+        were is indistinguishable from nothing having happened, and the watch page is the
+        public URL the user is about to share.
+      */}
+      {shareOpen && (
+        <PublishToGalleryDialog
+          open
+          onClose={() => setShareOpen(false)}
+          onPublished={(item) => {
+            setShareOpen(false);
+            router.push(`/gallery/${item.id}`);
+          }}
+        />
+      )}
     </>
   );
 }

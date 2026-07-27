@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import RankBadge from "./rank-badge";
 import UpvotePill from "./upvote-pill";
 import { galleryDurationLabel } from "@/lib/gallery/gallery-model";
@@ -21,17 +22,22 @@ import type { GalleryItemDto } from "@/lib/api/contracts";
  *
  * `scriptureBook` is available on the DTO and deliberately NOT rendered as anything
  * clickable: it is an internal derived code, never a control.
+ *
+ * ── THE ▶ IS NAVIGATION (Turn 16a, slice C7) ───────────────────────────────────
+ * It was a `<button>` opening `gallery-player-modal.tsx`, which row 41 shipped as an
+ * explicitly-flagged placeholder because no detail page was designed. 16a designs it, so
+ * the affordance is now a `<Link href="/gallery/:id">` — a real URL people can share,
+ * open in a new tab, and land on from a share. The testid and `aria-label` are unchanged
+ * so every existing selector still resolves and only the EXPECTATION moves.
  */
 export default function GalleryCard({
   item,
   voting,
-  onPlay,
   onVote,
 }: {
   item: GalleryItemDto;
   /** This card's vote request is open — the pill is disabled until it settles. */
   voting: boolean;
-  onPlay: () => void;
   onVote: () => void;
 }) {
   const duration = galleryDurationLabel(item.durationSeconds);
@@ -92,11 +98,10 @@ export default function GalleryCard({
           </span>
         )}
 
-        <button
-          type="button"
+        <Link
+          href={`/gallery/${item.id}`}
           data-testid={`gallery-play-${item.id}`}
           aria-label={`Play ${item.title}`}
-          onClick={onPlay}
           className="cursor-pointer"
           style={{
             position: "absolute",
@@ -115,7 +120,7 @@ export default function GalleryCard({
           }}
         >
           {"▶"}
-        </button>
+        </Link>
 
         <div
           style={{

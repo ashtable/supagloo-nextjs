@@ -2,21 +2,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import Modal from "../modal";
+import PublishToGalleryDialog from "../gallery/publish-to-gallery-dialog";
 import { useSession } from "../session-provider";
-import {
-  fetchMyRenders,
-  publishRenderToGallery,
-  unpublishGalleryItem,
-} from "@/lib/gallery/gallery-data";
+import { fetchMyRenders, unpublishGalleryItem } from "@/lib/gallery/gallery-data";
 import { renderToVideoCard, type VideoCard } from "@/lib/your-videos/your-videos-model";
 import type { GalleryItemDto, RenderJobDto } from "@/lib/api/contracts";
 
 /**
  * "Your videos" — the mount-gated list behind `/your-videos`.
  *
- * NO WIREFRAME (design-delta §5). The grid, the poster block, the status chip and the
- * footer row are adapted from 10a's `recent-projects.tsx` so this reads as the same
+ * NO WIREFRAME (design-delta §2.7 / §9-Q3 — NOT "§5", which is "System architecture
+ * (target)" and declares nothing out of scope; miscitation corrected 2026-07-26). Turns
+ * 16/17 still do not draw this screen. The grid, the poster block, the status chip and
+ * the footer row are adapted from 10a's `recent-projects.tsx` so this reads as the same
  * product; the publish affordance is the MINIMAL one the plan asks for.
  *
  * Two rules it exists to enforce, both from the model:
@@ -234,7 +232,9 @@ export default function YourVideosList() {
             </div>
           )}
 
-          {/* UNDESIGNED (design-delta §5) — empty/loading states are out of scope. */}
+          {/* UNDESIGNED (design-delta §2.7 / §9-Q3 — NOT "§5"; miscitation corrected
+              2026-07-26). Turn 17b's card 4a designs an empty state for the PUBLIC
+              gallery grid, not for this authed list, so this stays a placeholder. */}
           {cards.length === 0 && (
             <p
               data-testid={loading ? "your-videos-loading" : "your-videos-empty"}
@@ -257,30 +257,42 @@ export default function YourVideosList() {
       )}
 
       {/*
-        `key` IS THE RESET. `PublishDialog` is mounted unconditionally (the only
-        visibility gate is `open` on its inner `<Modal>`), so without a key its six
-        `useState` initializers run ONCE PER PAGE LOAD and survive every close: the
-        second "Share to gallery" opened carrying the FIRST render's title, its scripture
-        reference, its translation and any error it had left behind. That is not a
-        cosmetic leak — `scriptureReference` is what the server derives `scriptureBook`
-        from AND what renders verbatim on the public card, so the likely accident was
-        publishing B under A's reference. Exactly the class of lie D7 removed when it
-        refused to let the client send `durationSeconds`.
+        THE SAME DIALOG THE GALLERY HEADER OPENS (Turn 16b), with this row's render
+        preselected. There is no second publish surface any more: the local
+        `PublishDialog` that used to live at the bottom of this file is deleted.
 
-        Keying on the render id is cheaper and harder to get wrong than an effect that
-        resets six fields: React unmounts the old instance, so there is no field anyone
-        can forget to add to the reset list. `"none"` is the closed state, which means
-        closing the dialog is itself a reset.
+        `key` IS STILL THE RESET, and the rule it protects is unchanged — six `useState`
+        initializers live inside that dialog, and a leak between two opens means the
+        second render gets published under the FIRST one's `scriptureReference`, the
+        string the server derives `scriptureBook` from AND the string that prints
+        verbatim on a public card. Keying is cheaper and harder to get wrong than an
+        effect that resets six fields: React unmounts the old instance, so there is no
+        field anyone can forget to add to a reset list.
+
+        Two things moved WITH the dialog rather than staying here:
+          - `"none"` as the closed state is now expressed by not mounting it at all,
+            which is a strictly stronger reset;
+          - the SWITCH-PROJECT reset (16b lets you change the render from inside the
+            dialog, which this screen never could) lives in the dialog's own `key=`,
+            covered by `tests/unit/publish-to-gallery-dialog.test.tsx` U-PD2.
+
+        Publishing from HERE deliberately does not navigate away, unlike the gallery
+        header's CTA: this is the library screen, the card immediately gains its
+        "Remove from gallery" undo, and teleporting someone out of their own library
+        after one action would take that undo with it.
       */}
-      <PublishDialog
-        key={publishing?.id ?? "none"}
-        render={publishing}
-        onClose={() => setPublishing(null)}
-        onPublished={(item) => {
-          setPublished((p) => ({ ...p, [item.renderJobId]: item }));
-          setPublishing(null);
-        }}
-      />
+      {publishing && (
+        <PublishToGalleryDialog
+          key={publishing.id}
+          open
+          initialRenderId={publishing.id}
+          onClose={() => setPublishing(null)}
+          onPublished={(item) => {
+            setPublished((p) => ({ ...p, [item.renderJobId]: item }));
+            setPublishing(null);
+          }}
+        />
+      )}
     </>
   );
 
@@ -325,152 +337,3 @@ const CHIP_TONES: Record<
   progress: { color: "#fff", background: "rgba(201,154,63,.9)" },
   error: { color: "#fff", background: "rgba(192,57,43,.9)" },
 };
-
-/**
- * UNDESIGNED (design-delta §5) — the publish dialog is explicitly out of scope, so this
- * is the minimal placeholder: the three fields the SERVER cannot derive (title,
- * scripture reference, translation) plus an optional description, and nothing else.
- * `scriptureBook`, `durationSeconds` and both asset keys are derived upstream on
- * purpose — a client that could send a duration could make the `mm:ss` badge lie.
- */
-function PublishDialog({
-  render,
-  onClose,
-  onPublished,
-}: {
-  render: RenderJobDto | null;
-  onClose: () => void;
-  onPublished: (item: GalleryItemDto) => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [reference, setReference] = useState("");
-  const [translation, setTranslation] = useState("BSB");
-  const [description, setDescription] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async () => {
-    if (!render) return;
-    setBusy(true);
-    setError(null);
-    const item = await publishRenderToGallery(render.id, {
-      title: title.trim(),
-      description: description.trim(),
-      scriptureReference: reference.trim(),
-      translation: translation.trim(),
-      visibility: "public",
-    });
-    setBusy(false);
-    if (!item) {
-      setError("That didn't publish. Check the title and reference, then try again.");
-      return;
-    }
-    onPublished(item);
-  };
-
-  const ready = title.trim().length > 0 && reference.trim().length > 0 && !busy;
-
-  return (
-    <Modal
-      open={render !== null}
-      onClose={onClose}
-      title="SHARE TO GALLERY"
-      testId="publish-dialog"
-      width={460}
-    >
-      <div className="flex flex-col" style={{ gap: 12, padding: "18px 22px 22px" }}>
-        <Field label="Title" testId="publish-title" value={title} onChange={setTitle} />
-        <Field
-          label="Scripture reference"
-          testId="publish-reference"
-          value={reference}
-          onChange={setReference}
-          placeholder="Matthew 4:1-11"
-        />
-        <Field
-          label="Translation"
-          testId="publish-translation"
-          value={translation}
-          onChange={setTranslation}
-        />
-        <Field
-          label="Description"
-          testId="publish-description"
-          value={description}
-          onChange={setDescription}
-        />
-        {error && (
-          <span data-testid="publish-error" style={{ fontSize: 12.5, color: "var(--sg-red)" }}>
-            {error}
-          </span>
-        )}
-        <button
-          type="button"
-          data-testid="publish-submit"
-          disabled={!ready}
-          onClick={() => void submit()}
-          className="cursor-pointer"
-          style={{
-            marginTop: 4,
-            padding: "12px 18px",
-            borderRadius: 12,
-            border: "none",
-            backgroundImage: "var(--sg-grad)",
-            fontWeight: 700,
-            fontSize: 14,
-            color: "#fff",
-            opacity: ready ? 1 : 0.5,
-          }}
-        >
-          {busy ? "Publishing…" : "Publish"}
-        </button>
-      </div>
-    </Modal>
-  );
-}
-
-function Field({
-  label,
-  testId,
-  value,
-  onChange,
-  placeholder,
-}: {
-  label: string;
-  testId: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <label className="flex flex-col" style={{ gap: 5 }}>
-      <span
-        style={{
-          fontFamily: "var(--font-barlow-semi)",
-          fontWeight: 700,
-          fontSize: 10.5,
-          letterSpacing: ".14em",
-          color: "var(--sg-dim)",
-        }}
-      >
-        {label.toUpperCase()}
-      </span>
-      <input
-        data-testid={testId}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        style={{
-          padding: "9px 12px",
-          borderRadius: 10,
-          border: "1px solid var(--sg-line2)",
-          background: "var(--sg-bg)",
-          fontFamily: "var(--font-barlow)",
-          fontSize: 13,
-          color: "var(--sg-fg)",
-          outline: "none",
-        }}
-      />
-    </label>
-  );
-}
