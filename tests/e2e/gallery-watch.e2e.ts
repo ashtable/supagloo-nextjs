@@ -40,10 +40,20 @@ import { SESSION_COOKIE_NAME } from "../../lib/api/cookies";
  * The 16a half only READS. The 16b half **WRITES TO A GLOBAL SURFACE**: it drives the
  * real `POST /v1/renders/:id/gallery`, and the row it creates is a live public gallery
  * item with a server-minted cuid — an id `clearGalleryFixtures()` cannot recognise and
- * therefore will not remove. Left behind it would (a) be counted by the next run's
- * `assertNoForeignGalleryItems()`, which is a hard throw, and (b) break the fixture
- * teardown outright, because `GalleryItem.renderJobId` FKs the fixture `RenderJob` that
- * teardown is trying to delete — one leaked row rolls the whole delete transaction back.
+ * therefore will never remove by its own gate. Left behind, it is counted by the NEXT
+ * run's `assertNoForeignGalleryItems()`, a hard throw that names something unrelated to
+ * whatever actually went wrong.
+ *
+ * CORRECTED 2026-07-26 against the live schema. This header used to add that a leaked
+ * row also breaks teardown outright, by making the fixture delete violate
+ * `GalleryItem.renderJobId` and roll back. It does not: that constraint is
+ * `ON DELETE CASCADE` (`pg_constraint.confdeltype = 'c'`), so the cascade sweeps a
+ * missed row up with its fixture `RenderJob`. Proven by running E-GP4 with its id
+ * registration deliberately unreachable — the row was gone afterwards.
+ *
+ * What survives that correction is the part that matters, and it is why this is still
+ * load-bearing: the cascade only helps IF teardown reaches it, the row is a LIVE PUBLIC
+ * item for the whole window before that, and cleanup by accident is not cleanup.
  *
  * So every id this spec publishes is TRACKED in {@link publishedItemIds} and deleted BY
  * ID, through the product's own owner-scoped `DELETE /api/gallery/:id`, BEFORE
@@ -176,6 +186,44 @@ async function unpublishAsOwner(itemId: string, sessionToken: string): Promise<n
     headers: { cookie: `${SESSION_COOKIE_NAME}=${sessionToken}` },
   });
   return res.status;
+}
+
+/**
+ * Register every public item whose title starts with `prefix` for teardown, by ASKING
+ * THE PRODUCT which ids exist.
+ *
+ * The row is created the instant `POST /v1/renders/:id/gallery` answers 201 — before
+ * the dialog closes, before the router navigates, and before any assertion in the test
+ * runs. Reading the id off the resulting URL therefore makes cleanup conditional on the
+ * browser getting there, which is exactly the coupling that leaks: a failed assertion,
+ * a slow hydration, a navigation that never lands, and a live PUBLIC row is stranded —
+ * one whose cuid no fixture gate can match, visible to every anonymous visitor for the
+ * rest of the run, and removable afterwards only by the `ON DELETE CASCADE` on
+ * `GalleryItem.renderJobId` finding it — which requires teardown to run at all.
+ *
+ * So this asks the ANONYMOUS listing instead, over a prefix that carries `RUN_ID` and
+ * is therefore unique to this run. It is called from a `finally`, so it runs whether
+ * the test passed, failed or threw. Polling because the listing is a separate read from
+ * the write that created the row; returning empty is a legitimate answer (the publish
+ * was refused, which is what E-GP5 and E-GP8 assert) and never a failure here.
+ */
+async function registerPublishedByTitlePrefix(
+  prefix: string,
+  timeoutMs = 15_000,
+): Promise<string[]> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const listed = await fetch(
+      `${BASE_URL}/api/gallery?sort=newest&q=${encodeURIComponent(prefix)}`,
+    )
+      .then((r) => (r.ok ? (r.json() as Promise<{ items: { id: string; title: string }[] }>) : null))
+      .catch(() => null);
+    const mine = (listed?.items ?? []).filter((i) => i.title.startsWith(prefix));
+    for (const found of mine) publishedItemIds.add(found.id);
+    if (mine.length > 0) return mine.map((i) => i.id);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return [];
 }
 
 // ── deterministic DOM helpers (same shapes as gallery.e2e.ts) ────────────────
@@ -415,12 +463,12 @@ beforeAll(async () => {
 }, 300_000);
 
 afterAll(async () => {
-  await stagehand?.close();
-
   // ORDER IS LOAD-BEARING. Every item this spec published is a live PUBLIC row whose
-  // cuid the fixture gate cannot match, and whose `renderJobId` FKs a fixture RenderJob.
-  // Leave one behind and `clearGalleryFixtures()` does not merely miss it — its delete
-  // transaction violates that FK and rolls back, so NOTHING is cleaned up.
+  // cuid the fixture gate cannot match. `GalleryItem.renderJobId` is ON DELETE CASCADE,
+  // so `clearGalleryFixtures()` below WOULD sweep a missed one up with its fixture
+  // RenderJob — but only if it runs, and only after the row has been publicly live for
+  // the length of the run. Deleting by id, through the product's own owner-scoped route,
+  // is what makes this cleanup deliberate rather than a side effect of a cascade.
   const owners = new Map(fixtures?.users.map((u) => [u.id, u.sessionToken]) ?? []);
   for (const id of publishedItemIds) {
     let removed = false;
@@ -455,6 +503,19 @@ afterAll(async () => {
   publishedItemIds.clear();
 
   await seed?.clearGalleryFixtures();
+
+  // THE BROWSER GOES LAST, and cannot take the database with it.
+  //
+  // `stagehand.close()` used to be the FIRST statement of this hook. It is also the one
+  // statement here that can throw for a reason that has nothing to do with what needs
+  // cleaning up — a CDP socket already gone, a browser that crashed mid-run — and a
+  // throw at the top of an `afterAll` skips everything after it. That put the entire
+  // load-bearing drain behind the single least reliable call in the file, in the exact
+  // circumstances (a run that fell over) where the drain matters most.
+  //
+  // NOT fanned out to the eight inherited copies of this shape in other specs: those
+  // teardowns delete nothing, so the ordering there is genuinely cosmetic.
+  await stagehand?.close().catch(() => undefined);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -936,30 +997,58 @@ describe("publish to the gallery through the 16b dialog", () => {
     await typeIntoTestId("publish-title", publishedTitle);
     await typeIntoTestId("publish-passage", "Psalm 23:1-6");
     await clickTestId("publish-consent");
-    await clickTestId("publish-submit");
 
-    // The terminus: the dialog closes and we are looking at the published thing.
-    await waitForHydrated(page, "gallery-watch", { timeoutMs: 60_000 });
-    await waitForWatchSettled();
+    /*
+     * FROM THE CLICK ON, A LIVE PUBLIC ROW MAY EXIST — so from the click on, cleanup is
+     * a `finally`, not a statement somewhere in the happy path.
+     *
+     * The previous shape read the new id off the watch-page URL and registered it four
+     * assertions in. Every one of those four could fail, and the two waits above them
+     * could time out, and any of those outcomes stranded a row the fixture gate cannot
+     * match — a live PUBLIC row that only the `ON DELETE CASCADE` on
+     * `GalleryItem.renderJobId` would eventually sweep up, and only if teardown ran at
+     * all. Registration is now driven by the run-unique TITLE
+     * through the anonymous listing, so it does not depend on the navigation landing,
+     * on the id being readable, or on this test reaching its end at all.
+     */
+    try {
+      await clickTestId("publish-submit");
 
-    const path = await pathname();
-    const match = /^\/gallery\/([^/]+)$/.exec(path);
-    expect(match, `expected a watch-page path, got ${path}`).toBeTruthy();
-    const newId = match![1];
-    // RECORDED BEFORE ANY FURTHER ASSERTION: from here on the row exists globally, and
-    // an assertion failure must not be able to strand it.
-    publishedItemIds.add(newId);
+      // The terminus: the dialog closes and we are looking at the published thing.
+      await waitForHydrated(page, "gallery-watch", { timeoutMs: 60_000 });
+      await waitForWatchSettled();
 
-    // A server-minted cuid, NOT a fixture id — which is exactly why teardown tracks it.
-    expect(newId.startsWith("e2e-gallery-")).toBe(false);
-    expect(await testidText("gallery-watch-title")).toBe(publishedTitle);
-    expect(await countTestId("gallery-watch-notfound")).toBe(0);
+      const path = await pathname();
+      const match = /^\/gallery\/([^/]+)$/.exec(path);
+      expect(match, `expected a watch-page path, got ${path}`).toBeTruthy();
+      const newId = match![1];
+      publishedItemIds.add(newId);
 
-    // It is genuinely PUBLIC: an item the anonymous listing can see.
-    const listed = await fetch(
-      `${BASE_URL}/api/gallery?sort=newest&q=${encodeURIComponent(publishedTitle)}`,
-    ).then((r) => r.json() as Promise<{ items: { id: string }[] }>);
-    expect(listed.items.map((i) => i.id)).toContain(newId);
+      // A server-minted cuid, NOT a fixture id — which is exactly why teardown tracks it.
+      expect(newId.startsWith("e2e-gallery-")).toBe(false);
+      expect(await testidText("gallery-watch-title")).toBe(publishedTitle);
+      expect(await countTestId("gallery-watch-notfound")).toBe(0);
+
+      // It is genuinely PUBLIC: an item the anonymous listing can see.
+      const listed = await fetch(
+        `${BASE_URL}/api/gallery?sort=newest&q=${encodeURIComponent(publishedTitle)}`,
+      ).then((r) => r.json() as Promise<{ items: { id: string }[] }>);
+      expect(listed.items.map((i) => i.id)).toContain(newId);
+    } finally {
+      // Registers, never asserts. An `expect` here would replace whatever the `try`
+      // was failing with, and the point of this block is to clean up after that
+      // failure, not to hide it. A loud log is the honest way to say "a row may exist
+      // that I could not find" — the drain's own missing-delete warning has the same
+      // job for the same reason.
+      const registered = await registerPublishedByTitlePrefix(publishedTitle);
+      if (registered.length === 0) {
+        console.error(
+          `[gallery-watch.e2e] E-GP4 registered NOTHING for teardown: no public item ` +
+            `titled "${publishedTitle}" was listable. If the publish DID succeed, that ` +
+            "row is now a leak — check GalleryItem before the next real-lane run.",
+        );
+      }
+    }
   });
 
   test("E-GP5: publishing the same render twice surfaces the api's already_published refusal verbatim", async () => {
@@ -968,7 +1057,14 @@ describe("publish to the gallery through the 16b dialog", () => {
     await typeIntoTestId("publish-title", `${publishedTitle} again`);
     await typeIntoTestId("publish-passage", "Psalm 23:1-6");
     await clickTestId("publish-consent");
-    await clickTestId("publish-submit");
+    // Same discipline as E-GP4, for a click this test expects to be REFUSED: the
+    // registration is cheap, the title prefix is the run's own, and it is the api's
+    // answer — not this test's expectation of it — that decides whether a row exists.
+    try {
+      await clickTestId("publish-submit");
+    } finally {
+      await registerPublishedByTitlePrefix(`${publishedTitle} again`, 3_000);
+    }
 
     await waitForTestId("publish-error", 30_000);
     // The api's own words, through the BFF's verbatim pass-through. NOT a house
