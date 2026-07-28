@@ -159,6 +159,67 @@ describe("sceneEntryFrame ([0]/[3] settled, id-safe seek target)", () => {
   });
 });
 
+// ── Narration-stretched lengths ──────────────────────────────────────────────
+// DEMO_STORYBOARD carries NO narrationDurationSeconds, so on that fixture
+// `effectiveSceneDurationSeconds(s)` collapses to `s.durationSeconds` and every
+// length test above would stay green if any of the six length functions were
+// reverted to the raw authored duration. This fixture is the one that actually
+// discriminates: replacing `effectiveSceneDurationSeconds(s)` with
+// `s.durationSeconds` in ANY of the six functions the storyboard.ts docstring
+// names — totalDurationSeconds, totalFrames, sceneRange, sceneAtFrame,
+// timelineWeights, sceneBoundaryFractions — MUST turn this describe RED.
+//
+// s2: narration (12s) LONGER than authored (9s) → stretches to 12.
+// s3: narration (3s) SHORTER than authored (8s) → stays 8 — pins that the rule
+//     is `max(authored, narration)`, not "narration wins".
+// Effective durations [5, 12, 8, 8]; effective total 33s vs authored 30s — that
+// 3s gap is the discriminator every assertion below leans on.
+const STRETCHED = {
+  ...DEMO_STORYBOARD,
+  scenes: [
+    { ...DEMO_STORYBOARD.scenes[0] }, //                          5s, no narration → 5
+    { ...DEMO_STORYBOARD.scenes[1], narrationDurationSeconds: 12 }, // authored 9  → 12
+    { ...DEMO_STORYBOARD.scenes[2], narrationDurationSeconds: 3 }, //  authored 8  → 8
+    { ...DEMO_STORYBOARD.scenes[3] }, //                          8s               → 8
+  ],
+};
+
+describe("narration-stretched lengths (all six length functions use the EFFECTIVE duration)", () => {
+  it("U-S14: totalDurationSeconds counts stretched scenes at their effective length (33, not the authored 30)", () => {
+    expect(totalDurationSeconds(STRETCHED)).toBe(33);
+  });
+
+  it("U-S15: totalFrames sums per-scene EFFECTIVE frame counts (990 @ 30fps, not 900)", () => {
+    // 5·30 + 12·30 + 8·30 + 8·30 = 150 + 360 + 240 + 240
+    expect(totalFrames(STRETCHED, 30)).toBe(990);
+  });
+
+  it("U-S16: sceneRange accumulates effective durations (s2 stretched, s4 shifted)", () => {
+    expect(sceneRange(STRETCHED, "s2")).toEqual({ start: 5, end: 17 });
+    expect(sceneRange(STRETCHED, "s4")).toEqual({ start: 25, end: 33 });
+  });
+
+  it("U-S17: sceneAtFrame places the boundary at the EFFECTIVE frame layout", () => {
+    // effective frame ranges @30fps: s1 [0,150) s2 [150,510) s3 [510,750) s4 [750,990).
+    // Under the authored 9s, s2 would span [150,420) and frame 509 would answer "s3" —
+    // this pair is the key discriminator for a raw-durationSeconds regression here.
+    expect(sceneAtFrame(STRETCHED, 509, 30).id).toBe("s2");
+    expect(sceneAtFrame(STRETCHED, 510, 30).id).toBe("s3");
+  });
+
+  it("U-S18: timelineWeights are the effective durations", () => {
+    expect(timelineWeights(STRETCHED)).toEqual([5, 12, 8, 8]);
+  });
+
+  it("U-S19: sceneBoundaryFractions divide effective cumulative sums by the effective total", () => {
+    const f = sceneBoundaryFractions(STRETCHED);
+    expect(f).toHaveLength(3);
+    expect(f[0]).toBeCloseTo(5 / 33, 9);
+    expect(f[1]).toBeCloseTo(17 / 33, 9);
+    expect(f[2]).toBeCloseTo(25 / 33, 9);
+  });
+});
+
 describe("immutable edit transforms", () => {
   it("U-S6: updateSceneScript changes only the target scene, leaving the input untouched", () => {
     const next = updateSceneScript(DEMO_STORYBOARD, "s2", "X");
