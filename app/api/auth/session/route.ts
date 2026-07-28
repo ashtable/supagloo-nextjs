@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
   const result = await forwardToApi({
     path: "auth/youversion",
     method: "POST",
-    body: { accessToken: parsed.data.accessToken },
+    body: {
+      accessToken: parsed.data.accessToken,
+      profile: parsed.data.profile,
+    },
   });
 
   if (result.status !== 200) {

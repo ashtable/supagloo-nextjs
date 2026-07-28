@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { forwardToApi } from "@/lib/api/proxy";
 import { SESSION_COOKIE_NAME } from "@/lib/api/cookies";
 import { GithubInstallUrlResponseSchema } from "@/lib/api/contracts";
+import { appUrl } from "@/lib/api/app-url";
 
 /**
  * `GET /api/connect/github/start` — step 1 of the §6a GitHub App connect flow.
@@ -25,5 +26,5 @@ export async function GET(request: NextRequest) {
   if (result.status === 200 && parsed.success) {
     return NextResponse.redirect(parsed.data.url, 302);
   }
-  return NextResponse.redirect(new URL("/?github=error", request.url), 302);
+  return NextResponse.redirect(appUrl("/?github=error", request), 302);
 }

@@ -29,9 +29,27 @@ export const AuthUserSchema = z.object({
 });
 export type AuthUser = z.infer<typeof AuthUserSchema>;
 
+/**
+ * UNVERIFIED display fields the browser read from its YouVersion session.
+ *
+ * The server has no way to obtain these: a YouVersion access token carries no profile
+ * claims, the provider's OIDC discovery document has no `userinfo_endpoint`, and the SDK
+ * never exposes the raw `id_token`. Nothing may key off them — the API identifies the
+ * user by the token's signature-verified `sub` and uses these for display columns only.
+ */
+export const YouVersionSignInProfileSchema = z.object({
+  name: z.string().optional(),
+  email: z.string().optional(),
+  profilePicture: z.string().optional(),
+});
+export type YouVersionSignInProfile = z.infer<
+  typeof YouVersionSignInProfileSchema
+>;
+
 /** `POST /v1/auth/youversion` request body. */
 export const YouVersionSignInRequestSchema = z.object({
   accessToken: z.string().min(1),
+  profile: YouVersionSignInProfileSchema.optional(),
 });
 export type YouVersionSignInRequest = z.infer<typeof YouVersionSignInRequestSchema>;
 
@@ -78,6 +96,8 @@ export type TestSeedResponse = z.infer<typeof TestSeedResponseSchema>;
  *  the BFF exchanges it for a server session. */
 export const SessionCreateRequestSchema = z.object({
   accessToken: z.string().min(1),
+  /** Optional so an older client still signs in; see {@link YouVersionSignInProfileSchema}. */
+  profile: YouVersionSignInProfileSchema.optional(),
 });
 export type SessionCreateRequest = z.infer<typeof SessionCreateRequestSchema>;
 
