@@ -281,10 +281,15 @@ describe("AI-generation transforms", () => {
     const next = setSceneVisual(DEMO_STORYBOARD, "s2", {
       assetKey: "projects/p1/assets/gen-1",
       url: "http://minio/signed",
+      kind: "image",
     });
     const s2 = next.scenes.find((s) => s.id === "s2")!;
     expect(s2.visualAssetKey).toBe("projects/p1/assets/gen-1");
     expect(s2.visualUrl).toBe("http://minio/signed");
+    // Genesis-1 item 4 made `kind` required and written HERE rather than by a follow-up
+    // action: the renderer branches `isVideo ? <OffthreadVideo> : <Img>`, so a key without
+    // a kind (or with a stale one from a previous clip) renders the wrong element.
+    expect(s2.visualAssetKind).toBe("image");
     // other scenes + original untouched
     expect(next.scenes.find((s) => s.id === "s1")!.visualAssetKey).toBeUndefined();
     expect(DEMO_STORYBOARD.scenes.find((s) => s.id === "s2")!.visualAssetKey).toBeUndefined();
@@ -294,6 +299,7 @@ describe("AI-generation transforms", () => {
     const seeded = setSceneVisual(DEMO_STORYBOARD, "s1", {
       assetKey: "projects/p1/assets/existing",
       url: null,
+      kind: "image",
     });
     const next = setSceneVisualUrl(seeded, "s1", "http://minio/existing");
     const s1 = next.scenes.find((s) => s.id === "s1")!;

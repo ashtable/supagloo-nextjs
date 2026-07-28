@@ -3,7 +3,13 @@
 import styles from "../studio.module.css";
 import { useStudio } from "./studio-context";
 import ScripturePicker from "./scripture-picker";
-import { imageSlot, NARRATION_SLOT, MUSIC_SLOT } from "@/lib/studio/reducer";
+import AiSettingsPanel from "./ai-settings-panel";
+import {
+  imageSlot,
+  videoSlot,
+  NARRATION_SLOT,
+  MUSIC_SLOT,
+} from "@/lib/studio/reducer";
 import { MIN_SCENES, canDeleteScene } from "@/lib/studio/storyboard";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
@@ -48,6 +54,7 @@ export default function SceneInspector() {
     rerollVisual,
     regenerateNarration,
     regenerateMusic,
+    generateSceneVideo,
     removeScene,
   } = useStudio();
   const { storyboard, selectedSceneId, generations } = state;
@@ -67,6 +74,7 @@ export default function SceneInspector() {
   const visualStatus = generations[imageSlot(scene.id)]?.status;
   const narrationStatus = generations[NARRATION_SLOT]?.status;
   const musicStatus = generations[MUSIC_SLOT]?.status;
+  const sceneVideoStatus = generations[videoSlot(scene.id)]?.status;
 
   return (
     <div
@@ -79,6 +87,10 @@ export default function SceneInspector() {
       // inspector's exact-copy anchor stays byte-for-byte.
       data-scene-reference={scene.reference ?? ""}
       data-scene-translation={scene.translation ?? ""}
+      // Genesis-1 item 4: still-vs-clip, exposed attribute-only so the mock inspector's
+      // exact-copy anchor stays byte-for-byte. Absent ⇒ image, exactly as the manifest
+      // and the renderer read it.
+      data-visual-asset-kind={scene.visualAssetKind ?? "image"}
       style={{
         width: 300,
         flex: "none",
@@ -238,12 +250,53 @@ export default function SceneInspector() {
           >
             {visualStatus === "running" ? "Rerolling…" : "↻ Reroll visual"}
           </button>
+          {/* Item 4 — generate a CLIP for this scene instead of a still, from the same
+              visual prompt. Sits beside "↻ Reroll visual" because the two are the same
+              decision (what fills this scene's frame) rather than a separate mode. Real
+              projects only: `aiEnabled` guards it for the same reason every other AI
+              control is guarded. */}
+          {aiEnabled ? (
+            <button
+              type="button"
+              data-testid="generate-scene-video"
+              data-state={sceneVideoStatus ?? "idle"}
+              disabled={sceneVideoStatus === "running"}
+              onClick={() => generateSceneVideo(scene.id)}
+              className={styles.hoverable}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                marginTop: 9,
+                marginLeft: 8,
+                padding: "7px 12px",
+                border: "1px solid rgba(230,180,120,.24)",
+                borderRadius: 8,
+                fontWeight: 700,
+                fontSize: 12,
+                color: "#f1e7d6",
+                background: "transparent",
+                opacity: sceneVideoStatus === "running" ? 0.6 : 1,
+                cursor: sceneVideoStatus === "running" ? "default" : "pointer",
+              }}
+            >
+              {sceneVideoStatus === "running" ? "Generating clip…" : "▶ Generate video"}
+            </button>
+          ) : null}
           {visualStatus === "failed" ? (
             <span
               data-testid="reroll-error"
               style={{ display: "block", marginTop: 6, fontSize: 11, color: "#e0745a" }}
             >
               {"Generation failed — retry"}
+            </span>
+          ) : null}
+          {sceneVideoStatus === "failed" ? (
+            <span
+              data-testid="scene-video-error"
+              style={{ display: "block", marginTop: 6, fontSize: 11, color: "#e0745a" }}
+            >
+              {"Video generation failed — retry"}
             </span>
           ) : null}
         </div>
@@ -395,6 +448,13 @@ export default function SceneInspector() {
             ) : null}
           </div>
         ) : null}
+
+        {/* GENERATION · whole video — items 1/2/3. A SIXTH section, which 13b does not
+            have: the screen is a transcription and this is an extension to it. Mounted
+            behind `aiEnabled` via the panel's own guard, so the mock catalogue keeps the
+            canonical five-section inspector and the mock e2e lane keeps its zero-egress
+            guarantee. */}
+        <AiSettingsPanel />
 
         {/* On-screen captions — single switch (SET_ON_SCREEN_TEXT) */}
         <div style={STAT_ROW}>

@@ -5,7 +5,10 @@
  */
 import { secondsToFrames } from "./time";
 import { effectiveSceneDurationSeconds } from "./scene-duration";
-import type { GeneratedStoryboard } from "../api/contracts";
+import type {
+  AiGenerationSettings,
+  GeneratedStoryboard,
+} from "../api/contracts";
 
 export type OnScreenText = "text" | "voice-only";
 
@@ -68,6 +71,11 @@ export interface Storyboard {
    *  serialized) — the composition plays them as `<Audio>` when present. */
   narrationUrl?: string | null;
   musicUrl?: string | null;
+  /** Genesis-1: the project's AI provider/model choices + faith alignment
+   *  (<-> `ProjectManifest.aiSettings`). PROJECT-level, so it lives on the Storyboard
+   *  rather than the Scene. Absent until the user changes something — the system default
+   *  is deliberately never written into the file committed to the user's repo. */
+  aiSettings?: AiGenerationSettings;
 }
 
 /** Verse of the Day · John 1:23 · KJV — 4 scenes, 0:30, 30fps. */
@@ -403,13 +411,30 @@ export function setMusicMood(sb: Storyboard, musicMood: string): Storyboard {
 export function setSceneVisual(
   sb: Storyboard,
   id: string,
-  visual: { assetKey: string; url: string | null },
+  visual: { assetKey: string; url: string | null; kind: "image" | "video" },
 ): Storyboard {
   return mapScene(sb, id, (s) => ({
     ...s,
     visualAssetKey: visual.assetKey,
     visualUrl: visual.url,
+    // `kind` is REQUIRED, and written here rather than by a follow-up action, because the
+    // key and the kind describe the same bytes. Until genesis-1 nothing outside test
+    // fixtures ever wrote `visualAssetKind` -- harmless while the studio could not request
+    // a video at all, and a render-killing bug the moment it can: the renderer branches
+    // `isVideo ? <OffthreadVideo> : <Img>`, so an MP4 with no kind is fed to <Img> and the
+    // scene shows nothing. The reverse is just as silent -- rerolling a still onto a scene
+    // that was previously a clip must clear the kind, or a PNG goes through
+    // <OffthreadVideo>, which refuses stills outright.
+    visualAssetKind: visual.kind,
   }));
+}
+
+/** Replace the project-level AI settings. Project-scoped, so no scene is touched. */
+export function setAiSettings(
+  sb: Storyboard,
+  aiSettings: AiGenerationSettings,
+): Storyboard {
+  return { ...sb, aiSettings };
 }
 
 /**

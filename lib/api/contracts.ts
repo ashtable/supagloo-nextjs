@@ -452,6 +452,68 @@ export type ManifestScene = z.infer<typeof ManifestSceneSchema>;
  *  the sole source of truth for a project's composition. `scenes` MAY be empty (a
  *  freshly-scaffolded project); `narratorVoice` is required; `music`/`endCard` are
  *  optional. */
+// The AI enums are declared HERE, above their first use: the genesis-1 manifest and
+// catalogue schemas below reference them at module-evaluation time, and a `const`
+// declared later in the file is in the temporal dead zone (a ReferenceError at import,
+// not a type error). Their original home was the AI-generation block further down.
+/** The AI-generation kinds (mirrors db-lib `AiGenerationKindSchema`). */
+export const AiGenerationKindSchema = z.enum([
+  "storyboard",
+  "script",
+  "image",
+  "narration",
+  "music",
+  "video",
+]);
+export type AiGenerationKind = z.infer<typeof AiGenerationKindSchema>;
+
+/** The AI providers (mirrors db-lib `AiProviderSchema`). */
+export const AiProviderSchema = z.enum(["gloo", "openrouter"]);
+export type AiProvider = z.infer<typeof AiProviderSchema>;
+
+/**
+ * The faith-alignment values Gloo's `tradition` field actually honours (mirrors db-lib
+ * `FaithAlignmentSchema`).
+ *
+ * **There is no `protestant` and no `orthodox`** — `evangelical` and `mainline` are the
+ * two Protestant-family options. And Gloo does NOT validate this field: a wrong value
+ * returns 200 and silently degrades to the neutral baseline, with no 422 and nothing in
+ * the response to notice. So this enum is not decoration; it is the thing that stops a
+ * user picking an alignment that does nothing.
+ *
+ * The user-facing word is **"faith-aligned"** — the design's own term. Never
+ * "denomination", never "tradition" (Gloo's wire name, not ours).
+ */
+export const FaithAlignmentSchema = z.enum([
+  "evangelical",
+  "catholic",
+  "mainline",
+  "not_faith_specific",
+]);
+export type FaithAlignment = z.infer<typeof FaithAlignmentSchema>;
+
+/** One kind's generation target (mirrors db-lib `AiModelChoiceSchema`). `model` is
+ *  optional: "use this provider, with whatever the system defaults to" is a real
+ *  persisted state, and freezing a default into a file committed to the user's repo would
+ *  stop it being a default. */
+export const AiModelChoiceSchema = z.object({
+  provider: AiProviderSchema,
+  model: z.string().min(1).optional(),
+});
+export type AiModelChoice = z.infer<typeof AiModelChoiceSchema>;
+
+/** Project-level AI generation settings (mirrors db-lib `AiGenerationSettingsSchema`).
+ *  PROJECT-level rather than per-scene: a model choice configures the project, and a
+ *  per-scene faith alignment would let scene 3 argue with scene 4. */
+export const AiGenerationSettingsSchema = z.object({
+  faithAlignment: FaithAlignmentSchema.optional(),
+  image: AiModelChoiceSchema.optional(),
+  narration: AiModelChoiceSchema.optional(),
+  music: AiModelChoiceSchema.optional(),
+  video: AiModelChoiceSchema.optional(),
+});
+export type AiGenerationSettings = z.infer<typeof AiGenerationSettingsSchema>;
+
 export const ProjectManifestSchema = z.object({
   manifestVersion: z.literal(1),
   composition: CompositionSpecSchema,
@@ -459,8 +521,56 @@ export const ProjectManifestSchema = z.object({
   narratorVoice: VoiceDescriptorSchema,
   music: MusicBedSchema.optional(),
   endCard: EndCardSchema.optional(),
+  /** Genesis-1: the project's AI provider/model choices + faith alignment. OPTIONAL, and
+   *  `manifestVersion` stays 1 — every already-committed manifest must keep parsing. */
+  aiSettings: AiGenerationSettingsSchema.optional(),
 });
 export type ProjectManifest = z.infer<typeof ProjectManifestSchema>;
+
+// ---------------------------------------------------------------------------
+// GET /api/ai/models — the live model catalogue (genesis-1 items 1 and 3)
+// ---------------------------------------------------------------------------
+
+/** Per-model pricing, normalized across providers (mirrors the api's
+ *  `AiModelPricingSchema`). Gloo publishes per-1k-token decimal strings and OpenRouter
+ *  publishes per-token numbers plus a per-IMAGE price; the api reconciles them to these
+ *  three fields so the two are never silently 1000x apart. */
+export const AiModelPricingSchema = z.object({
+  perImage: z.number().optional(),
+  perInputToken: z.number().optional(),
+  perOutputToken: z.number().optional(),
+});
+export type AiModelPricing = z.infer<typeof AiModelPricingSchema>;
+
+export const AiModelInfoSchema = z.object({
+  id: z.string().min(1),
+  provider: AiProviderSchema,
+  label: z.string().min(1),
+  kinds: z.array(AiGenerationKindSchema),
+  /** `null` means the provider publishes nothing usable — deliberately distinct from a
+   *  price of zero, which the cost estimate renders completely differently. */
+  pricing: AiModelPricingSchema.nullable(),
+});
+export type AiModelInfo = z.infer<typeof AiModelInfoSchema>;
+
+/**
+ * The BFF's catalogue response. `models` and `providers` pass through from
+ * `GET /v1/ai/models` verbatim; **`defaults` is added by the BFF**, because
+ * `resolveGenerationTarget(kind)` is the BFF's own configuration and the api has no way
+ * to know it. That is the same enrichment `POST /api/ai/generations` already performs
+ * with the same function — publishing config, not business logic.
+ */
+export const AiModelCatalogueResponseSchema = z.object({
+  models: z.array(AiModelInfoSchema),
+  providers: z.object({ gloo: z.boolean(), openrouter: z.boolean() }),
+  defaults: z.record(
+    z.string(),
+    z.object({ provider: AiProviderSchema, model: z.string().min(1) }),
+  ),
+});
+export type AiModelCatalogueResponse = z.infer<
+  typeof AiModelCatalogueResponseSchema
+>;
 
 /** `GET /v1/projects/:id/manifest` query (mirrors db-lib `ManifestRefQuerySchema`).
  *  The git ref to read at; omitted → the API defaults to `currentBranch`. */
@@ -561,21 +671,6 @@ export type PublishVersionResponse = z.infer<typeof PublishVersionResponseSchema
 // and a BFF needs only the wire shapes. The studio posts a generation, polls
 // `GET /api/ai/generations/:id`, and presigns the raw `resultAssetKey` via
 // `GET /api/files/presign-download?key=` for the scene preview. Dates are ISO strings.
-
-/** The AI-generation kinds (mirrors db-lib `AiGenerationKindSchema`). */
-export const AiGenerationKindSchema = z.enum([
-  "storyboard",
-  "script",
-  "image",
-  "narration",
-  "music",
-  "video",
-]);
-export type AiGenerationKind = z.infer<typeof AiGenerationKindSchema>;
-
-/** The AI providers (mirrors db-lib `AiProviderSchema`). */
-export const AiProviderSchema = z.enum(["gloo", "openrouter"]);
-export type AiProvider = z.infer<typeof AiProviderSchema>;
 
 /** Shared job/generation lifecycle status (mirrors db-lib `JobStatusSchema`). */
 export const JobStatusSchema = z.enum([

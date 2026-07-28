@@ -144,6 +144,10 @@ describe("serializeManifest", () => {
     const sb = setSceneVisual(hydrateStoryboard(MANIFEST), "s2", {
       assetKey: "projects/p1/assets/gen-new",
       url: "http://minio/signed",
+      // `kind` became REQUIRED with genesis-1 item 4: the key and the media kind describe
+      // the same bytes, so they are written together or the renderer picks the wrong
+      // element for them.
+      kind: "image",
     });
     const back = serializeManifest(sb, MANIFEST);
     expect(back.scenes[1].visualAssetKey).toBe("projects/p1/assets/gen-new");
