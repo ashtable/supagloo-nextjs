@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { forwardToApi } from "@/lib/api/proxy";
 import { SESSION_COOKIE_NAME } from "@/lib/api/cookies";
 import { RepoAuthorizeUrlResponseSchema } from "@/lib/api/contracts";
+import { appUrl } from "@/lib/api/app-url";
 
 /**
  * `GET /api/connect/github/create-repo/start` — step 1 of the create-new-repo JIT hop
@@ -17,9 +18,11 @@ import { RepoAuthorizeUrlResponseSchema } from "@/lib/api/contracts";
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
   const state = url.searchParams.get("state") ?? "";
-  const redirectUri = new URL(
+  // This one goes to GITHUB as the OAuth `redirect_uri`, so a wrong origin here is not a
+  // cosmetic dead tab — GitHub sends the user (and the authorization code) to it.
+  const redirectUri = appUrl(
     "/connect/github/create-repo/callback",
-    request.url,
+    request,
   ).toString();
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value ?? null;
 
@@ -35,5 +38,5 @@ export async function GET(request: NextRequest) {
   if (result.status === 200 && parsed.success) {
     return NextResponse.redirect(parsed.data.url, 302);
   }
-  return NextResponse.redirect(new URL("/?newproject=error", request.url), 302);
+  return NextResponse.redirect(appUrl("/?newproject=error", request), 302);
 }

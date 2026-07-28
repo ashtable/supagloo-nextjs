@@ -163,6 +163,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const accessToken = yv.auth.accessToken;
 
+  // Read as three primitives rather than the `userInfo` object: this feeds the effect's
+  // dependency array below, and an object identity there would re-run it on every render.
+  const yvName = yv.userInfo?.name;
+  const yvEmail = yv.userInfo?.email;
+  const yvAvatar = yv.userInfo?.avatarUrlFormat;
+
   // Intentional post-hydration mount gate (matches nav-auth's pattern): read
   // `window.location.search` once on the client, so SSR + first client render
   // always stay signed-out (D-ROUTE's accepted first-paint trade-off) — never
@@ -226,10 +232,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           if (bootstrappedRef.current) return;
           bootstrappedRef.current = true;
           try {
+            // The profile rides along because the SERVER cannot obtain it: a YouVersion
+            // access token carries no name/email claims and the provider publishes no
+            // userinfo endpoint, so this is the only source for the display columns.
+            // It is explicitly UNVERIFIED — the API keys the user off the token's
+            // signature-verified `sub` and uses these for display only.
             const res = await fetch("/api/auth/session", {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ accessToken }),
+              body: JSON.stringify({
+                accessToken,
+                profile: { name: yvName, email: yvEmail, profilePicture: yvAvatar },
+              }),
             });
             if (res.ok) {
               const data = (await res.json()) as { user?: AuthUserLike };
@@ -253,7 +267,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [mounted, search, yv.auth.isAuthenticated, accessToken]);
+  }, [
+    mounted,
+    search,
+    yv.auth.isAuthenticated,
+    accessToken,
+    yvName,
+    yvEmail,
+    yvAvatar,
+  ]);
 
   const baseSession = useMemo(
     () =>

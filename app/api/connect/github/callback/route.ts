@@ -5,6 +5,7 @@ import {
   githubCallbackRedirectTarget,
   githubCallbackRedirectPath,
 } from "@/lib/connections/github-connect";
+import { appUrl } from "@/lib/api/app-url";
 
 /**
  * `GET /api/connect/github/callback` — GitHub's redirect-back target after the
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
 
   const target = githubCallbackRedirectTarget({ installationId, upstreamStatus });
   return NextResponse.redirect(
-    new URL(githubCallbackRedirectPath(target), request.url),
+    appUrl(githubCallbackRedirectPath(target), request),
     302,
   );
 }
