@@ -12,9 +12,12 @@ import OctocatIcon from "../octocat-icon";
  */
 export default function GithubConnectBody({
   onAuthorize,
+  onLinkExisting,
   pending,
 }: {
   onAuthorize: () => void;
+  /** Start the "already installed" recovery path. See the note on the link below. */
+  onLinkExisting: () => void;
   pending: boolean;
 }) {
   return (
@@ -137,6 +140,43 @@ export default function GithubConnectBody({
         }}
       >
         {"Opens GitHub in a new tab · OAuth"}
+      </div>
+
+      {/*
+        The escape hatch for a user who is ALREADY installed. Not a nicety: GitHub
+        redirects to the App's Setup URL only when an installation is CREATED, so a
+        reinstall, an install made from GitHub's own directory, or one App registration
+        shared across environments sends the button above to the installation settings
+        page and never back here. Before this existed, that user watched "Connecting…"
+        for two minutes and then had no remaining move in the product at all.
+      */}
+      <div
+        style={{
+          textAlign: "center",
+          marginTop: 14,
+          fontSize: 12.5,
+          color: "var(--sg-dim)",
+        }}
+      >
+        {"Already installed it? "}
+        <button
+          type="button"
+          data-testid="connect-link-existing"
+          onClick={onLinkExisting}
+          disabled={pending}
+          className="cursor-pointer"
+          style={{
+            border: "none",
+            background: "transparent",
+            padding: 0,
+            font: "inherit",
+            fontWeight: 700,
+            color: "var(--sg-red)",
+            textDecoration: "underline",
+          }}
+        >
+          {"Finish connecting"}
+        </button>
       </div>
     </div>
   );

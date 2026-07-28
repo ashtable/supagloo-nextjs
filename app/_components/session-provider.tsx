@@ -36,6 +36,8 @@ import {
   githubUsername,
   githubSnapshotFromConnections,
   openGithubInstall,
+  openGithubLinkExisting,
+  type OpenWindow,
   pollGithubConnected,
   fetchGithubRepoCount,
 } from "@/lib/connections/github-connect";
@@ -119,6 +121,8 @@ interface SessionContextValue {
    *  flows; in mock mode (or as a fallback) it's the `MOCK_OAUTH_DELAY_MS` timer.
    *  Gloo passes its `{clientId, clientSecret}` payload; the others take none. */
   connectProvider: (provider: Provider, payload?: GlooCredentials) => void;
+  /** Start the already-installed GitHub recovery path (user authorization). */
+  linkExistingGithub: () => void;
   disconnectProvider: (provider: Provider) => void;
   /** The Gloo save-&-verify server error (e.g. a live `invalid_gloo_credentials`
    *  verify failure), surfaced in the Gloo form; null when there is none. */
@@ -408,6 +412,48 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const clearDisconnectError = (provider: Provider) =>
     setDisconnectErrors((e) => (e[provider] ? { ...e, [provider]: null } : e));
 
+  /**
+   * The real GitHub connect round-trip (§5.3/§6a): open a tab, then poll the BFF until
+   * a callback has stored the connection — `pending` spans that real round-trip.
+   *
+   * Parameterized by which tab to open, because there are two ways in and they differ
+   * ONLY there. `openGithubInstall` sends a new user to the install picker;
+   * `openGithubLinkExisting` sends an already-installed one through user authorization,
+   * which is the only route that works once GitHub has stopped issuing install
+   * callbacks for them. Both finish at the same callback, so both resolve through this
+   * same poll — and keeping one implementation is what stops the second path from
+   * quietly drifting out of step with the first.
+   */
+  const startGithubFlow = (openTab: (open: OpenWindow) => void) => {
+    setConnections((s) => beginConnect(s, "github"));
+    openTab(typeof window !== "undefined" ? window.open.bind(window) : () => null);
+    void (async () => {
+      const login = await pollGithubConnected({});
+      if (!login) {
+        // Timed out → return the user to not-linked (they can retry).
+        setConnections((s) => disconnectReducer(s, "github"));
+        return;
+      }
+      const username = githubUsername(login);
+      // Flip to connected immediately (opens the wizard gate); backfill the live
+      // repo count without blocking the auto-advance.
+      setConnections((s) => connectGithub(s, { username, repos: 0 }));
+      const repos = await fetchGithubRepoCount({});
+      setConnections((s) =>
+        s.github.status === "connected"
+          ? connectGithub(s, { username, repos })
+          : s,
+      );
+    })();
+  };
+
+  /** Start the already-installed recovery path. Mock sessions keep their pure-client
+   *  behaviour and never open a tab. */
+  const linkExistingGithub = () => {
+    if (parseMockSession(search, DEMO_FLAG) !== null) return;
+    startGithubFlow(openGithubLinkExisting);
+  };
+
   const connectProvider = (provider: Provider, payload?: GlooCredentials) => {
     const isMock = parseMockSession(search, DEMO_FLAG) !== null;
 
@@ -415,28 +461,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // until the callback has stored the connection — `pending` spans that real
     // round-trip. Only in the real/seed session path.
     if (provider === "github" && !isMock) {
-      setConnections((s) => beginConnect(s, "github"));
-      openGithubInstall(
-        typeof window !== "undefined" ? window.open.bind(window) : () => null,
-      );
-      void (async () => {
-        const login = await pollGithubConnected({});
-        if (!login) {
-          // Timed out → return the user to not-linked (they can retry).
-          setConnections((s) => disconnectReducer(s, "github"));
-          return;
-        }
-        const username = githubUsername(login);
-        // Flip to connected immediately (opens the wizard gate); backfill the live
-        // repo count without blocking the auto-advance.
-        setConnections((s) => connectGithub(s, { username, repos: 0 }));
-        const repos = await fetchGithubRepoCount({});
-        setConnections((s) =>
-          s.github.status === "connected"
-            ? connectGithub(s, { username, repos })
-            : s,
-        );
-      })();
+      startGithubFlow(openGithubInstall);
       return;
     }
 
@@ -582,6 +607,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     isMock: mounted && parseMockSession(search, DEMO_FLAG) !== null,
     connections,
     connectProvider,
+    linkExistingGithub,
     disconnectProvider,
     glooError,
     clearGlooError,
