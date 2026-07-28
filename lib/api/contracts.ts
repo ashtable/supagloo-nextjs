@@ -46,6 +46,15 @@ export type YouVersionSignInProfile = z.infer<
   typeof YouVersionSignInProfileSchema
 >;
 
+/** `GET /v1/connections/github/authorize-url` response: the hosted GitHub
+ *  user-authorization URL for linking an installation the user already has. */
+export const GithubAuthorizeUrlResponseSchema = z.object({
+  url: z.string().min(1),
+});
+export type GithubAuthorizeUrlResponse = z.infer<
+  typeof GithubAuthorizeUrlResponseSchema
+>;
+
 /** `POST /v1/auth/youversion` request body. */
 export const YouVersionSignInRequestSchema = z.object({
   accessToken: z.string().min(1),

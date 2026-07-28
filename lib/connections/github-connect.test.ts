@@ -15,6 +15,8 @@ import {
   fetchGithubRepoCount,
   pollGithubConnected,
   openGithubInstall,
+  openGithubLinkExisting,
+  githubCallbackMode,
   githubCallbackRedirectTarget,
   githubCallbackRedirectPath,
 } from "./github-connect";
@@ -209,5 +211,108 @@ describe("githubCallbackRedirectTarget / Path", () => {
   it("maps targets → the app redirect paths", () => {
     expect(githubCallbackRedirectPath("connected")).toBe("/?github=connected");
     expect(githubCallbackRedirectPath("error")).toBe("/?github=error");
+  });
+});
+
+describe("githubCallbackMode", () => {
+  it("treats an installation_id as the install path", () => {
+    expect(githubCallbackMode({ installationId: "42", code: null })).toBe("install");
+  });
+
+  /** The case the install callback structurally cannot produce. */
+  it("treats a bare code as the link-existing path", () => {
+    expect(githubCallbackMode({ installationId: null, code: "c1" })).toBe(
+      "link-existing",
+    );
+  });
+
+  /**
+   * What "Request user authorization (OAuth) during installation" produces. The id is
+   * the direct answer; spending the code to re-derive it would be a round trip for
+   * something GitHub already told us.
+   */
+  it("prefers the installation_id when GitHub sends BOTH", () => {
+    expect(githubCallbackMode({ installationId: "42", code: "c1" })).toBe("install");
+  });
+
+  it("is 'none' when GitHub sends neither", () => {
+    expect(githubCallbackMode({ installationId: null, code: null })).toBe("none");
+  });
+
+  it("treats empty strings as absent, not as present-but-blank", () => {
+    expect(githubCallbackMode({ installationId: "", code: "" })).toBe("none");
+    expect(githubCallbackMode({ installationId: "", code: "c1" })).toBe(
+      "link-existing",
+    );
+  });
+});
+
+describe("githubCallbackRedirectTarget — the code arrival", () => {
+  it("connects on a 200 from the link-existing exchange", () => {
+    expect(
+      githubCallbackRedirectTarget({
+        installationId: null,
+        code: "c1",
+        upstreamStatus: 200,
+      }),
+    ).toBe("connected");
+  });
+
+  /** A 409 is "no installation" or "several match" — real answers, but not a connection. */
+  it("errors when the exchange refuses", () => {
+    expect(
+      githubCallbackRedirectTarget({
+        installationId: null,
+        code: "c1",
+        upstreamStatus: 409,
+      }),
+    ).toBe("error");
+  });
+
+  it("still errors when NEITHER id nor code arrived", () => {
+    expect(
+      githubCallbackRedirectTarget({
+        installationId: null,
+        code: null,
+        upstreamStatus: null,
+      }),
+    ).toBe("error");
+  });
+
+  /** The pre-existing callers pass no `code` at all; that must keep working. */
+  it("is unchanged for callers that omit code entirely", () => {
+    expect(
+      githubCallbackRedirectTarget({ installationId: "42", upstreamStatus: 200 }),
+    ).toBe("connected");
+    expect(
+      githubCallbackRedirectTarget({ installationId: null, upstreamStatus: null }),
+    ).toBe("error");
+  });
+});
+
+describe("openGithubLinkExisting", () => {
+  it("opens the link-existing start route in a new tab", () => {
+    const calls: unknown[][] = [];
+    const open = (...args: unknown[]) => {
+      calls.push(args);
+      return null;
+    };
+    openGithubLinkExisting(open as never);
+    expect(calls).toEqual([
+      ["/api/connect/github/link-existing/start", "_blank"],
+    ]);
+  });
+
+  it("does not target the install route — they are different arrivals", () => {
+    const calls: string[] = [];
+    openGithubLinkExisting(((url: string) => calls.push(url)) as never);
+    expect(calls[0]).not.toBe("/api/connect/github/start");
+  });
+
+  it("swallows a blocked popup — the poll is the source of truth", () => {
+    const open = () => {
+      throw new Error("blocked");
+    };
+    expect(() => openGithubLinkExisting(open as never)).not.toThrow();
   });
 });

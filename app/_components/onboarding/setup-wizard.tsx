@@ -64,7 +64,15 @@ const optionalTagStyle: CSSProperties = {
  * own 6px progress bar is its chrome, driven by `lib/onboarding/wizard-model`.
  */
 export default function SetupWizard() {
-  const { session, connections, connectProvider, glooError, clearGlooError, markOnboarded } =
+  const {
+    session,
+    connections,
+    connectProvider,
+    linkExistingGithub,
+    glooError,
+    clearGlooError,
+    markOnboarded,
+  } =
     useSession();
   const [step, setStep] = useState<WizardStep>("welcome");
 
@@ -136,6 +144,7 @@ export default function SetupWizard() {
           <GithubStep
             connections={connections}
             onAuthorize={() => connectProvider("github")}
+            onLinkExisting={linkExistingGithub}
           />
         )}
         {step === "openrouter" && (
@@ -343,9 +352,11 @@ function WelcomeStep({
 function GithubStep({
   connections,
   onAuthorize,
+  onLinkExisting,
 }: {
   connections: ConnectionsState;
   onAuthorize: () => void;
+  onLinkExisting: () => void;
 }) {
   const pending = connections.github.status === "pending";
   return (
@@ -353,7 +364,11 @@ function GithubStep({
       <div style={{ textAlign: "right", marginTop: -22 }}>
         <span style={requiredTagStyle}>{"REQUIRED"}</span>
       </div>
-      <GithubConnectBody onAuthorize={onAuthorize} pending={pending} />
+      <GithubConnectBody
+        onAuthorize={onAuthorize}
+        onLinkExisting={onLinkExisting}
+        pending={pending}
+      />
     </div>
   );
 }

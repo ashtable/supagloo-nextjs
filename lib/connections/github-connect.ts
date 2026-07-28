@@ -19,6 +19,7 @@
 const CONNECTIONS_URL = "/api/connections";
 const REPOS_URL = "/api/github/repos";
 const START_URL = "/api/connect/github/start";
+const LINK_EXISTING_URL = "/api/connect/github/link-existing/start";
 
 export interface GithubSnapshot {
   connected: boolean;
@@ -142,6 +143,26 @@ export function openGithubInstall(open: OpenWindow): void {
   }
 }
 
+/**
+ * Open the "I already installed it" path in a new tab.
+ *
+ * Needed because {@link openGithubInstall} silently dead-ends for anyone already
+ * installed: GitHub redirects to the App's Setup URL only when an installation is
+ * CREATED, so a reinstall, an install made from GitHub's own directory, or one App
+ * registration shared across environments lands the user on the installation settings
+ * page. No callback fires, the poll never sees a connection, and the only remaining
+ * move is one the UI does not offer. This is that move.
+ *
+ * Same fire-and-forget posture as the install open — the poll is what decides.
+ */
+export function openGithubLinkExisting(open: OpenWindow): void {
+  try {
+    open(LINK_EXISTING_URL, "_blank");
+  } catch {
+    /* popup blocked — the main-tab poll is the source of truth */
+  }
+}
+
 // ── Callback route helpers (§6a) ──────────────────────────────────────────────
 
 export type GithubCallbackTarget = "connected" | "error";
@@ -149,17 +170,46 @@ export type GithubCallbackTarget = "connected" | "error";
 /**
  * The callback's redirect decision. Per the §6a diagram only `installationId` is
  * forwarded to the API (`setup_action` is received but never gates the flow — any
- * value proceeds to verify). Missing `installationId` → error (nothing forwarded);
- * otherwise the API's verify (200 vs anything else) is the source of truth.
+ * value proceeds to verify). Neither `installationId` NOR `code` → error (nothing was
+ * forwarded); otherwise the API's verify (200 vs anything else) is the source of truth.
  */
 export function githubCallbackRedirectTarget(input: {
   installationId: string | null;
-  /** The upstream `POST /v1/connections/github/callback` status, or null when the
-   *  request was never forwarded (missing installationId). */
+  /** The user-authorization `code`, when GitHub returned one. */
+  code?: string | null;
+  /** The upstream status, or null when nothing was forwarded. */
   upstreamStatus: number | null;
 }): GithubCallbackTarget {
-  if (!input.installationId) return "error";
+  if (!input.installationId && !input.code) return "error";
   return input.upstreamStatus === 200 ? "connected" : "error";
+}
+
+/** Which upstream call this callback should make, if any. */
+export type GithubCallbackMode = "install" | "link-existing" | "none";
+
+/**
+ * One callback URL now serves two arrivals, so this names which one happened.
+ *
+ * `installation_id` means GitHub just CREATED an installation and told us its id — the
+ * original §6a path, and the cheaper one, because the id needs only an App-JWT verify.
+ *
+ * A bare `code` means the user authorized us without an installation being created.
+ * That is the case the install callback structurally cannot produce: GitHub redirects
+ * to the Setup URL only on creation, so a reinstall, an install made from GitHub's own
+ * directory, or one App registration shared across environments arrives here with no
+ * id at all. The server resolves it by asking which installations the user has.
+ *
+ * When BOTH are present — which is what "Request user authorization (OAuth) during
+ * installation" produces — the id wins. It is the direct answer; spending the code to
+ * re-derive something GitHub already told us would be a round trip for nothing.
+ */
+export function githubCallbackMode(input: {
+  installationId: string | null;
+  code: string | null;
+}): GithubCallbackMode {
+  if (input.installationId) return "install";
+  if (input.code) return "link-existing";
+  return "none";
 }
 
 /** The in-app path the callback redirects the tab back to. */
