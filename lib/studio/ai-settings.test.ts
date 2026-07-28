@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   FAITH_ALIGNMENTS,
+  FAITH_ALIGNMENT_HELP,
+  FAITH_ALIGNMENT_LABELS,
   SELECTABLE_KINDS,
   modelsFor,
   needsFaithAlignment,
@@ -252,5 +254,39 @@ describe("needsFaithAlignment / settingsAfterProviderChange (U-SV2)", () => {
     expect(
       settingsAfterProviderChange(before, "image", "openrouter", DEFAULTS).image?.model,
     ).toBeUndefined();
+  });
+});
+
+describe("faith-alignment vocabulary and scope (U-FA3)", () => {
+  // The design commits to ONE user-facing word for this idea: `faith-aligned`. It is the
+  // term 10a/10b and the onboarding wizard already use, and `ai-settings.ts` states the
+  // rule in its own JSDoc — "never 'denomination' and never 'tradition'". A JSDoc is not
+  // a gate, and both shipped strings broke it. These two tests make the rule executable
+  // on every string this module publishes to the screen.
+  //
+  // NOTE the deliberate limit: this is about USER-FACING copy only. `tradition` is Gloo's
+  // actual wire field name and must keep being called that in code and comments.
+  const FORBIDDEN = ["tradition", "denomination"];
+
+  it("U-FA3a: no user-facing label uses a forbidden word", () => {
+    for (const [value, label] of Object.entries(FAITH_ALIGNMENT_LABELS)) {
+      for (const word of FORBIDDEN) {
+        expect(label.toLowerCase(), `${value} → "${label}"`).not.toContain(word);
+      }
+    }
+  });
+
+  it("U-FA3b: the help text is honest about SCOPE — Gloo image generation only", () => {
+    for (const word of FORBIDDEN) {
+      expect(FAITH_ALIGNMENT_HELP.toLowerCase()).not.toContain(word);
+    }
+    // The substantive half. `faithAlignment` reaches exactly one call site —
+    // `studio-context.tsx`'s `rerollVisual`, guarded by `provider === "gloo"` — so it
+    // steers Gloo IMAGE generation and nothing else. It does not reach narration, music or
+    // video (Gloo serves none of them), and it does not reach the storyboard/script text
+    // kinds, which have no selector and whose `CallLlmStructuredArgs` carries no
+    // pass-through for it. Copy that implies otherwise promises steering the product does
+    // not perform, and Gloo's silent 200-on-garbage means the user would never find out.
+    expect(FAITH_ALIGNMENT_HELP.toLowerCase()).toContain("image");
   });
 });

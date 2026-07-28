@@ -243,6 +243,37 @@ describe("Inspector — provider/model selection, faith alignment and cost (gene
       const values = await optionValues(`ai-model-${kind}`);
       expect(values.length, `${kind} has no live models`).toBeGreaterThan(0);
     }
+
+    // …but "not empty" is far too weak to be the claim. Until 2026-07-28 the api read only
+    // `?output_modalities=speech` and stamped every entry with BOTH audio kinds, so the
+    // MUSIC select was full of batch-TTS ids and this test passed on a catalogue that
+    // could not run a single music generation. The discriminating assertion is that each
+    // select CONTAINS the id this deployment actually generates with — which for music
+    // (`google/lyria-3-clip-preview` by default) lives only in the SEPARATE
+    // `?output_modalities=audio` catalogue, and for narration only in the speech one.
+    const defaults = await page.evaluate(async () => {
+      const res = await fetch("/api/ai/models", { credentials: "include" });
+      const body = (await res.json()) as {
+        defaults?: Record<string, { provider: string; model: string }>;
+      };
+      return body.defaults ?? {};
+    });
+    for (const kind of ["image", "narration", "music", "video"]) {
+      const fallback = defaults[kind];
+      expect(fallback, `the BFF published no default for ${kind}`).toBeTruthy();
+      expect(
+        await optionValues(`ai-model-${kind}`),
+        `the ${kind} select does not offer this deployment's own default (${fallback!.model}) — ` +
+          `it is being populated from the wrong catalogue`,
+      ).toContain(fallback!.model);
+    }
+    // The two audio selects must also be DISJOINT: the narration path calls
+    // `POST /api/v1/audio/speech` and the music path calls chat/completions, so an id in
+    // both would be servable by only one of them.
+    const narrationIds = await optionValues("ai-model-narration");
+    const musicIds = await optionValues("ai-model-music");
+    expect(narrationIds.filter((id) => musicIds.includes(id))).toEqual([]);
+
     // And the selector arrives PRE-SELECTED at what the system uses today, rather than
     // demanding a choice before anything can be generated (item 1's "each defaults to
     // whatever the system currently uses").

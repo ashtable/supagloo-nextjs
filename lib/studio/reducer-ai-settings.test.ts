@@ -111,19 +111,56 @@ describe("AI settings actions (U-AS11..13)", () => {
     expect(back.storyboard.aiSettings?.faithAlignment).toBeUndefined();
   });
 
-  it("MODELS_LOADED stores the catalogue WITHOUT dirtying the project", () => {
-    // A background read is not an edit. Dirtying here would arm the Commit button the
-    // moment the studio opened, and (worse) make "All changes committed" a lie.
-    const next = studioReducer(start(), {
-      type: "MODELS_LOADED",
-      catalogue: {
-        models: [],
-        providers: { gloo: true, openrouter: true },
-        defaults: {},
-      },
-    });
+  it("U-AS15: MODELS_LOADED stores the catalogue, dirties nothing, and CANNOT touch a pick", () => {
+    // Two claims, and the second is the load-bearing one.
+    //
+    // (1) A background read is not an edit. Dirtying here would arm the Commit button the
+    //     moment the studio opened, and (worse) make "All changes committed" a lie.
+    //
+    // (2) This action is the ONLY defence against the stale-response race the §2.2 plan
+    //     called `U-INS1`: a catalogue request in flight while the user picks a model, and
+    //     landing after. That race is prevented STRUCTURALLY, not by timing — the case
+    //     returns `{ ...state, modelCatalogue }` and writes no other key, so there is no
+    //     ordering that could exhibit it and no timing test that could prove it. The
+    //     invariant is "MODELS_LOADED does not write `storyboard.aiSettings`", and it is
+    //     assertable right here, on the one line that could break it. See the header of
+    //     `tests/unit/ai-settings-panel.test.tsx`.
+    const CATALOGUE = {
+      // A catalogue that does not even CONTAIN the picked model — the worst case for a
+      // reducer that tried to reconcile the two.
+      models: [
+        {
+          id: "vendor/other",
+          provider: "openrouter" as const,
+          label: "Other",
+          kinds: ["image" as const],
+          pricing: null,
+        },
+      ],
+      providers: { gloo: true, openrouter: true },
+      defaults: { image: { provider: "openrouter" as const, model: "vendor/other" } },
+    };
+
+    // (1), from a clean project.
+    const clean = studioReducer(start(), { type: "MODELS_LOADED", catalogue: CATALOGUE });
+    expect(clean.modelCatalogue).not.toBeNull();
+    expect(clean.dirty).toBe(false);
+
+    // (2), underneath a pick the user has already made.
+    const picked = studioReducer(
+      studioReducer(start(), { type: "SET_AI_PROVIDER", kind: "image", provider: "gloo" }),
+      { type: "SET_AI_MODEL", kind: "image", model: "gloo-vendor-flux" },
+    );
+    const pick = picked.storyboard.aiSettings;
+    expect(pick?.image).toEqual({ provider: "gloo", model: "gloo-vendor-flux" });
+
+    const next = studioReducer(picked, { type: "MODELS_LOADED", catalogue: CATALOGUE });
     expect(next.modelCatalogue).not.toBeNull();
-    expect(next.dirty).toBe(false);
+    // Unchanged, not `false`: the picks above legitimately dirtied the project, and a
+    // background read must neither set nor CLEAR that.
+    expect(next.dirty).toBe(picked.dirty);
+    // Identity, not deep equality: the object the user's pick lives in is not rebuilt.
+    expect(next.storyboard.aiSettings).toBe(pick);
   });
 });
 

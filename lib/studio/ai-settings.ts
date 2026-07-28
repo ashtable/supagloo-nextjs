@@ -42,14 +42,39 @@ export const FAITH_ALIGNMENTS = [
   "catholic",
 ] as const;
 
-/** The design's own words for these, in the design's own vocabulary ("faith-aligned",
- *  never "denomination" and never "tradition"). */
+/**
+ * The design's own words for these, in the design's own vocabulary — **"faith-aligned",
+ * never "denomination" and never "tradition"**. `tradition` is Gloo's WIRE field name and
+ * keeps that name in code and comments; it is simply not a word we show a user.
+ *
+ * The rule is enforced by `U-FA3a`, because a JSDoc is not a gate: this map shipped with
+ * `not_faith_specific: "No specific tradition"` three lines under the rule that forbids it.
+ */
 export const FAITH_ALIGNMENT_LABELS: Record<FaithAlignment, string> = {
-  not_faith_specific: "No specific tradition",
+  not_faith_specific: "No particular faith alignment",
   evangelical: "Evangelical",
   mainline: "Mainline Protestant",
   catholic: "Catholic",
 };
+
+/**
+ * The sub-line under the FAITH ALIGNMENT select.
+ *
+ * Lives here rather than inline in `ai-settings-panel.tsx` so the vocabulary rule above
+ * governs it and `U-FA3b` can hold it — the shipped inline version read *"Steers Gloo's
+ * faith-aligned models. Only these four traditions are supported."*, which broke the rule
+ * AND over-promised the scope.
+ *
+ * **Scope is the substantive half.** `faithAlignment` reaches exactly one call site:
+ * `studio-context.tsx`'s `rerollVisual`, behind `provider === "gloo"`. So it steers Gloo
+ * IMAGE generation and nothing else — not narration/music/video (Gloo serves none of
+ * them), and not the storyboard/script text kinds, which have no selector here and whose
+ * `CallLlmStructuredArgs` carries no pass-through for it. Saying "steers Gloo's models"
+ * unqualified promises steering the product does not perform, and Gloo returns 200 for a
+ * value it ignores, so nothing would ever tell the user otherwise.
+ */
+export const FAITH_ALIGNMENT_HELP =
+  "Applies to scene images generated with Gloo AI. These four are the only values Gloo honours.";
 
 /**
  * The kind→provider compatibility matrix, hand-mirrored from db-lib `AI_PROVIDERS_BY_KIND`

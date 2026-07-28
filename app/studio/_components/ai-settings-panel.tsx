@@ -4,6 +4,7 @@ import { useStudio } from "./studio-context";
 import { useOptionalSession } from "@/app/_components/session-provider";
 import {
   FAITH_ALIGNMENTS,
+  FAITH_ALIGNMENT_HELP,
   FAITH_ALIGNMENT_LABELS,
   SELECTABLE_KINDS,
   modelsFor,
@@ -355,10 +356,10 @@ export default function AiSettingsPanel() {
                 </option>
               ))}
             </select>
+            {/* Copy lives in `ai-settings.ts` beside the vocabulary rule that governs it
+                and the scope note that justifies it — see FAITH_ALIGNMENT_HELP. */}
             <div style={{ marginTop: 5, fontSize: 10.5, color: "#a99b85", lineHeight: 1.35 }}>
-              {
-                "Steers Gloo's faith-aligned models. Only these four traditions are supported."
-              }
+              {FAITH_ALIGNMENT_HELP}
             </div>
           </div>
         ) : null}
