@@ -43,7 +43,13 @@ export const DEFAULT_GENERATION_MODELS: Record<GenerationKind, string> = {
   storyboard: "google/gemma-4-26b-a4b-it:free",
   script: "google/gemma-4-26b-a4b-it:free",
   image: "google/gemini-2.5-flash-image",
-  narration: "openai/gpt-audio-mini",
+  // MUST be a model from `GET /api/v1/models?output_modalities=speech` — the DEDICATED
+  // batch-TTS catalogue that `POST /api/v1/audio/speech` serves. It was previously a
+  // CONVERSATIONAL audio model from the `output_modalities=audio` catalogue, which is why
+  // narration answered the verse ("It sounds like you're quoting from the Book of
+  // Genesis…") instead of reading it; that id is also rejected outright by the speech
+  // endpoint with `400 Model … does not exist`. Verified live 2026-07-27.
+  narration: "hexgrad/kokoro-82m",
   music: "google/lyria-3-clip-preview",
   video: "alibaba/wan-2.7",
 };

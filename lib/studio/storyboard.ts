@@ -4,6 +4,7 @@
  * em dash `—` U+2014).
  */
 import { secondsToFrames } from "./time";
+import { effectiveSceneDurationSeconds } from "./scene-duration";
 import type { GeneratedStoryboard } from "../api/contracts";
 
 export type OnScreenText = "text" | "voice-only";
@@ -32,6 +33,18 @@ export interface Scene {
    *  values off the pre-replan manifest. Absent only on the mock `DEMO_STORYBOARD`. */
   reference?: string;
   translation?: string;
+  /** Still vs clip. Absent ⇒ image. Drives the Ken Burns pan (stills only) and the
+   *  `<OffthreadVideo>` branch, in the preview exactly as in the render. */
+  visualAssetKind?: "image" | "video";
+  /** This scene's OWN narration clip (↔ `ManifestScene.narrationAssetKey`) and its
+   *  MEASURED length. Narration used to be one whole-project asset played from frame 0
+   *  with nothing aligning it to the picture; the per-scene key is what lets the preview
+   *  mount it inside this scene's `<Sequence>`, and the measured length is what stops the
+   *  scene cutting the verse off. */
+  narrationAssetKey?: string | null;
+  narrationDurationSeconds?: number;
+  /** EPHEMERAL presigned preview URL for this scene's narration (never serialized). */
+  narrationUrl?: string | null;
 }
 
 export interface Storyboard {
@@ -47,6 +60,10 @@ export interface Storyboard {
    *  `music.assetKey`). Absent/null until narration/music is generated. */
   narrationAssetKey?: string | null;
   musicAssetKey?: string | null;
+  /** MEASURED length of the synthesized music bed (↔ `MusicBed.durationSeconds`). The
+   *  preview loops the bed over this length so the timeline's "one continuous bed" is
+   *  honest — the same thing the render does. */
+  musicDurationSeconds?: number;
   /** Task #35: EPHEMERAL presigned preview URLs for narration/music (never
    *  serialized) — the composition plays them as `<Audio>` when present. */
   narrationUrl?: string | null;
@@ -115,9 +132,10 @@ export function sceneTreeLabel(scene: Scene): string {
   return `Scene ${String(scene.index).padStart(2, "0")} · ${scene.visualLabel}`;
 }
 
-/** Total runtime in seconds. */
+/** Total runtime in seconds. Uses each scene's EFFECTIVE length, so a scene that had to
+ *  stretch to fit its narration is counted at the length it will actually render at. */
 export function totalDurationSeconds(sb: Storyboard): number {
-  return sb.scenes.reduce((sum, s) => sum + s.durationSeconds, 0);
+  return sb.scenes.reduce((sum, s) => sum + effectiveSceneDurationSeconds(s), 0);
 }
 
 /**
@@ -131,7 +149,7 @@ export function totalDurationSeconds(sb: Storyboard): number {
  */
 export function totalFrames(sb: Storyboard, fps: number): number {
   return sb.scenes.reduce(
-    (sum, s) => sum + secondsToFrames(s.durationSeconds, fps),
+    (sum, s) => sum + secondsToFrames(effectiveSceneDurationSeconds(s), fps),
     0,
   );
 }
@@ -159,14 +177,21 @@ export function sceneEntryFrame(
   return startFrame + offset;
 }
 
-/** Cumulative {start,end} seconds for a scene. */
+/** Cumulative {start,end} seconds for a scene.
+ *
+ *  Every function in this file that turns a scene into a LENGTH goes through
+ *  `effectiveSceneDurationSeconds` — `totalDurationSeconds`, `totalFrames`, `sceneRange`,
+ *  `sceneAtFrame`, `timelineWeights`, `sceneBoundaryFractions`. Missing even one would put
+ *  the scrubber, the timeline segments and the Player's clamp out of step with the
+ *  `<Sequence>` layout, which is the class of bug this repo has already been bitten by
+ *  (memory `one-rule-one-module-many-boundaries`). */
 export function sceneRange(
   sb: Storyboard,
   id: string,
 ): { start: number; end: number } {
   let start = 0;
   for (const s of sb.scenes) {
-    const end = start + s.durationSeconds;
+    const end = start + effectiveSceneDurationSeconds(s);
     if (s.id === id) return { start, end };
     start = end;
   }
@@ -180,7 +205,7 @@ export function sceneRange(
 export function sceneAtFrame(sb: Storyboard, frame: number, fps: number): Scene {
   let startFrame = 0;
   for (const s of sb.scenes) {
-    const endFrame = startFrame + secondsToFrames(s.durationSeconds, fps);
+    const endFrame = startFrame + secondsToFrames(effectiveSceneDurationSeconds(s), fps);
     if (frame < endFrame) return s;
     startFrame = endFrame;
   }
@@ -189,7 +214,7 @@ export function sceneAtFrame(sb: Storyboard, frame: number, fps: number): Scene 
 
 /** Per-scene flex weights (equal to durations) for the timeline segments. */
 export function timelineWeights(sb: Storyboard): number[] {
-  return sb.scenes.map((s) => s.durationSeconds);
+  return sb.scenes.map((s) => effectiveSceneDurationSeconds(s));
 }
 
 /** Interior scene-boundary positions as fractions of the total runtime. */
@@ -198,7 +223,7 @@ export function sceneBoundaryFractions(sb: Storyboard): number[] {
   const fractions: number[] = [];
   let acc = 0;
   for (let i = 0; i < sb.scenes.length - 1; i++) {
-    acc += sb.scenes[i].durationSeconds;
+    acc += effectiveSceneDurationSeconds(sb.scenes[i]);
     fractions.push(acc / total);
   }
   return fractions;
@@ -258,6 +283,45 @@ export function setSceneVisual(
     visualAssetKey: visual.assetKey,
     visualUrl: visual.url,
   }));
+}
+
+/**
+ * Attach the per-scene narration clips a narration generation produced.
+ *
+ * The generation writes one clip PER SCENE and reports them as a map; this walks that map
+ * onto the matching scenes. Scenes not named in the map are left exactly as they were (a
+ * partial map is possible if the storyboard changed between request and response).
+ *
+ * Storing the MEASURED length alongside the key is what lets `effectiveSceneDurationSeconds`
+ * stretch a scene whose verse takes longer to read than the LLM guessed — which is the half
+ * of the narration fix that stops a verse being cut off mid-sentence.
+ */
+export function setSceneNarrationAssets(
+  sb: Storyboard,
+  scenes: ReadonlyArray<{
+    sceneId: string;
+    assetKey: string;
+    durationSeconds?: number;
+  }>,
+): Storyboard {
+  if (scenes.length === 0) return sb;
+  const byId = new Map(scenes.map((s) => [s.sceneId, s]));
+  return {
+    ...sb,
+    scenes: sb.scenes.map((scene) => {
+      const hit = byId.get(scene.id);
+      if (!hit) return scene;
+      return {
+        ...scene,
+        narrationAssetKey: hit.assetKey,
+        ...(hit.durationSeconds !== undefined
+          ? { narrationDurationSeconds: hit.durationSeconds }
+          : {}),
+        // The previous scene-local preview URL now points at superseded audio.
+        narrationUrl: null,
+      };
+    }),
+  };
 }
 
 /** Set only a scene's ephemeral preview `visualUrl` (hydrate-time presign of an

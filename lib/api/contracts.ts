@@ -399,10 +399,16 @@ export const VoiceDescriptorSchema = z.object({
 });
 export type VoiceDescriptor = z.infer<typeof VoiceDescriptorSchema>;
 
-/** The manifest's music bed (mirrors db-lib `MusicBedSchema`). */
+/** The manifest's music bed (mirrors db-lib `MusicBedSchema`).
+ *
+ *  `durationSeconds` is the MEASURED length of the synthesized bed, not a requested one.
+ *  No music model on OpenRouter accepts a duration parameter, so the composition cannot ask
+ *  for a bed that spans the video — it loops the bed it was given, which requires knowing how
+ *  long that is. Optional, so existing `manifestVersion: 1` manifests keep parsing. */
 export const MusicBedSchema = z.object({
   style: z.string().min(1),
   assetKey: z.string().min(1).nullable().optional(),
+  durationSeconds: z.number().positive().optional(),
 });
 export type MusicBed = z.infer<typeof MusicBedSchema>;
 
@@ -417,6 +423,9 @@ export type EndCard = z.infer<typeof EndCardSchema>;
  *  `ManifestSceneSchema`). Carries the fields the studio does NOT edit directly
  *  (`reference`, `translation`, `visualAssetKey`) — the adapter preserves these
  *  across the hydrate→edit→serialize round trip. */
+export const VisualAssetKindSchema = z.enum(["image", "video"]);
+export type VisualAssetKind = z.infer<typeof VisualAssetKindSchema>;
+
 export const ManifestSceneSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -427,6 +436,15 @@ export const ManifestSceneSchema = z.object({
   durationSeconds: z.number().positive(),
   captions: z.boolean(),
   visualAssetKey: z.string().min(1).nullable().optional(),
+  /** Still vs clip. Absent ⇒ image (what every scene was rendered as before this
+   *  existed). Drives the Ken Burns pan, which applies to stills only. */
+  visualAssetKind: VisualAssetKindSchema.optional(),
+  /** This scene's OWN narration clip + its measured length. Narration used to be one
+   *  whole-project asset mounted at frame 0 with no sync mechanism at all; per-scene keys
+   *  are what let each clip live inside its own `<Sequence>` and let the scene stretch
+   *  rather than cut the verse off. Both optional for v1 compatibility. */
+  narrationAssetKey: z.string().min(1).nullable().optional(),
+  narrationDurationSeconds: z.number().positive().optional(),
 });
 export type ManifestScene = z.infer<typeof ManifestSceneSchema>;
 
@@ -606,6 +624,23 @@ export const NarrationSpecSchema = z.object({
   scenes: z.array(NarrationSceneSchema).min(1),
 });
 export type NarrationSpec = z.infer<typeof NarrationSpecSchema>;
+
+/** One synthesized per-scene narration clip (mirrors db-lib `NarrationResultSceneSchema`). */
+export const NarrationResultSceneSchema = z.object({
+  sceneId: z.string().min(1),
+  assetKey: z.string().min(1),
+  durationSeconds: z.number().positive().optional(),
+});
+export type NarrationResultScene = z.infer<typeof NarrationResultSceneSchema>;
+
+/** The narration generation's OUTPUT map, carried in `AiGeneration.resultJson` (mirrors
+ *  db-lib `NarrationResultSchema`). The row still has exactly ONE `resultAssetKey`; the
+ *  remaining per-scene clips travel here, which is what makes scene-synced narration
+ *  expressible without one generation row per scene. */
+export const NarrationResultSchema = z.object({
+  scenes: z.array(NarrationResultSceneSchema),
+});
+export type NarrationResult = z.infer<typeof NarrationResultSchema>;
 
 /** `AiGeneration.input` for the `music` kind (mirrors db-lib `MusicSpecSchema`/
  *  `GenerateMusicInputSchema`): a style label + target duration. */

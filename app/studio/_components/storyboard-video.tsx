@@ -4,6 +4,8 @@ import {
   AbsoluteFill,
   Audio,
   Img,
+  Loop,
+  OffthreadVideo,
   Sequence,
   interpolate,
   useCurrentFrame,
@@ -11,6 +13,8 @@ import {
 } from "remotion";
 import { secondsToFrames } from "@/lib/studio/time";
 import { visibleCaption } from "@/lib/studio/captions";
+import { kenBurnsForScene, musicLoopFrames } from "@/lib/studio/ken-burns";
+import { effectiveSceneDurationSeconds } from "@/lib/studio/scene-duration";
 import type { Scene } from "@/lib/studio/storyboard";
 
 /**
@@ -33,6 +37,10 @@ export type StoryboardVideoProps = {
    *  until generated). Rendered as Remotion `<Audio>` so the preview plays them. */
   narrationUrl?: string | null;
   musicUrl?: string | null;
+  /** MEASURED length of the music bed. When it is shorter than the composition the bed is
+   *  LOOPED to cover the whole video, exactly as the render does — otherwise the timeline's
+   *  "one continuous bed" would be a drawing the preview contradicts. */
+  musicDurationSeconds?: number;
 };
 
 const SCENE_BACKDROP: Record<string, string> = {
@@ -45,9 +53,13 @@ const SCENE_BACKDROP: Record<string, string> = {
 function SceneContent({
   scene,
   reference,
+  index,
+  durationInFrames,
 }: {
   scene: Scene;
   reference: string;
+  index: number;
+  durationInFrames: number;
 }) {
   const frame = useCurrentFrame(); // relative to this Sequence
   const { width, height } = useVideoConfig();
@@ -57,6 +69,10 @@ function SceneContent({
     extrapolateRight: "clamp",
   });
   const caption = visibleCaption(scene);
+  // Ken Burns, mirrored from the render generator and normalized over THIS scene's own
+  // length so the move completes exactly once whatever the scene's duration.
+  const motion = kenBurnsForScene(index);
+  const isVideo = scene.visualAssetKind === "video";
 
   return (
     <AbsoluteFill style={{ background: SCENE_BACKDROP[scene.id] ?? "#221a34" }}>
@@ -64,11 +80,36 @@ function SceneContent({
           backdrop, replacing the gradient once a reroll lands. Falls back to the
           gradient above when no visual has been generated. */}
       {scene.visualUrl ? (
-        <Img
-          data-testid="scene-visual"
-          src={scene.visualUrl}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-        />
+        isVideo ? (
+          // A clip already moves; it also must not go through <Img>, which would show a
+          // single frame of it. (The render had the same latent bug until the manifest
+          // gained a still-vs-clip discriminator.)
+          <OffthreadVideo
+            data-testid="scene-visual"
+            src={scene.visualUrl}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        ) : (
+          <Img
+            data-testid="scene-visual"
+            src={scene.visualUrl}
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              // `scale` is a STRING on purpose: React's unitless-property table omits it,
+              // so a number would render as `scale:1.1px` and the zoom would do nothing.
+              scale: interpolate(frame, [0, durationInFrames], motion.scale, {
+                extrapolateLeft: "clamp",
+                extrapolateRight: "clamp",
+              }),
+              translate: interpolate(frame, [0, durationInFrames], motion.translate, {
+                extrapolateLeft: "clamp",
+                extrapolateRight: "clamp",
+              }),
+            }}
+          />
+        )
       ) : null}
 
       {/* vignette */}
@@ -133,27 +174,71 @@ export function StoryboardVideo({
   fps,
   narrationUrl,
   musicUrl,
+  musicDurationSeconds,
 }: StoryboardVideoProps) {
+  // Scene lengths go through `effectiveSceneDurationSeconds`, so a scene that has to
+  // stretch to fit its narration is laid out at the length it will really render at.
+  const lengths = scenes.map((scene) =>
+    secondsToFrames(effectiveSceneDurationSeconds(scene), fps),
+  );
   const starts: number[] = [];
   let acc = 0;
-  for (const scene of scenes) {
+  for (const length of lengths) {
     starts.push(acc);
-    acc += secondsToFrames(scene.durationSeconds, fps);
+    acc += length;
   }
+  const total = acc;
+  const loopFrames = musicLoopFrames(musicDurationSeconds, fps, total);
+  const fadeStart = Math.max(0, total - secondsToFrames(1.5, fps));
+
+  // Whole-project narration is the BACKWARD-COMPATIBLE fallback only: it is played across
+  // the composition, which is what it always did, and it yields the moment any scene has
+  // its own clip (otherwise the two would double up).
+  const hasPerSceneNarration = scenes.some((s) => s.narrationUrl);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#160f14" }}>
-      {/* Task #35: whole-project generated audio, played across the composition. */}
-      {narrationUrl ? <Audio src={narrationUrl} /> : null}
-      {musicUrl ? <Audio src={musicUrl} volume={0.4} /> : null}
+      {narrationUrl && !hasPerSceneNarration ? <Audio src={narrationUrl} /> : null}
+      {musicUrl ? (
+        loopFrames ? (
+          // The bed is shorter than the video, so repeat it. <Loop> fills
+          // `ceil(compositionDuration / durationInFrames)` iterations and the composition's
+          // own end trims the last — coverage and trim in one construct.
+          // `loopVolumeCurveBehavior="extend"` makes the fade callback's frame a COMPOSITION
+          // frame, so this is a single tail fade rather than a duck at every repeat.
+          <Loop durationInFrames={loopFrames}>
+            <Audio
+              src={musicUrl}
+              loopVolumeCurveBehavior="extend"
+              volume={(f) =>
+                interpolate(f, [fadeStart, total], [0.4, 0], {
+                  extrapolateLeft: "clamp",
+                  extrapolateRight: "clamp",
+                })
+              }
+            />
+          </Loop>
+        ) : (
+          <Audio src={musicUrl} volume={0.4} />
+        )
+      ) : null}
       {scenes.map((scene, i) => (
         <Sequence
           key={scene.id}
           from={starts[i]}
-          durationInFrames={secondsToFrames(scene.durationSeconds, fps)}
+          durationInFrames={lengths[i]}
           name={`Scene ${scene.index}`}
         >
-          <SceneContent scene={scene} reference={reference} />
+          <SceneContent
+            scene={scene}
+            reference={reference}
+            index={i}
+            durationInFrames={lengths[i]}
+          />
+          {/* PER-SCENE NARRATION: mounted INSIDE this scene's Sequence, which is what makes
+              it start when the scene starts. The whole-project track above could only ever
+              start at frame 0 and drift. */}
+          {scene.narrationUrl ? <Audio src={scene.narrationUrl} /> : null}
         </Sequence>
       ))}
     </AbsoluteFill>

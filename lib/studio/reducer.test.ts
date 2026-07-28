@@ -534,6 +534,9 @@ describe("generation state machine", () => {
       type: "NARRATION_GENERATED",
       assetKey: "projects/p1/narration/t.mp3",
       url: "http://minio/n",
+      // Narration now also reports the per-scene clips it produced; an empty list is the
+      // whole-project-only case this assertion is about.
+      scenes: [],
     });
     expect(s.storyboard.narrationAssetKey).toBe("projects/p1/narration/t.mp3");
     expect(s.storyboard.narrationUrl).toBe("http://minio/n");
@@ -604,7 +607,12 @@ describe("generation outcome mappers (polled terminal generation → action)", (
   it("U-G11: narration/music outcome map succeeded+assetKey → *_GENERATED (url optional)", () => {
     expect(
       narrationGenerationOutcome({ status: "succeeded", resultAssetKey: "n" } as never, "http://n"),
-    ).toEqual({ type: "NARRATION_GENERATED", assetKey: "n", url: "http://n" });
+    ).toEqual({
+      type: "NARRATION_GENERATED",
+      assetKey: "n",
+      url: "http://n",
+      scenes: [],
+    });
     expect(
       musicGenerationOutcome({ status: "succeeded", resultAssetKey: "m" } as never, null),
     ).toEqual({ type: "MUSIC_GENERATED", assetKey: "m", url: null });
@@ -873,5 +881,68 @@ describe("renderOutcome (polled terminal render → the settling action)", () =>
       type: "RENDER_FAILED",
       error: "render_timeout",
     });
+  });
+});
+
+describe("narration generation writes PER-SCENE clips (render-bug work)", () => {
+  const gen = {
+    status: "succeeded",
+    resultAssetKey: "projects/p/assets/g1-scene-s1",
+    resultJson: {
+      kind: "narration",
+      narration: {
+        scenes: [
+          {
+            sceneId: "s1",
+            assetKey: "projects/p/assets/g1-scene-s1",
+            durationSeconds: 6.5,
+          },
+          {
+            sceneId: "s2",
+            assetKey: "projects/p/assets/g1-scene-s2",
+            durationSeconds: 4.25,
+          },
+        ],
+      },
+    },
+  };
+
+  it("U-N1: maps resultJson.narration onto the matching scenes, with measured lengths", () => {
+    // The whole point of the per-scene map: without it the studio has one asset key and no
+    // idea where any scene's audio begins, which is what made the narration drift.
+    const action = narrationGenerationOutcome(gen as never, "http://n");
+    expect(action.type).toBe("NARRATION_GENERATED");
+    if (action.type !== "NARRATION_GENERATED") return;
+    expect(action.scenes).toEqual([
+      { sceneId: "s1", assetKey: "projects/p/assets/g1-scene-s1", durationSeconds: 6.5 },
+      { sceneId: "s2", assetKey: "projects/p/assets/g1-scene-s2", durationSeconds: 4.25 },
+    ]);
+  });
+
+  it("U-N2: the reducer stores per-scene keys AND stretches the scenes to fit", () => {
+    const base = studioReducer(initialStudioState(DEMO_PROJECT), {
+      type: "SELECT_SCENE",
+      id: "s1",
+    });
+    const next = studioReducer(
+      base,
+      narrationGenerationOutcome(gen as never, "http://n"),
+    );
+    const s1 = next.storyboard.scenes.find((s) => s.id === "s1");
+    const s2 = next.storyboard.scenes.find((s) => s.id === "s2");
+    expect(s1?.narrationAssetKey).toBe("projects/p/assets/g1-scene-s1");
+    expect(s1?.narrationDurationSeconds).toBe(6.5);
+    expect(s2?.narrationAssetKey).toBe("projects/p/assets/g1-scene-s2");
+    // A scene not named in the map keeps whatever it had.
+    expect(next.storyboard.scenes[2]?.narrationAssetKey ?? null).toBeNull();
+  });
+
+  it("U-N3: a result with NO per-scene map still succeeds (whole-project fallback)", () => {
+    // Backward compatibility with generations produced before the map existed.
+    const legacy = { status: "succeeded", resultAssetKey: "k" };
+    const action = narrationGenerationOutcome(legacy as never, null);
+    expect(action.type).toBe("NARRATION_GENERATED");
+    if (action.type !== "NARRATION_GENERATED") return;
+    expect(action.scenes).toEqual([]);
   });
 });

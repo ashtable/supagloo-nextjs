@@ -12,6 +12,7 @@ import {
   setSceneVisualUrl,
   setVoiceDescription,
   setNarrationAsset,
+  setSceneNarrationAssets,
   setMusicAsset,
   storyboardFromGenerated,
   totalFrames,
@@ -21,6 +22,7 @@ import {
 import {
   GeneratedScriptSchema,
   GeneratedStoryboardSchema,
+  NarrationResultSchema,
   type AiGenerationDto,
   type RenderJobDto,
 } from "../api/contracts";
@@ -164,7 +166,17 @@ export type StudioAction =
   | { type: "IMAGE_GENERATED"; sceneId: string; assetKey: string; url: string | null }
   | { type: "SET_SCENE_VISUAL_URL"; sceneId: string; url: string | null }
   | { type: "SCRIPT_GENERATED"; sceneId: string; scriptText: string }
-  | { type: "NARRATION_GENERATED"; assetKey: string; url: string | null }
+  | {
+      type: "NARRATION_GENERATED";
+      assetKey: string;
+      url: string | null;
+      /** The per-scene clips this generation produced (empty for a pre-map result). */
+      scenes: ReadonlyArray<{
+        sceneId: string;
+        assetKey: string;
+        durationSeconds?: number;
+      }>;
+    }
   | { type: "MUSIC_GENERATED"; assetKey: string; url: string | null }
   | { type: "STORYBOARD_GENERATED"; storyboard: Storyboard }
   | { type: "EDIT_VOICE_DESCRIPTION"; description: string };
@@ -527,7 +539,14 @@ export function studioReducer(
       return {
         ...edited(
           state,
-          setNarrationAsset(state.storyboard, action.assetKey, action.url),
+          // The whole-project key is still written (backward compatibility, and it is what
+          // `narratorVoice.assetKey` round-trips), then the per-scene clips are laid over
+          // it. The composition prefers the per-scene ones and ignores the whole-project
+          // track once any exist, so the two never double up.
+          setSceneNarrationAssets(
+            setNarrationAsset(state.storyboard, action.assetKey, action.url),
+            action.scenes,
+          ),
         ),
         generations: clearSlot(state.generations, NARRATION_SLOT),
       };
@@ -668,7 +687,18 @@ export function narrationGenerationOutcome(
   url: string | null,
 ): StudioAction {
   if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
-    return { type: "NARRATION_GENERATED", assetKey: gen.resultAssetKey, url };
+    // The row keeps ONE resultAssetKey; the remaining per-scene clips ride in resultJson
+    // (db-lib NarrationResultSchema). Parsed leniently: a generation produced before the
+    // map existed simply yields no scenes and falls back to the whole-project track.
+    const parsed = NarrationResultSchema.safeParse(
+      (gen.resultJson as { narration?: unknown } | null | undefined)?.narration,
+    );
+    return {
+      type: "NARRATION_GENERATED",
+      assetKey: gen.resultAssetKey,
+      url,
+      scenes: parsed.success ? parsed.data.scenes : [],
+    };
   }
   return { type: "GENERATION_FAILED", slot: NARRATION_SLOT, error: genError(gen) };
 }

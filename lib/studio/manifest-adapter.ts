@@ -35,6 +35,13 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     // serialize writes these values straight back.
     reference: s.reference,
     translation: s.translation,
+    // Render-bug fields. `visualAssetKind` drives the preview's still-vs-clip branch (and
+    // so whether the Ken Burns pan applies); the narration pair is what lets the preview
+    // mount this scene's OWN clip inside its own <Sequence> and stretch the scene to fit
+    // it. undefined stays undefined so the round trip remains an exact identity.
+    visualAssetKind: s.visualAssetKind,
+    narrationAssetKey: s.narrationAssetKey,
+    narrationDurationSeconds: s.narrationDurationSeconds,
   }));
 
   const reference =
@@ -51,6 +58,9 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     // Task #35: the persisted whole-project audio keys (↔ narratorVoice/music).
     narrationAssetKey: manifest.narratorVoice.assetKey,
     musicAssetKey: manifest.music?.assetKey,
+    // The MEASURED bed length: what the preview loops the bed over so its "one continuous
+    // bed" matches the render's.
+    musicDurationSeconds: manifest.music?.durationSeconds,
     scenes,
   };
 }
@@ -82,6 +92,11 @@ export function serializeManifest(
         style: storyboard.musicMood,
         ...(storyboard.musicAssetKey !== undefined
           ? { assetKey: storyboard.musicAssetKey }
+          : {}),
+        // Without this the measured length is dropped on every commit and the composition
+        // silently reverts to a bed that plays once and stops.
+        ...(storyboard.musicDurationSeconds !== undefined
+          ? { durationSeconds: storyboard.musicDurationSeconds }
           : {}),
       }
     : base.music;
@@ -120,6 +135,19 @@ export function serializeManifest(
         // is deliberately NOT serialized).
         ...(s.visualAssetKey !== undefined
           ? { visualAssetKey: s.visualAssetKey }
+          : {}),
+        // Render-bug fields, written from the UI scene so a fresh narration generation or
+        // a reroll that changes the media kind actually persists. The `...preserved` spread
+        // above already carries the base values through; these let the UI value win when
+        // it has one, and the conditional form keeps absent/null/value distinguishable.
+        ...(s.visualAssetKind !== undefined
+          ? { visualAssetKind: s.visualAssetKind }
+          : {}),
+        ...(s.narrationAssetKey !== undefined
+          ? { narrationAssetKey: s.narrationAssetKey }
+          : {}),
+        ...(s.narrationDurationSeconds !== undefined
+          ? { narrationDurationSeconds: s.narrationDurationSeconds }
           : {}),
       };
     }),
