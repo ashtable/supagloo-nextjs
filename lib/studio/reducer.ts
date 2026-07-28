@@ -11,6 +11,7 @@ import {
   setMusicMood,
   setSceneOnScreenText,
   setSceneScripture,
+  setAiSettings,
   setSceneVisual,
   setSceneVisualUrl,
   setVoiceDescription,
@@ -27,8 +28,17 @@ import {
   GeneratedStoryboardSchema,
   NarrationResultSchema,
   type AiGenerationDto,
+  type AiModelCatalogueResponse,
+  type AiProvider,
+  type FaithAlignment,
   type RenderJobDto,
 } from "../api/contracts";
+import {
+  settingsAfterFaithAlignmentChange,
+  settingsAfterModelChange,
+  settingsAfterProviderChange,
+  type SelectableKind,
+} from "./ai-settings";
 import {
   nextVersion,
   postPublishBranch,
@@ -72,6 +82,10 @@ export const scriptSlot = (sceneId: string): string => `script:${sceneId}`;
 export const STORYBOARD_SLOT = "storyboard" as const;
 export const NARRATION_SLOT = "narration" as const;
 export const MUSIC_SLOT = "music" as const;
+/** Genesis-1 item 4. Per-SCENE, like image and unlike narration/music: "a video per
+ *  scene" is scene-scoped by definition, and a global slot would let one scene's
+ *  in-flight clip hide another's. */
+export const videoSlot = (sceneId: string): string => `video:${sceneId}`;
 
 /** The pending/failed state of one generation slot (success clears the slot). */
 export interface GenerationEntry {
@@ -128,6 +142,10 @@ export interface StudioState {
    *  etc.). A slot is added on GENERATION_BEGIN and removed on success; a failure
    *  leaves a `{status:"failed"}` entry so the inspector can offer a retry. */
   generations: Record<string, GenerationEntry>;
+  /** Genesis-1: the live provider/model catalogue (`GET /api/ai/models`), or null when it
+   *  has not been read yet / the read failed. Null is deliberately distinct from an empty
+   *  `models` array — "we could not ask" must not render as "there are none". */
+  modelCatalogue: AiModelCatalogueResponse | null;
 }
 
 export type StudioAction =
@@ -198,6 +216,17 @@ export type StudioAction =
       }>;
     }
   | { type: "MUSIC_GENERATED"; assetKey: string; url: string | null }
+  // Genesis-1 item 4. Carries the SAME payload as IMAGE_GENERATED; the difference is
+  // entirely in what `visualAssetKind` is set to, which is why they are two actions and
+  // not one with a flag the caller could forget.
+  | { type: "VIDEO_GENERATED"; sceneId: string; assetKey: string; url: string | null }
+  // Genesis-1 items 1/2 — the project-level AI settings. Content edits (they change what
+  // the project generates and must reach the repo through Commit).
+  | { type: "SET_AI_PROVIDER"; kind: SelectableKind; provider: AiProvider }
+  | { type: "SET_AI_MODEL"; kind: SelectableKind; model: string | null }
+  | { type: "SET_FAITH_ALIGNMENT"; value: FaithAlignment | null }
+  // NOT an edit: a background catalogue read must not arm the Commit button.
+  | { type: "MODELS_LOADED"; catalogue: AiModelCatalogueResponse | null }
   | { type: "STORYBOARD_GENERATED"; storyboard: Storyboard }
   | { type: "EDIT_VOICE_DESCRIPTION"; description: string };
 
@@ -244,6 +273,7 @@ export function initialStudioState(project: StudioProject): StudioState {
     versionMenuOpen: false,
     render: null,
     generations: {},
+    modelCatalogue: null,
   };
 }
 
@@ -555,17 +585,80 @@ export function studioReducer(
       };
     case "IMAGE_GENERATED":
       // A reroll landed: set the scene's persisted key + ephemeral preview URL,
-      // clear the slot, and dirty so the new ref is committed.
+      // clear the slot, and dirty so the new ref is committed. `kind: "image"` is written
+      // explicitly rather than left absent, because this scene may previously have held a
+      // CLIP — leaving `visualAssetKind: "video"` behind would send a PNG through
+      // <OffthreadVideo>, which refuses stills.
       return {
         ...edited(
           state,
           setSceneVisual(state.storyboard, action.sceneId, {
             assetKey: action.assetKey,
             url: action.url,
+            kind: "image",
           }),
         ),
         generations: clearSlot(state.generations, imageSlot(action.sceneId)),
       };
+    case "VIDEO_GENERATED":
+      // The key AND the kind, in ONE action. `visualAssetKind` has been READ by the
+      // renderer and the preview since the render-bug run and written by NOTHING outside
+      // test fixtures; item 4 is what makes that latent bug reachable, so this is where it
+      // closes.
+      return {
+        ...edited(
+          state,
+          setSceneVisual(state.storyboard, action.sceneId, {
+            assetKey: action.assetKey,
+            url: action.url,
+            kind: "video",
+          }),
+        ),
+        generations: clearSlot(state.generations, videoSlot(action.sceneId)),
+      };
+    case "SET_AI_PROVIDER":
+      return edited(
+        state,
+        setAiSettings(
+          state.storyboard,
+          settingsAfterProviderChange(
+            state.storyboard.aiSettings,
+            action.kind,
+            action.provider,
+            state.modelCatalogue?.defaults ?? {},
+          ),
+        ),
+      );
+    case "SET_AI_MODEL": {
+      const current = state.storyboard.aiSettings?.[action.kind]?.provider;
+      const provider =
+        current ?? state.modelCatalogue?.defaults?.[action.kind]?.provider ?? "openrouter";
+      return edited(
+        state,
+        setAiSettings(
+          state.storyboard,
+          settingsAfterModelChange(
+            state.storyboard.aiSettings,
+            action.kind,
+            provider,
+            action.model,
+          ),
+        ),
+      );
+    }
+    case "SET_FAITH_ALIGNMENT":
+      return edited(
+        state,
+        setAiSettings(
+          state.storyboard,
+          settingsAfterFaithAlignmentChange(state.storyboard.aiSettings, action.value),
+        ),
+      );
+    case "MODELS_LOADED":
+      // Deliberately NOT `edited(...)`: a background read is not a user edit. Dirtying
+      // here would arm Commit the moment the studio opened and make "All changes
+      // committed" a lie about work the user never did.
+      return { ...state, modelCatalogue: action.catalogue };
     case "SET_SCENE_VISUAL_URL":
       // Hydrate-time presign of an already-persisted key — a display-only URL, NOT
       // an edit (dirty must stay as-is).
@@ -715,6 +808,21 @@ export function imageGenerationOutcome(
     return { type: "IMAGE_GENERATED", sceneId, assetKey: gen.resultAssetKey, url };
   }
   return { type: "GENERATION_FAILED", slot: imageSlot(sceneId), error: genError(gen) };
+}
+
+/** scene video → VIDEO_GENERATED (needs a resultAssetKey), else GENERATION_FAILED.
+ *  Byte-identical in shape to `imageGenerationOutcome`; they stay separate functions so
+ *  the media KIND is decided by which generation was requested, never by a caller-supplied
+ *  flag that a future call site could omit. */
+export function videoGenerationOutcome(
+  sceneId: string,
+  gen: AiGenerationDto | null,
+  url: string | null,
+): StudioAction {
+  if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
+    return { type: "VIDEO_GENERATED", sceneId, assetKey: gen.resultAssetKey, url };
+  }
+  return { type: "GENERATION_FAILED", slot: videoSlot(sceneId), error: genError(gen) };
 }
 
 /** script rewrite → SCRIPT_GENERATED (parses GeneratedScript from resultJson), else

@@ -43,6 +43,7 @@ export default defineConfig({
       "tests/e2e/openrouter-gloo-connect.e2e.ts",
       "tests/e2e/project-wizards-real.e2e.ts",
       "tests/e2e/studio-ai-generation.e2e.ts",
+      "tests/e2e/studio-model-cost.e2e.ts",
       "tests/e2e/studio-hydration.e2e.ts",
       "tests/e2e/studio-publish-real.e2e.ts",
       "tests/e2e/studio-replan-scripture.e2e.ts",

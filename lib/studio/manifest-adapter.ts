@@ -58,6 +58,11 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     // Task #35: the persisted whole-project audio keys (↔ narratorVoice/music).
     narrationAssetKey: manifest.narratorVoice.assetKey,
     musicAssetKey: manifest.music?.assetKey,
+    // Genesis-1: the project's AI provider/model choices + faith alignment. `undefined`
+    // stays `undefined` so the round trip remains an exact identity -- a materialized
+    // empty object would serialize into the user's committed repo as a spurious diff on
+    // every save.
+    aiSettings: manifest.aiSettings,
     // The MEASURED bed length: what the preview loops the bed over so its "one continuous
     // bed" matches the render's.
     musicDurationSeconds: manifest.music?.durationSeconds,
@@ -101,11 +106,27 @@ export function serializeManifest(
       }
     : base.music;
 
+  // Written from the UI storyboard so a settings change actually persists -- the third
+  // and fourth of the four mirrors (db-lib schema -> dbos canonicalizeManifest ->
+  // contracts.ts -> here, BOTH directions). Missing any one of them makes the control
+  // appear to save and then silently revert on the next commit, which is the exact bug
+  // that already shipped once for `narratorVoice.assetKey`.
+  //
+  // An EMPTY settings object is dropped rather than written: "the user has chosen
+  // nothing" is the absence of the block, not an empty one.
+  const aiSettings =
+    storyboard.aiSettings !== undefined
+      ? Object.keys(storyboard.aiSettings).length > 0
+        ? storyboard.aiSettings
+        : undefined
+      : base.aiSettings;
+
   return {
     manifestVersion: 1,
     composition: base.composition,
     narratorVoice,
     ...(music !== undefined ? { music } : {}),
+    ...(aiSettings !== undefined ? { aiSettings } : {}),
     ...(base.endCard !== undefined ? { endCard: base.endCard } : {}),
     scenes: storyboard.scenes.map((s) => {
       const b = base.scenes.find((x) => x.id === s.id);

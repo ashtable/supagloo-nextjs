@@ -627,3 +627,22 @@ export function useSession(): SessionContextValue {
   if (!ctx) throw new Error("useSession must be used within <SessionProvider>");
   return ctx;
 }
+
+/**
+ * The non-throwing read, for the narrow case of a component that ALREADY has a defined
+ * "the session is not known yet" state and renders it visibly.
+ *
+ * `useSession` throws on purpose: for almost every consumer, being outside the provider is
+ * a wiring mistake and failing loudly is right. But `sessionResolved === false` is a state
+ * the app deliberately models — `isAuthed === false` also means "we have not asked yet",
+ * and acting on that as though it meant "signed out" is a bug this codebase has hit before.
+ * A component that already renders an honest "checking…" for the unresolved case has the
+ * same correct answer for "no provider at all", and crashing the studio editor over a
+ * settings panel is a worse outcome than showing that state.
+ *
+ * Use this ONLY where the null branch is a rendered state, never to paper over a consumer
+ * that would otherwise need real session data.
+ */
+export function useOptionalSession(): SessionContextValue | null {
+  return useContext(SessionContext);
+}

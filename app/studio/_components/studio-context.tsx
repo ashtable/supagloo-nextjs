@@ -23,6 +23,8 @@ import {
   NARRATION_SLOT,
   MUSIC_SLOT,
   imageGenerationOutcome,
+  videoSlot,
+  videoGenerationOutcome,
   scriptGenerationOutcome,
   narrationGenerationOutcome,
   musicGenerationOutcome,
@@ -74,7 +76,17 @@ import {
   presignDownload,
   type CreateGenerationBody,
 } from "@/lib/studio/ai-generation-data";
-import type { AiGenerationDto } from "@/lib/api/contracts";
+import { fetchModelCatalogue } from "@/lib/studio/model-catalogue-data";
+import {
+  resolveChoice,
+  type SelectableKind,
+} from "@/lib/studio/ai-settings";
+import { effectiveSceneDurationSeconds } from "@/lib/studio/scene-duration";
+import type {
+  AiGenerationDto,
+  AiProvider,
+  FaithAlignment,
+} from "@/lib/api/contracts";
 import { publishReview } from "@/lib/studio/publish-review";
 import { pollJobUntilTerminal } from "@/lib/project-wizard/provision-effects";
 import { stagesToLogRows } from "@/lib/project-wizard/job-log";
@@ -130,7 +142,28 @@ interface StudioContextValue {
   regenerateNarration: () => void;
   /** ↻ Regenerate music — POST kind `music` (whole-project), persist the asset. */
   regenerateMusic: () => void;
+  // ── Genesis-1: the Inspector's GENERATION section ──────────────────────────
+  /** Item 1: choose the provider for one generation kind (project-level). */
+  setAiProvider: (kind: SelectableKind, provider: AiProvider) => void;
+  /** Item 1: pin a model for one generation kind (project-level). */
+  setAiModel: (kind: SelectableKind, model: string | null) => void;
+  /** Item 2: choose the faith alignment sent to Gloo (project-level). */
+  setFaithAlignment: (value: FaithAlignment | null) => void;
+  /** Item 4: generate a VIDEO for a scene instead of a still image. */
+  generateSceneVideo: (sceneId?: string) => void;
 }
+
+/**
+ * Item 4's poll budget.
+ *
+ * `pollGenerationUntilTerminal` defaults to 300 s, which is right for an image or a line
+ * of text and badly wrong for a video: `generateVideo` submits an async provider job and
+ * then polls it with durable ~30 s sleeps for up to 40 attempts — **20 minutes**. At the
+ * 300 s default the studio would report a failure while the workflow was still running,
+ * and the clip that eventually landed would never attach to the scene. 25 minutes is the
+ * workflow's own bound plus slack for the queue.
+ */
+const VIDEO_GENERATION_POLL_TIMEOUT_MS = 1_500_000;
 
 const StudioContext = createContext<StudioContextValue | null>(null);
 
@@ -200,6 +233,18 @@ export function StudioProvider({
       if (aliveRef.current) dispatch({ type: "VERSIONS_LOADED", versions });
     })();
   }, [project.id, hasManifest]);
+
+  // Genesis-1 items 1/3: read the live provider/model catalogue once per studio open.
+  // Real projects only — the mock catalogue has no session and the mock e2e lane's whole
+  // guarantee is zero network egress. A failed read dispatches null, which the picker
+  // renders as "checking/unavailable" rather than as a confident "no models".
+  useEffect(() => {
+    if (!hasManifest) return;
+    void (async () => {
+      const catalogue = await fetchModelCatalogue();
+      if (aliveRef.current) dispatch({ type: "MODELS_LOADED", catalogue });
+    })();
+  }, [hasManifest]);
 
   const addScene = () => dispatch({ type: "ADD_SCENE" });
   const removeScene = (id: string) => dispatch({ type: "DELETE_SCENE", id });
@@ -450,6 +495,7 @@ export function StudioProvider({
     body: CreateGenerationBody,
     settle: (gen: AiGenerationDto | null, url: string | null) => StudioAction,
     presignResult: boolean,
+    options: { timeoutMs?: number } = {},
   ) => {
     if (state.generations[slot]?.status === "running") return;
     dispatch({ type: "GENERATION_BEGIN", slot });
@@ -460,7 +506,10 @@ export function StudioProvider({
         dispatch(settle(null, null));
         return;
       }
-      const gen = await pollGenerationUntilTerminal(genId);
+      const gen = await pollGenerationUntilTerminal(
+        genId,
+        options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {},
+      );
       if (!aliveRef.current) return;
       let url: string | null = null;
       if (presignResult && gen?.status === "succeeded" && gen.resultAssetKey) {
@@ -471,23 +520,112 @@ export function StudioProvider({
     })();
   };
 
+  /**
+   * The `{provider, model}` a generation of this kind should run on, plus the faith
+   * alignment to send with it.
+   *
+   * Sent from the CLIENT rather than left to the BFF's env defaults, because the whole
+   * point of item 1 is that the user's choice — which they can see on screen — wins. The
+   * BFF still fills in its default when nothing is sent, so a project that has never
+   * touched the picker behaves exactly as before.
+   *
+   * `faithAlignment` rides in `input` rather than as a top-level field: every kind's input
+   * schema is `.passthrough()`, so it needs no api or db-lib contract change. It is only
+   * attached for GLOO, because OpenRouter has no such concept and sending it would be
+   * meaningless noise in the request body.
+   */
+  const generationTarget = (kind: SelectableKind) => {
+    const settings = state.storyboard.aiSettings;
+    const choice = resolveChoice(
+      kind,
+      settings,
+      state.modelCatalogue?.defaults ?? {},
+      state.modelCatalogue?.models ?? [],
+    );
+    return {
+      // Only sent when BOTH are known — a provider without a model would make the BFF
+      // send this deployment's default model for a different provider.
+      target: choice.model
+        ? { provider: choice.provider, model: choice.model }
+        : {},
+      // Gloo ONLY: `tradition` is a Gloo request field with no OpenRouter equivalent, so
+      // attaching it elsewhere would be meaningless noise in the request body.
+      faithAlignment:
+        choice.provider === "gloo" ? settings?.faithAlignment : undefined,
+    };
+  };
+
   const rerollVisual = (sceneId?: string) => {
     if (!project.manifest) return; // mock catalog: no real generation
     const id = sceneId ?? state.selectedSceneId;
     const scene = state.storyboard.scenes.find((s) => s.id === id);
     if (!scene) return;
+    const { target, faithAlignment } = generationTarget("image");
     runGeneration(
       imageSlot(id),
       {
         kind: "image",
         projectId: project.id,
         sceneId: id,
-        input: { prompt: scene.visualPrompt },
+        ...target,
+        input: {
+          prompt: scene.visualPrompt,
+          ...(faithAlignment ? { faithAlignment } : {}),
+        },
       },
       (gen, url) => imageGenerationOutcome(id, gen, url),
       true,
     );
   };
+
+  /**
+   * Item 4 — generate a VIDEO for this scene instead of a still.
+   *
+   * Needs no dbos change to be per-scene: `generateVideo` already writes
+   * `buildAssetKey(projectId, generationId)`, the same 4-segment extensionless shape as an
+   * image, and the `AiGeneration` row already carries `sceneId`. What was missing is the
+   * studio half — posting the request against a scene and writing `visualAssetKind` when
+   * the clip lands (see `VIDEO_GENERATED`).
+   *
+   * The clip is REQUESTED at the scene's effective length rather than the scene being
+   * stretched to fit the clip. That is the opposite of the narration rule, deliberately: a
+   * verse cut off mid-sentence is semantically broken, a clip that ends before its scene is
+   * only a visual choice — and folding a third input into `effectiveSceneDurationSeconds`
+   * would put the six mutation-pinned length functions in `scene-duration.ts` at risk of a
+   * scrubber/<Sequence> desync for no semantic gain.
+   */
+  const generateSceneVideo = (sceneId?: string) => {
+    if (!project.manifest) return;
+    const id = sceneId ?? state.selectedSceneId;
+    const scene = state.storyboard.scenes.find((s) => s.id === id);
+    if (!scene) return;
+    const { target } = generationTarget("video");
+    runGeneration(
+      videoSlot(id),
+      {
+        kind: "video",
+        projectId: project.id,
+        sceneId: id,
+        ...target,
+        input: {
+          prompt: scene.visualPrompt,
+          durationSeconds: Math.max(1, Math.ceil(effectiveSceneDurationSeconds(scene))),
+        },
+      },
+      (gen, url) => videoGenerationOutcome(id, gen, url),
+      true,
+      // A video job is minutes, not seconds — the default 300 s budget would report a
+      // failure while the workflow was still running.
+      { timeoutMs: VIDEO_GENERATION_POLL_TIMEOUT_MS },
+    );
+  };
+
+  const setAiProvider = (kind: SelectableKind, provider: AiProvider) =>
+    dispatch({ type: "SET_AI_PROVIDER", kind, provider });
+  const setAiModel = (kind: SelectableKind, model: string | null) =>
+    dispatch({ type: "SET_AI_MODEL", kind, model });
+  const setFaithAlignment = (value: FaithAlignment | null) =>
+    dispatch({ type: "SET_FAITH_ALIGNMENT", value });
 
   const rewriteScript = (sceneId?: string) => {
     if (!project.manifest) return;
@@ -538,9 +676,10 @@ export function StudioProvider({
       description: state.storyboard.voiceDescription,
     };
     if (state.storyboard.voiceLabel) voice.label = state.storyboard.voiceLabel;
+    const { target } = generationTarget("narration");
     runGeneration(
       NARRATION_SLOT,
-      { kind: "narration", projectId: project.id, input: { voice, scenes } },
+      { kind: "narration", projectId: project.id, ...target, input: { voice, scenes } },
       (gen, url) => narrationGenerationOutcome(gen, url),
       true,
     );
@@ -548,11 +687,13 @@ export function StudioProvider({
 
   const regenerateMusic = () => {
     if (!project.manifest) return;
+    const { target: musicTarget } = generationTarget("music");
     runGeneration(
       MUSIC_SLOT,
       {
         kind: "music",
         projectId: project.id,
+        ...musicTarget,
         input: {
           style: state.storyboard.musicMood || "Cinematic score",
           durationSeconds: totalDurationSeconds(state.storyboard) || 30,
@@ -589,6 +730,10 @@ export function StudioProvider({
     generateStoryboard,
     regenerateNarration,
     regenerateMusic,
+    setAiProvider,
+    setAiModel,
+    setFaithAlignment,
+    generateSceneVideo,
   };
 
   return (

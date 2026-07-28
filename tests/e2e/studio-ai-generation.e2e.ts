@@ -232,6 +232,29 @@ afterAll(async () => {
   await stagehand?.close();
 });
 
+describe("Per-scene video (genesis-1 item 4)", () => {
+  // DELIBERATELY UNEXECUTED, and said so rather than quietly omitted.
+  //
+  // The claim is real and worth making: `generate-scene-video` runs a live text-to-video
+  // generation and the scene's `data-visual-asset-kind` becomes "video" — which is the
+  // only end-to-end proof that the key and the KIND are written together, and therefore
+  // that the renderer will reach for <OffthreadVideo> rather than <Img>.
+  //
+  // It is not enabled because of what it costs: a real clip is minutes of wall clock and
+  // real money PER RUN, on every sweep, forever. §10.9 sanctions exactly three cost
+  // mitigations (cheapest/fastest model, minimal duration/resolution, a low-balance key)
+  // and none of them make a video generation cheap enough to be routine. What the
+  // deferral does NOT leave uncovered: the durable submit → poll → download path already
+  // has its own dbos crash/replay e2e against real OpenRouter, and the
+  // key-and-kind-in-one-action rule is pinned by U-SV1/U-SV1b.
+  //
+  // Enable it by hand (`it` instead of `it.todo`) when validating item 4 against a live
+  // provider; expect a 15–25 minute run and a real charge.
+  test.todo(
+    "E-AI3: generate-scene-video runs a real video generation and sets data-visual-asset-kind=video",
+  );
+});
+
 describe("Reroll visual → preview updates from a real MinIO asset, and survives commit + re-open", () => {
   test("E-AI1/E-AI2: reroll a scene visual (real OpenRouter → MinIO), then Commit + re-open persists the ref", async () => {
     const slug = await openStudioWithScenes();

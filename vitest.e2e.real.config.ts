@@ -55,6 +55,12 @@ export default defineConfig({
       "tests/e2e/openrouter-gloo-connect.e2e.ts",
       "tests/e2e/project-wizards-real.e2e.ts",
       "tests/e2e/studio-ai-generation.e2e.ts",
+      // Genesis-1 — the Inspector's provider/model selectors, faith alignment and cost
+      // estimate against the LIVE OpenRouter AND Gloo catalogues. It needs Compose (the
+      // api reads Gloo's catalogue with a bearer minted from the user's stored, encrypted
+      // client credentials), real GitHub (E-MC5 commits the manifest and re-reads it from
+      // git), and the root `.env` GLOO_CONNECT_* credentials.
+      "tests/e2e/studio-model-cost.e2e.ts",
       "tests/e2e/studio-hydration.e2e.ts",
       "tests/e2e/studio-publish-real.e2e.ts",
       "tests/e2e/studio-replan-scripture.e2e.ts",
