@@ -133,6 +133,7 @@ describe("publishButtonGate", () => {
     isRealProject: true,
     publishing: false,
     committing: false,
+    dirty: false,
     workingBranch: "v0.0.3",
   };
 
@@ -179,6 +180,42 @@ describe("publishButtonGate", () => {
       versions: AFTER_PUBLISH,
       committing: true,
     });
+    expect(gate.reason).toBe("A commit is still running — publish when it finishes.");
+  });
+
+  it("U-TG9a: disabled while DIRTY — a publish releases the last COMMIT, so uncommitted edits would not be in the release", () => {
+    // Same failure shape as U-TG7b for Render, and for the same underlying reason:
+    // `publishVersionWorkflow` merges the version BRANCH into main. An edit that is
+    // still only in this browser tab is not on that branch, so publishing over it
+    // ships a version that silently omits what is on screen.
+    const gate = publishButtonGate({ ...base, dirty: true });
+    expect(gate.enabled).toBe(false);
+    expect(gate.reason).toBe(
+      "Commit your changes first — a publish releases the last commit.",
+    );
+  });
+
+  it("U-TG9b: the dirty check sits AFTER the mock-catalogue escape — a dirty MOCK project keeps Publish live", () => {
+    // Ordering, pinned. `studio-publish.e2e.ts` E-PUB4 and `studio-project.e2e.ts` E-SP3
+    // both EDIT the mock storyboard (dirtying it) and then click Publish. Putting the
+    // dirty check before `isRealProject` would turn item 7 into a mock-lane regression.
+    expect(
+      publishButtonGate({ ...base, isRealProject: false, versions: null, dirty: true })
+        .enabled,
+    ).toBe(true);
+  });
+
+  it("U-TG9c: dirty outranks 'nothing to publish' — both are true after an edit, and only one is actionable", () => {
+    // After an edit with no commit yet BOTH reasons hold. The commit is the single
+    // action that clears both, so that is the one the tooltip must name.
+    const gate = publishButtonGate({ ...base, versions: AFTER_PUBLISH, dirty: true });
+    expect(gate.reason).toBe(
+      "Commit your changes first — a publish releases the last commit.",
+    );
+  });
+
+  it("U-TG9d: an in-flight commit still outranks dirty — 'wait' beats 'go commit' when a commit is already running", () => {
+    const gate = publishButtonGate({ ...base, dirty: true, committing: true });
     expect(gate.reason).toBe("A commit is still running — publish when it finishes.");
   });
 });

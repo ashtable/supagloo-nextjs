@@ -131,10 +131,14 @@ function SceneContent({
           <div
             // Item 1's "respecting RTL/LTR", mirrored EXACTLY in the render generator
             // (`supagloo-nodejs-dbos/src/remotion/templates.ts`). `dir="auto"` is the
-            // HTML first-strong-character algorithm; the preview (@remotion/player) and
-            // the render (@remotion/renderer) are both Chromium, so they resolve it with
-            // the same engine and cannot disagree — which a per-scene manifest field,
-            // mirrored across four schemas, would not have guaranteed any better.
+            // HTML standard's bidi first-strong-character determination (UAX#9 P2/P3) —
+            // a SPECIFIED algorithm, implemented identically by every browser engine.
+            // This preview runs @remotion/player in the USER'S browser (which may be
+            // Safari or Firefox); the render runs @remotion/renderer in headless
+            // Chromium. They are NOT the same engine, and they do not need to be: what
+            // makes the preview and the MP4 agree is the standard, not a shared engine.
+            // A per-scene manifest field, mirrored across four schemas, would not have
+            // guaranteed it any better.
             // Centring is direction-neutral, so `dir` only fixes punctuation placement
             // and mixed-content ordering, never the layout.
             dir="auto"

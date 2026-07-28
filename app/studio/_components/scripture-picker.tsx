@@ -140,6 +140,13 @@ export default function ScripturePicker() {
   });
   const [languages, setLanguages] = useState<BibleLanguage[] | null>(null);
   const [translations, setTranslations] = useState<Keyed<BibleTranslation> | null>(null);
+  // LAST-WRITE-WINS, not a latch. Every one of the three writers below sets it from the
+  // outcome it just observed, so a transient blip stops claiming "couldn't reach
+  // YouVersion" the moment a read succeeds. It used to be write-once-true, which left
+  // the advisory on screen for the whole session while the picker carried on working
+  // perfectly — `failed` gates ONLY the advisory line; each select's `disabled` comes
+  // from whether its own options exist. Nothing here is per-level: one advisory, always
+  // describing the most recent read.
   const [failed, setFailed] = useState(false);
 
   // The three dependent lists are stored KEYED by the selection that produced them, and
@@ -161,7 +168,7 @@ export default function ScripturePicker() {
       const langs = await fetchBibleLanguages();
       if (!alive) return;
       setLanguages(langs);
-      if (!langs) setFailed(true);
+      setFailed(!langs);
     })();
     return () => {
       alive = false;
@@ -179,10 +186,8 @@ export default function ScripturePicker() {
       const items = await fetchBibleTranslations(languageTag);
       if (!alive) return;
       setTranslations({ key: languageTag, items });
-      if (!items) {
-        setFailed(true);
-        return;
-      }
+      setFailed(!items);
+      if (!items) return;
       const preferred = defaultTranslation(items);
       // Guard again inside the updater: the user may have moved on between the await
       // resolving and React applying this.
@@ -259,10 +264,8 @@ export default function ScripturePicker() {
     // verses route. No USFM reference is ever assembled here.
     void (async () => {
       const passage = await fetchBiblePassage(selection.bibleId!, passageId);
-      if (!passage) {
-        setFailed(true);
-        return;
-      }
+      setFailed(!passage);
+      if (!passage) return;
       pickScripture(scripturePick(passage, selection.translationAbbreviation!));
     })();
   };

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
-import { type StagehandPage } from "./helpers";
+import { commitOneSceneViaBff, type StagehandPage } from "./helpers";
 import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
   createProjectViaExistingEmptyRepo,
@@ -60,37 +60,80 @@ import {
  * holds real repos). Reclaim them with the root repo's interactive
  * `npm run cleanup:github-e2e`, which archives — never deletes.
  *
+ * ── THE SEED, AND WHAT IS AND IS NOT PROVEN ABOUT IT ─────────────────────────
+ * `createProjectAndOpenStudio` now puts ONE real commit on the working branch
+ * (`commitOneSceneViaBff` in `helpers.ts`) and reloads, before any test touches
+ * `publish-button`. **THIS LANE HAS NOT BEEN EXECUTED SINCE THAT CHANGE** — it creates
+ * real GitHub fixture repos on every run, and it was deliberately not run to prove this.
+ * Everything below is reasoning from the code, not an observation. Treat it that way.
+ *
+ * The seed is aimed at two failure modes, and the spec was red on BOTH before it:
+ *
+ *  1. **The new Publish gate disabling the button.** `publishButtonGate` returns
+ *     `disabled("Nothing new to publish…")` when the working row's `headCommitSha`
+ *     equals the base row's. `clickTestId` is `locator().click()`, and Playwright's click
+ *     actionability includes ENABLED, so the click in `publishThenStartRender` does not
+ *     fail loudly — it TIMES OUT. (The sibling spec proves the shape: it has to write
+ *     `await clickTestId("publish-button").catch(() => undefined)` to click a button it
+ *     expects to be dead.) It was a RACE, not a constant: the gate fails open until
+ *     `GET /versions` lands, and under `next dev` that route compiles on its first
+ *     request.
+ *  2. **The pre-existing 422.** dbos `de745d2` cuts v0.0.1 AT `pr.mergeSha`, so a
+ *     freshly-scaffolded project is ZERO commits ahead of main and the publish endpoint
+ *     answers `"No commits between main and v0.0.1"` — which surfaced here as the 180 s
+ *     `publish-published-card` wait expiring.
+ *
+ * The seed removes both, and it is the SAME helper `studio-publish-real.e2e.ts` E-PUBR1
+ * uses — which DID pass in the real lane on 2026-07-28. That is the strongest evidence
+ * available without running this lane: the helper is proven, its use here is not.
+ *
+ * The reload after the seed is required (the page's `state.versions` predates the commit)
+ * and sufficient (after it the gate is ENABLED in both branches of the versions race), so
+ * no new wait helper was introduced.
+ *
  * ── COST / LATENCY (design-delta §10.9, plan §6 note 4) ──────────────────────
  * The SLOW/HEAVY lane: a real Chromium install + Remotion bundle takes minutes,
  * and every git operation is now a real round-trip to github.com (the wizard's
  * `project-ready-card` budget is 240 s against the wireframes' designed ~20 s
  * ideal). Hence the 20-minute per-test budgets below.
  *
- * It is ZERO-PROVIDER-egress (no OpenRouter/Gloo/YouVersion calls), but NOT because
- * anything is cached. Every test here builds a FRESH project, so the manifest the
- * worker renders is db-lib's `buildBlankManifest()`: `scenes: []`, a `narratorVoice`
- * with NO `assetKey`, and no `music` key at all. Both of the worker's audio plans
- * therefore resolve to `skipped` in dbos `render/audio.ts` `planAudioTrack` —
- * narration because the per-scene `scriptText` concatenation over zero scenes is
- * empty ("no narration script text in the manifest"), music because
- * `manifest.music?.style` is undefined ("the manifest has no music bed") — and a
- * `skipped` plan issues no `requestSpeech`. (If `RENDER_NARRATION_MODEL`/
- * `RENDER_MUSIC_MODEL` are unset, or the seeded owner has no OpenRouter connection,
- * both plans skip even earlier, at those gates. Every path through a blank manifest
- * is `skipped`.) The GIT path, by contrast, is now fully real: a real clone from
- * github.com on every render.
+ * ⚠ **The two paragraphs below described the pre-SEED fixture and are now only PARTLY
+ * true.** They are corrected in place rather than deleted, because the reasoning still
+ * explains where the boundaries are. Nothing in this section has been re-measured — see
+ * "THE SEED" above.
+ *
+ * It USED TO BE ZERO-PROVIDER-egress, and not because anything was cached: every test
+ * built a FRESH project, so the manifest the worker rendered was db-lib's
+ * `buildBlankManifest()` — `scenes: []`, a `narratorVoice` with NO `assetKey`, and no
+ * `music` key at all. Both of the worker's audio plans resolved to `skipped` in dbos
+ * `render/audio.ts` `planAudioTrack` — narration because the per-scene `scriptText`
+ * concatenation over zero scenes is empty ("no narration script text in the manifest"),
+ * music because `manifest.music?.style` is undefined ("the manifest has no music bed") —
+ * and a `skipped` plan issues no `requestSpeech`.
+ *
+ * **The seed changes the narration half of that.** The committed scene carries a real
+ * `scriptText`, so the concatenation is no longer empty and the narration plan no longer
+ * skips at THAT gate. It still skips at the earlier ones — `RENDER_NARRATION_MODEL`
+ * unset, or the seeded owner having no OpenRouter connection — so whether this lane is
+ * still provider-free is now an ENVIRONMENT question, not a structural guarantee. The
+ * music half is unchanged: the seed writes no `music` key, so music still skips
+ * unconditionally. Anyone quoting "zero-provider-egress" for this lane must now check
+ * `RENDER_NARRATION_MODEL` first.
  *
  * ── WHAT THAT COSTS US IN COVERAGE (read before quoting these results) ───────
- * The same blank fixture is the limit of this spec. A zero-scene manifest generates
- * a composition whose `durationInFrames` is clamped to `Math.max(1, 0) === 1`, so
- * **there is essentially ONE frame to count**: E-RR2's "frames advance" assertion is
- * WEAK, and "the overlay tracks real frames" is true only in the sense that every
- * number the overlay shows originates from the server rather than a fake ticker. Do
- * not overclaim it. These tests prove the PLUMBING — clone → install → bundle →
- * encode → upload → presign, plus the overlay tracking whatever the server reports —
- * over an essentially empty 1080×1920 frame. They do NOT exercise the `cached` audio
- * branch, a multi-scene composition, or a frame count large enough for the progress
- * math to be interesting. A zero-egress multi-scene render fixture is its own plan row.
+ * Pre-seed, the blank fixture was the limit of this spec: a zero-scene manifest generates
+ * a composition whose `durationInFrames` is clamped to `Math.max(1, 0) === 1`, so there
+ * was essentially ONE frame to count, E-RR2's "frames advance" assertion was WEAK, and
+ * "the overlay tracks real frames" was true only in the sense that every number the
+ * overlay shows originates from the server rather than a fake ticker.
+ *
+ * The seed puts ONE real 5-second scene in the manifest, so the composition should now be
+ * ~150 frames rather than 1 — E-RR2 should become a materially stronger assertion, and
+ * the render itself more representative. SHOULD: unrun, see "THE SEED". What is still
+ * true either way is the ceiling: these tests prove the PLUMBING — clone → install →
+ * bundle → encode → upload → presign, plus the overlay tracking whatever the server
+ * reports. Even after the seed they do NOT exercise the `cached` audio branch or a
+ * MULTI-scene composition. A zero-egress multi-scene render fixture is its own plan row.
  *
  * ── NO PARITY ASSERTIONS ─────────────────────────────────────────────────────
  * Per design-delta §2 v1-limitation #2 (restated as a hard rule at plan.md:122), nothing
@@ -235,6 +278,17 @@ async function createProjectAndOpenStudio(slug: string): Promise<string> {
     slug,
     seedUrl: SEED_URL,
   });
+  // Seed ONE real commit before anything reads the Publish gate. See "THE SEED" in the
+  // header docblock: without it a freshly-scaffolded project is zero commits ahead of
+  // main, which is both a disabled `publish-button` and a 422 from the publish endpoint.
+  // All three tests inherit this through this one function.
+  await commitOneSceneViaBff(page, projectId, "v0.0.1");
+  // REQUIRED, not defensive: the loaded page's `state.versions` predates the commit, so
+  // the gate would still say "nothing to publish". SUFFICIENT too — after the reload the
+  // button is enabled in BOTH branches of the versions race (before the read lands the
+  // gate is `null` ⇒ fail-open ENABLED; after it lands the working row's `headCommitSha`
+  // now differs from the base row's ⇒ `true` ⇒ ENABLED), so no wait helper is needed.
+  await page.reload({ waitUntil: "load" });
   return projectId;
 }
 

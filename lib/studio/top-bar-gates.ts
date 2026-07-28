@@ -93,6 +93,9 @@ export interface PublishGateInput {
   isRealProject: boolean;
   publishing: boolean;
   committing: boolean;
+  /** Uncommitted edits are on screen (`state.dirty`). A publish releases the last
+   *  COMMIT, so these are not in it. */
+  dirty: boolean;
   workingBranch: string;
 }
 
@@ -105,6 +108,18 @@ export function publishButtonGate(input: PublishGateInput): GateResult {
     return disabled("A commit is still running — publish when it finishes.");
   }
   if (!input.isRealProject) return ENABLED;
+
+  // `publishVersionWorkflow` merges the version BRANCH into main, so a publish releases
+  // the last COMMIT — exactly like a render, which clones it. Publishing while dirty
+  // ships a version that silently omits the text on screen. The ordering is load-bearing
+  // in BOTH directions: AFTER `isRealProject`, because the mock catalogue's Publish is
+  // clicked from an edited storyboard (E-PUB4 / E-SP3) and disabling it there would be a
+  // regression dressed as a fix; and BEFORE `hasUnpublishedCommits`, because after an
+  // edit both reasons are true and only "commit first" is the action that clears both.
+  // It leaves the three-valued fail-open semantics below completely untouched.
+  if (input.dirty) {
+    return disabled("Commit your changes first — a publish releases the last commit.");
+  }
 
   return hasUnpublishedCommits(input.versions, input.workingBranch) === false
     ? disabled("Nothing new to publish — commit a change first.")

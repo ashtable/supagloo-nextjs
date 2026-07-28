@@ -519,24 +519,43 @@ describe("studioReducer", () => {
     });
   });
 
-  it("U-R27: PUBLISH_REAL_DONE lands published+clean on the authoritative next branch (one-step)", () => {
-    const publishing = studioReducer(
-      studioReducer(init(), { type: "OPEN_PUBLISH" }),
-      { type: "PUBLISH_REAL_BEGIN" },
-    );
-    const done = studioReducer(publishing, {
-      type: "PUBLISH_REAL_DONE",
-      publishedTag: "v0.0.1",
-      nextBranch: "v0.0.2",
-    });
-    expect(done.publishFlow).toBe("published");
-    expect(done.publishing).toBe(false);
-    expect(done.dirty).toBe(false);
+  it("U-R27: PUBLISH_REAL_DONE lands published on the authoritative next branch (one-step) and CARRIES `dirty` THROUGH", () => {
+    const publish = (from: StudioState) =>
+      studioReducer(
+        studioReducer(studioReducer(from, { type: "OPEN_PUBLISH" }), {
+          type: "PUBLISH_REAL_BEGIN",
+        }),
+        { type: "PUBLISH_REAL_DONE", publishedTag: "v0.0.1", nextBranch: "v0.0.2" },
+      );
+
+    const fromClean = publish(init());
+    expect(fromClean.publishFlow).toBe("published");
+    expect(fromClean.publishing).toBe(false);
     // Model A one-step: published v0.0.1 live, now editing on v0.0.2 (NOT the mock v0.0.3)
-    expect(done.lastPublishedVersion).toBe("v0.0.1");
-    expect(done.versionBranch).toBe("v0.0.2");
-    expect(done.publishStages).toBeNull();
-    expect(done.publishError).toBeNull();
+    expect(fromClean.lastPublishedVersion).toBe("v0.0.1");
+    expect(fromClean.versionBranch).toBe("v0.0.2");
+    expect(fromClean.publishStages).toBeNull();
+    expect(fromClean.publishError).toBeNull();
+    expect(fromClean.dirty).toBe(false);
+
+    // ── THE CARRY-THROUGH, and it is the whole point of this case ──────────────
+    // A publish releases the LAST COMMIT: `publishVersionWorkflow` merges the version
+    // BRANCH into main. It never reads, writes or discards the uncommitted edits sitting
+    // in this browser tab, so PUBLISH_REAL_DONE has no information about them and must
+    // not assert one. It used to set `dirty: false` unconditionally, which made the
+    // header read "All changes committed" over unsaved edits and re-enabled the Render
+    // button — and a render does `cloneAtVersion`, so it would have produced a video
+    // WITHOUT those edits and given no hint why.
+    //
+    // Starting from a CLEAN state cannot tell "carried through" from "cleared" — both
+    // produce `false`. Only the dirty start distinguishes them, which is exactly why the
+    // previous version of this case did not catch the bug.
+    const edited = studioReducer(init(), {
+      type: "EDIT_SCRIPT",
+      script: "an edit that was never committed",
+    });
+    expect(edited.dirty).toBe(true); // the premise of the assertion below
+    expect(publish(edited).dirty).toBe(true);
   });
 
   it("U-R28: PUBLISH_FAILED clears publishing + records the error but STAYS on the publishing step", () => {

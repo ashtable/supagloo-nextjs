@@ -243,7 +243,16 @@ export function StudioProvider({
       const jobId = await commitVersion(project.id, manifest, message);
       if (!aliveRef.current) return;
       if (!jobId) {
-        dispatch(commitOutcome(null));
+        // The POST itself did not produce a job: a non-2xx (409 `git_ops_in_flight`,
+        // 422 `manifest_invalid`), an unparseable body, or a thrown fetch. NOTHING
+        // started, so nothing can have timed out — and the api answers a 422 in
+        // milliseconds, which D3's shipped workflow makes easy to reach (duplicate a
+        // verse, clear a Script textarea to retype it, commit: `scriptText` is
+        // `z.string().min(1)` in both manifest mirrors). Routing this through
+        // `commitOutcome(null)` reported it as `commit_timeout`, naming a failure mode
+        // that did not occur. The POLL branch below keeps `commitOutcome`, where a null
+        // job really does mean the poll gave up.
+        dispatch({ type: "COMMIT_FAILED", error: "commit_request_failed" });
         return;
       }
       const job = await pollJobUntilTerminal(project.id, jobId);

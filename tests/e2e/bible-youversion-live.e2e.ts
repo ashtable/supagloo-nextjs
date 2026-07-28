@@ -9,6 +9,7 @@ import {
   fetchTranslations,
   fetchVerses,
 } from "../../lib/youversion/client";
+import { DEFAULT_LANGUAGE_TAG } from "../../lib/studio/scripture-picker";
 
 /**
  * The LIVE contract for the Bible read surface (task item 1) — real
@@ -28,6 +29,15 @@ import {
  * No browser here, deliberately: the lane's Compose global setup is already paid for by
  * its sibling specs, and a Stagehand session would add minutes to prove nothing this
  * suite does not already prove about the provider.
+ *
+ * ── The English tag is IMPORTED, not written down ────────────────────────────────────
+ * Every English probe below goes through `DEFAULT_LANGUAGE_TAG` — the same constant the
+ * picker sends. It used to be the literal `"eng"`, which is NOT what the app asks for:
+ * `lib/studio/scripture-picker.ts` opens on `"en"`, and E-YV2 proves the live catalogue's
+ * own tags are the two-letter form. A suite that probes a tag the app never sends can go
+ * green while the app's actual request 404s, which is the one failure this file exists to
+ * catch. All four call sites use the constant, including E-YV4b's where the tag is
+ * incidental, so nobody has to work out later which literal was deliberate.
  */
 
 const APP_KEY = process.env.YOUVERSION_APP_KEY ?? process.env.YV_APP_KEY ?? "";
@@ -79,7 +89,7 @@ describe("YouVersion live contract — catalogue", () => {
   });
 
   it("E-YV3: the app's English grant contains ASV and BSB and does NOT contain KJV (the premise of USER DECISION D1)", async () => {
-    const english = await fetchTranslations("eng", deps);
+    const english = await fetchTranslations(DEFAULT_LANGUAGE_TAG, deps);
     const abbreviations = english.map((t) => t.abbreviation);
 
     expect(abbreviations).toContain(ASV);
@@ -97,7 +107,7 @@ describe("YouVersion live contract — catalogue", () => {
   });
 
   it("E-YV4b: a bad app key is a distinguishable 401, not a silent empty list", async () => {
-    const err = await fetchTranslations("eng", {
+    const err = await fetchTranslations(DEFAULT_LANGUAGE_TAG, {
       appKey: "definitely-not-a-real-key",
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(YouVersionHttpError);
@@ -107,7 +117,7 @@ describe("YouVersion live contract — catalogue", () => {
 
 describe("YouVersion live contract — the picker's walk", () => {
   it("E-YV5: ASV → books → chapters → verses → passage, entirely by ECHOED passage_id", async () => {
-    const english = await fetchTranslations("eng", deps);
+    const english = await fetchTranslations(DEFAULT_LANGUAGE_TAG, deps);
     const asv = english.find((t) => t.abbreviation === ASV);
     expect(asv, "ASV must be in the live English collection").toBeTruthy();
 
@@ -155,7 +165,7 @@ describe("YouVersion live contract — the picker's walk", () => {
   });
 
   it("E-YV6b: an unknown USFM ref is a typed 404, never an empty passage", async () => {
-    const english = await fetchTranslations("eng", deps);
+    const english = await fetchTranslations(DEFAULT_LANGUAGE_TAG, deps);
     const asv = english.find((t) => t.abbreviation === ASV)!;
     const err = await fetchPassage(asv.id, "GEN.999.999", deps).catch(
       (e: unknown) => e,

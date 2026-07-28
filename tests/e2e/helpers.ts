@@ -342,3 +342,105 @@ export function makeHelpers(page: StagehandPage): E2EHelpers {
     waitForGone,
   };
 }
+
+// ── real-lane seeding: one real commit, through the app's own BFF ────────────
+
+/**
+ * Put ONE real commit on `branch` of the project with slug `slug`, through the app's own
+ * BFF routes with the browser's real session cookie — read the committed manifest, swap
+ * in one scene, POST it to `/api/projects/:id/commit`, then poll the ProjectJob to a
+ * terminal status.
+ *
+ * This is seeding through the real system, not a stub: the same api, the same DBOS
+ * git-ops worker and the same github.com the UI would drive. It exists because a
+ * freshly-scaffolded manifest has `scenes: []` — so the studio renders `<StudioEmpty />`
+ * and offers no `script-input` to dirty (the same gap `studio-hydration.e2e.ts` documents
+ * as its own skip reason), AND the working branch is cut AT `pr.mergeSha` (dbos
+ * `de745d2`), so it is ZERO commits ahead of main and a publish 422s with
+ * "No commits between main and v0.0.1".
+ *
+ * ONE copy, shared by `studio-publish-real.e2e.ts` and `studio-render-real.e2e.ts`.
+ * It lived in the publish spec first; the render spec needed a byte-identical body, and a
+ * second copy of seeding logic is how the two drift.
+ *
+ * Callers must `page.reload()` afterwards if they intend to read anything derived from
+ * `GET /versions` (the Publish gate): the loaded page's `state.versions` predates this
+ * commit and would still report "nothing to publish".
+ *
+ * `helpers.ts` is imported by MOCK-lane specs too. This is a plain exported async
+ * function with no import-time side effects and no network of its own, so adding it here
+ * changes nothing about that lane.
+ */
+export async function commitOneSceneViaBff(
+  page: StagehandPage,
+  slug: string,
+  branch: string,
+): Promise<void> {
+  const outcome = await page.evaluate(
+    async ({ slug: wantedSlug, ref }) => {
+      // The studio holds a SLUG; every API path takes the cuid. `GET /api/projects` is
+      // the only slug→id index the API exposes — the same hop `studio-data.ts` makes.
+      const listRes = await fetch("/api/projects", { cache: "no-store" });
+      if (!listRes.ok) return { ok: false, why: `projects ${listRes.status}` };
+      const { projects } = (await listRes.json()) as {
+        projects: Array<{ id: string; slug: string }>;
+      };
+      const id = projects.find((p) => p.slug === wantedSlug)?.id;
+      if (!id) return { ok: false, why: `no project with slug ${wantedSlug}` };
+
+      const manifestRes = await fetch(
+        `/api/projects/${id}/manifest?ref=${encodeURIComponent(ref)}`,
+        { cache: "no-store" },
+      );
+      if (!manifestRes.ok) return { ok: false, why: `manifest ${manifestRes.status}` };
+      const { manifest } = (await manifestRes.json()) as { manifest: Record<string, unknown> };
+
+      const scenes = [
+        {
+          id: "s1",
+          name: "seeded scene",
+          scriptText: "In the beginning God created the heavens and the earth.",
+          reference: "Genesis 1:1",
+          translation: "ASV",
+          visualPrompt: "a dark formless deep at the first light",
+          durationSeconds: 5,
+          captions: true,
+        },
+      ];
+
+      const commitRes = await fetch(`/api/projects/${id}/commit`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          manifest: { ...manifest, scenes },
+          message: "Seed one scene so there is something to publish",
+        }),
+      });
+      if (!commitRes.ok) {
+        return { ok: false, why: `commit ${commitRes.status} ${await commitRes.text()}` };
+      }
+      const { jobId } = (await commitRes.json()) as { jobId: string };
+
+      const deadline = Date.now() + 180_000;
+      while (Date.now() < deadline) {
+        const jobRes = await fetch(`/api/projects/${id}/jobs/${jobId}`, {
+          cache: "no-store",
+        });
+        if (jobRes.ok) {
+          const { job } = (await jobRes.json()) as {
+            job: { status: string; error: string | null };
+          };
+          if (job.status === "succeeded") return { ok: true, why: "" };
+          if (job.status === "failed" || job.status === "canceled") {
+            return { ok: false, why: `job ${job.status}: ${job.error ?? ""}` };
+          }
+        }
+        await new Promise((r) => setTimeout(r, 700));
+      }
+      return { ok: false, why: "commit job never reached a terminal status" };
+    },
+    { slug, ref: branch },
+  );
+
+  if (!outcome.ok) throw new Error(`seed commit failed: ${outcome.why}`);
+}

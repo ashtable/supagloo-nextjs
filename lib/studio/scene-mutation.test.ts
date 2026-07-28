@@ -78,6 +78,24 @@ describe("bounds", () => {
     expect(deleteScene(short, "s1")).toBe(short);
   });
 
+  it("U-S21c: addSceneAfter is a NO-OP on an EMPTY storyboard — it is total at its own boundary", () => {
+    // `canAddScene` is `length < MAX_SCENES`, so it says TRUE at length 0. Without this
+    // guard `addSceneAfter` would read `sb.scenes[-1]` (undefined) and emit
+    // `script: ""` — and BOTH manifest mirrors declare `scriptText: z.string().min(1)`
+    // (`lib/api/contracts.ts:432`, db-lib `schemas.ts:198`), so the very first added
+    // scene would make the whole manifest uncommittable (422 `manifest_invalid`).
+    //
+    // Today the only caller is shielded by a guard two components away
+    // (`studio-app.tsx` renders `<StudioEmpty />` at zero scenes), which is a fact about
+    // a DIFFERENT file. D3 is explicit that the bounds live in the model, so the model
+    // answers for itself. Identity, matching U-S21/U-S23's refusal contract — the
+    // reducer uses it to avoid dirtying over a rejected click.
+    const empty = board(0);
+    expect(canAddScene(empty)).toBe(true); // the trap: the capacity check does allow it
+    expect(addSceneAfter(empty, null)).toBe(empty);
+    expect(addSceneAfter(empty, "s1")).toBe(empty);
+  });
+
   it("U-S21b: canAddScene / canDeleteScene are true strictly inside the band", () => {
     const mid = board(7);
     expect(canAddScene(mid)).toBe(true);

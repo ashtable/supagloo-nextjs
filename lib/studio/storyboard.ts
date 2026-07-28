@@ -308,11 +308,18 @@ function reindex(scenes: Scene[]): Scene[] {
  * It deliberately inherits NO generated assets — the source scene's visual and narration
  * belong to the source scene's text, not to this one.
  *
- * Returns the SAME object at MAX_SCENES, so a caller can use identity to decide whether
- * anything happened (the reducer uses exactly that to avoid dirtying on a refusal).
+ * Returns the SAME object at MAX_SCENES — and at length 0 — so a caller can use identity
+ * to decide whether anything happened (the reducer uses exactly that to avoid dirtying on
+ * a refusal).
  */
 export function addSceneAfter(sb: Storyboard, afterId: string | null): Storyboard {
-  if (!canAddScene(sb)) return sb;
+  // `canAddScene` is a CAPACITY check (`length < MAX_SCENES`), so it is TRUE at length 0
+  // — where there is no source scene to inherit from and the `?? ""` fallbacks below
+  // would emit `script: ""`, the one value both manifest mirrors reject. Guarded HERE
+  // rather than leaning on `studio-app.tsx` rendering `<StudioEmpty />` at zero scenes:
+  // D3 puts the bounds in the model, and a guard two components away is a fact about a
+  // different file, not a property of this function.
+  if (!canAddScene(sb) || sb.scenes.length === 0) return sb;
 
   const at = afterId ? sb.scenes.findIndex((s) => s.id === afterId) : -1;
   const source = at >= 0 ? sb.scenes[at] : sb.scenes[sb.scenes.length - 1];

@@ -6,18 +6,35 @@ import { YouVersionHttpError, type YouVersionDeps } from "./client";
  * session gate, and the upstream→our-status mapping. Pure (no `next/server`), so the
  * route files stay the thin Next.js adapters this repo's BFF convention asks for.
  *
- * ── On the session gate ────────────────────────────────────────────────────────────
- * These routes read PUBLIC Bible metadata using OUR app key. Requiring the session
- * cookie to be PRESENT is not an authorization decision — the BFF cannot validate the
- * cookie without a round trip to the api, and it deliberately does not make one for a
- * metadata read. It is a quota gate: it keeps our app key's budget behind the app's own
- * session surface instead of leaving an open proxy on the public internet.
+ * ── On the session gate — what it is NOT ───────────────────────────────────────────
+ * These routes read PUBLIC Bible metadata using OUR app key. `serveBible` below checks
+ * ONE thing: that a `supagloo_session` cookie was PRESENT and NON-EMPTY. That is not an
+ * authentication check and it does not bound abuse. Any non-empty value satisfies it, so
+ * `curl -H 'Cookie: supagloo_session=x'` reaches these routes from anywhere on the public
+ * internet — they ARE an open proxy, and describing the check as a "quota gate" or as
+ * "defence in depth" would be an overstatement of something that defends nothing. (Unlike
+ * the ~35 other BFF routes, which forward the cookie and let the api decide — see
+ * `app/api/me/route.ts`, whose contract is "…or 401 when there is no valid session".)
  *
- * The key itself is already publishable in this app's threat model:
- * `app/layout.tsx:60-64` documents that `YV_APP_KEY` is serialized into the RSC payload
- * on every page because it crosses into a `"use client"` component. So this gate is
- * defence in depth, and is described as exactly that rather than as protection it
- * cannot provide.
+ * ── The residual, measured (live probe, 2026-07-28) ────────────────────────────────
+ * An unauthenticated walk of the live catalogue's **1472** translations calling `/books`
+ * for each (**1,590,704 bytes** upstream apiece ⇒ **≈2.34 GB**) spends our app key's
+ * quota, and — because the cache key is `books:${bibleId}` and there are 1472 distinct
+ * ones against a **256**-entry insertion-order cache (`cache.ts:29`, eviction at
+ * `:62-66`) — also EVICTS every entry real users depend on. Both costs are real.
+ *
+ * ── Why that is accepted here rather than fixed here ───────────────────────────────
+ * `YV_APP_KEY` is already in the browser: `app/layout.tsx:103` reads it at RUNTIME and
+ * `app/layout.tsx:111` passes it into `<Providers appKey={appKey}>`, a `"use client"`
+ * component, so the real key is serialized into the RSC payload of every page. Anyone
+ * who wants to spend the quota does not need this proxy. (Do NOT cite the prose at
+ * `app/layout.tsx:60-64` for this — it describes the RETIRED build-time bake, in the
+ * past tense.)
+ *
+ * Making the gate real means a per-read round trip to the api to resolve the session —
+ * an api-boundary decision about where session resolution lives, not a bolt-on at the
+ * end of a UI task. Until that decision is taken, the check stays as it is and is named
+ * for exactly what it is: a cheap filter on drive-by traffic, not a control.
  */
 
 export interface BibleResult {

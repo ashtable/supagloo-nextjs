@@ -444,11 +444,17 @@ export function studioReducer(
     case "PUBLISH_REAL_DONE":
       // The authoritative bump rides the payload (Model A one-step): the published tag
       // went live on main, and the editor now sits on the next working branch.
+      //
+      // `dirty` is CARRIED THROUGH, deliberately. A publish merges the version BRANCH
+      // into main — `publishVersionWorkflow` never sees the uncommitted edits in this
+      // browser tab, so this action has no information about them. It used to clear the
+      // flag anyway, which made the header claim "All changes committed" over unsaved
+      // work and re-enabled Render (which clones the COMMITTED branch, so it would have
+      // encoded a video without those edits). U-R27 pins the carry-through.
       return {
         ...state,
         publishFlow: "published",
         publishing: false,
-        dirty: false,
         lastPublishedVersion: action.publishedTag,
         versionBranch: action.nextBranch,
         publishStages: null,
@@ -620,11 +626,16 @@ export function studioReducer(
 }
 
 /**
- * Map a POLLED terminal commit ProjectJob (or a null job = a POST failure / poll
- * timeout) to the reducer action that settles the commit. This is the real
- * replacement for the mocked `setTimeout(COMMIT_DONE)` — the transition is now
- * driven by the job's actual terminal status. `succeeded` → COMMIT_DONE (clean);
- * anything else (`failed`/`canceled`/timeout) → COMMIT_FAILED (stays dirty).
+ * Map a POLLED terminal commit ProjectJob to the reducer action that settles the commit.
+ * This is the real replacement for the mocked `setTimeout(COMMIT_DONE)` — the transition
+ * is now driven by the job's actual terminal status. `succeeded` → COMMIT_DONE (clean);
+ * anything else (`failed`/`canceled`) → COMMIT_FAILED (stays dirty).
+ *
+ * A null job means the POLL gave up, and ONLY that: `"commit_timeout"` is a true
+ * statement about a job that was created and never settled. A commit the server never
+ * accepted at all does NOT come through here — `studio-context.tsx`'s `if (!jobId)`
+ * branch dispatches `"commit_request_failed"` directly, because nothing that never
+ * started can have timed out.
  */
 export function commitOutcome(job: JobLike | null): StudioAction {
   if (job && job.status === "succeeded") return { type: "COMMIT_DONE" };

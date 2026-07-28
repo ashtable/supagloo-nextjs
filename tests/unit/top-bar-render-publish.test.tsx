@@ -226,4 +226,64 @@ describe("TopBar — item 7, the Publish gate", () => {
     const root = await open(realProject());
     expect((byTestId(root, "publish-button") as HTMLButtonElement).disabled).toBe(false);
   });
+
+  it("U-TB7: disabled with a commit-first title once there are uncommitted edits — even when a commit IS ahead", async () => {
+    // The versions say there is something to publish (U-TB5's fixture, which is enabled
+    // when clean), so the ONLY thing turning the button off here is the uncommitted edit.
+    // A publish merges the version BRANCH into main; the edit on screen is not on it, so
+    // publishing now releases a version that silently omits what the user is looking at.
+    // Driven through the real edit seam (`script-input`), not by hand-setting state.
+    fetchVersions.mockResolvedValue(SOMETHING_TO_PUBLISH);
+    mounted = await mount(
+      <StudioProvider project={realProject()}>
+        <TopBar />
+        <SceneInspector />
+      </StudioProvider>,
+    );
+    await flush();
+    const root = mounted.container;
+
+    expect((byTestId(root, "publish-button") as HTMLButtonElement).disabled).toBe(false);
+
+    await typeIntoTextArea(byTestId(root, "script-input"), "EDITED, NOT COMMITTED");
+    expect(byTestId(root, "version-branch-chip").getAttribute("data-dirty")).toBe("true");
+
+    const publish = byTestId(root, "publish-button") as HTMLButtonElement;
+    expect(publish.disabled).toBe(true);
+    expect(publish.getAttribute("title")).toBe(
+      "Commit your changes first — a publish releases the last commit.",
+    );
+    // and the disabled treatment is the same one U-TB4b pins: no gradient
+    expect(publish.style.background).not.toContain("gradient");
+  });
+});
+
+describe("TopBar — a commit the server never accepted is not a timeout", () => {
+  it("U-TB8: a null jobId reports the REQUEST failing, never `commit_timeout`", async () => {
+    // `commitVersion` returns null for ANY non-2xx / unparseable / thrown POST — a 422
+    // `manifest_invalid` (which D3's shipped workflow makes easy to hit: clear a Script
+    // textarea to retype it and commit) comes back in milliseconds. Reporting that as
+    // `commit_timeout` names a failure mode that did not occur.
+    //
+    // `commitVersion` is mocked to `async () => null` at the top of this file, which is
+    // exactly that seam. The POLL timeout keeps `commit_timeout` — see U-R14.
+    fetchVersions.mockResolvedValue(SOMETHING_TO_PUBLISH);
+    mounted = await mount(
+      <StudioProvider project={realProject()}>
+        <TopBar />
+        <SceneInspector />
+      </StudioProvider>,
+    );
+    await flush();
+    const root = mounted.container;
+
+    await typeIntoTextArea(byTestId(root, "script-input"), "EDITED, NOT COMMITTED");
+    await click(byTestId(root, "commit-button"));
+    await flush();
+
+    const chip = byTestId(root, "commit-error");
+    expect(chip.textContent).toContain("Commit failed");
+    expect(chip.getAttribute("title")).toBe("commit_request_failed");
+    expect(chip.getAttribute("title")).not.toBe("commit_timeout");
+  });
 });

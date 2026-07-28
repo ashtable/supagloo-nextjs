@@ -251,6 +251,27 @@ describe("ScripturePicker", () => {
     expect(byTestId(root, "script-input")).toBeTruthy();
   });
 
+  it("U-PK6b: the advisory CLEARS on the next success — last-write-wins, not a session-long latch", async () => {
+    // `failed` gates ONLY the advisory line; every select's `disabled` is derived from
+    // whether its own options exist. So a transient blip left the message on screen
+    // FOREVER while the picker carried on working perfectly — the app telling the user
+    // it cannot reach YouVersion at the same moment it is reaching YouVersion.
+    fetchBibleLanguages.mockResolvedValue(LANGUAGES);
+    fetchBibleTranslations.mockResolvedValue(null); // the default language's collection blips
+    const root = await open();
+    expect(queryTestId(root, "picker-error")).not.toBeNull();
+
+    // the user's next action is a real one, and it succeeds
+    fetchBibleTranslations.mockResolvedValue(ENGLISH);
+    fetchBibleBooks.mockResolvedValue(BOOKS);
+    await selectOption(byTestId(root, "picker-language"), "ar");
+    await flush();
+    await flush();
+
+    expect(fetchBibleTranslations).toHaveBeenLastCalledWith("ar");
+    expect(queryTestId(root, "picker-error")).toBeNull();
+  });
+
   it("U-PK7: the MOCK catalogue gets NO picker and makes NO request (the mock e2e lane has no egress)", async () => {
     happyPath();
     const mock = project();

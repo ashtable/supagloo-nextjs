@@ -70,6 +70,7 @@ export default function TopBar() {
     isRealProject: Boolean(project.manifest),
     publishing,
     committing,
+    dirty,
     workingBranch: versionBranch,
   });
 

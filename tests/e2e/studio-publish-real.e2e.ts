@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
-import { type StagehandPage } from "./helpers";
+import { commitOneSceneViaBff, type StagehandPage } from "./helpers";
 import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
   createProjectViaExistingEmptyRepo,
@@ -148,87 +148,6 @@ async function attr(id: string, name: string): Promise<string | null> {
   );
 }
 
-/**
- * Put ONE real commit on the working branch, through the app's own BFF routes with the
- * browser's real session cookie — read the committed manifest, add a scene, POST it to
- * `/api/projects/:id/commit`, then poll the ProjectJob to a terminal status.
- *
- * This is seeding through the real system, not a stub: the same api, the same DBOS
- * git-ops worker and the same github.com the UI would drive. It exists only because a
- * freshly-scaffolded manifest has `scenes: []`, so the studio renders `<StudioEmpty />`
- * and offers no `script-input` to dirty (the same gap `studio-hydration.e2e.ts`
- * documents as its own skip reason).
- */
-async function commitOneSceneViaBff(slug: string, branch: string): Promise<void> {
-  const outcome = await page.evaluate(
-    async ({ slug: wantedSlug, ref }) => {
-      // The studio holds a SLUG; every API path takes the cuid. `GET /api/projects` is
-      // the only slug→id index the API exposes — the same hop `studio-data.ts` makes.
-      const listRes = await fetch("/api/projects", { cache: "no-store" });
-      if (!listRes.ok) return { ok: false, why: `projects ${listRes.status}` };
-      const { projects } = (await listRes.json()) as {
-        projects: Array<{ id: string; slug: string }>;
-      };
-      const id = projects.find((p) => p.slug === wantedSlug)?.id;
-      if (!id) return { ok: false, why: `no project with slug ${wantedSlug}` };
-
-      const manifestRes = await fetch(
-        `/api/projects/${id}/manifest?ref=${encodeURIComponent(ref)}`,
-        { cache: "no-store" },
-      );
-      if (!manifestRes.ok) return { ok: false, why: `manifest ${manifestRes.status}` };
-      const { manifest } = (await manifestRes.json()) as { manifest: Record<string, unknown> };
-
-      const scenes = [
-        {
-          id: "s1",
-          name: "seeded scene",
-          scriptText: "In the beginning God created the heavens and the earth.",
-          reference: "Genesis 1:1",
-          translation: "ASV",
-          visualPrompt: "a dark formless deep at the first light",
-          durationSeconds: 5,
-          captions: true,
-        },
-      ];
-
-      const commitRes = await fetch(`/api/projects/${id}/commit`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          manifest: { ...manifest, scenes },
-          message: "Seed one scene so there is something to publish",
-        }),
-      });
-      if (!commitRes.ok) {
-        return { ok: false, why: `commit ${commitRes.status} ${await commitRes.text()}` };
-      }
-      const { jobId } = (await commitRes.json()) as { jobId: string };
-
-      const deadline = Date.now() + 180_000;
-      while (Date.now() < deadline) {
-        const jobRes = await fetch(`/api/projects/${id}/jobs/${jobId}`, {
-          cache: "no-store",
-        });
-        if (jobRes.ok) {
-          const { job } = (await jobRes.json()) as {
-            job: { status: string; error: string | null };
-          };
-          if (job.status === "succeeded") return { ok: true, why: "" };
-          if (job.status === "failed" || job.status === "canceled") {
-            return { ok: false, why: `job ${job.status}: ${job.error ?? ""}` };
-          }
-        }
-        await new Promise((r) => setTimeout(r, 700));
-      }
-      return { ok: false, why: "commit job never reached a terminal status" };
-    },
-    { slug, ref: branch },
-  );
-
-  if (!outcome.ok) throw new Error(`seed commit failed: ${outcome.why}`);
-}
-
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -321,7 +240,7 @@ describe("Publish a REAL project → real endpoint + polled stages + Model-A one
     expect(await countTestId("publish-wizard")).toBe(0);
 
     // ── put ONE real commit ahead of main, through the app's own BFF ──────────
-    await commitOneSceneViaBff(slug, "v0.0.1");
+    await commitOneSceneViaBff(page, slug, "v0.0.1");
     await page.reload({ waitUntil: "load" });
     await waitForTestId("studio-frame", 60_000);
 
