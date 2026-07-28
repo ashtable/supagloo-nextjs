@@ -75,6 +75,23 @@ export async function type(element: HTMLElement, value: string): Promise<void> {
   });
 }
 
+/** The `<textarea>` twin of {@link type}. It needs its OWN native setter: React tracks
+ *  the value on the concrete element class, and `HTMLInputElement.prototype`'s setter
+ *  called on a textarea is an illegal invocation. */
+export async function typeTextArea(
+  element: HTMLElement,
+  value: string,
+): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype,
+    "value",
+  )?.set;
+  await act(async () => {
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 /** Pick a `<select>`'s value the way React sees it: the native setter (React overrides
  *  `value` on the DOM node, exactly as it does for `<input>`) followed by a bubbling
  *  `change` event, which is what React's `onChange` is actually wired to for a select. */

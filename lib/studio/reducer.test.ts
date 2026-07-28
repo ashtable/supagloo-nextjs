@@ -22,7 +22,13 @@ import {
   type StudioState,
 } from "./reducer";
 import type { RenderJobDto } from "../api/contracts";
-import { DEMO_STORYBOARD, totalFrames, storyboardFromGenerated } from "./storyboard";
+import {
+  DEMO_STORYBOARD,
+  MAX_SCENES,
+  MIN_SCENES,
+  totalFrames,
+  storyboardFromGenerated,
+} from "./storyboard";
 import { visibleCaption } from "./captions";
 import { type StudioProject } from "./project";
 
@@ -47,20 +53,30 @@ function selected(state: StudioState) {
 const init = () => initialStudioState(DEMO_PROJECT);
 
 describe("initialStudioState", () => {
-  it("U-R1: opens on scene 2, 9:16, paused, menus closed, mock posting defaults", () => {
+  it("U-R1: opens on scene 2, 9:16, paused, menus closed, no versions loaded yet", () => {
     const s = init();
     expect(s.selectedSceneId).toBe("s2");
     expect(s.aspect).toBe("9:16");
     expect(s.isPlaying).toBe(false);
     expect(s.rerollMenuOpen).toBe(false);
     expect(s.shipMenuOpen).toBe(false);
-    expect(s.posting).toEqual({
-      tiktok: true,
-      ytShorts: true,
-      recurring: true,
-      approveEachCut: true,
-      postAutomatically: false,
-    });
+    expect(s.versions).toBeNull();
+  });
+
+  it("U-R7b: the posting/scheduling state is GONE — items 3+4 removed the only UI that read it", () => {
+    // The SHIP IT popover's platform chips and its "daily recurring post" block were
+    // Turn-5 artefacts of an abandoned direction; no scheduler exists at any layer.
+    // With the chips disabled and the recurring rows deleted there is no live caller
+    // left, so the backing state goes too rather than lingering as dead weight.
+    const s = init() as unknown as Record<string, unknown>;
+    expect(Object.keys(s)).not.toContain("posting");
+
+    // and an action of the old shape is inert, not a crash
+    const after = studioReducer(init(), {
+      type: "TOGGLE_POSTING",
+      key: "tiktok",
+    } as unknown as Parameters<typeof studioReducer>[1]);
+    expect(after).toEqual(init());
   });
 
   it("U-R11: defaults to the 2nd scene by INDEX (not a hardcoded 's2'), never crashing on odd storyboards ([3])", () => {
@@ -142,17 +158,123 @@ describe("studioReducer", () => {
     expect(s.storyboard.musicMood).toBe("Ambient pads");
   });
 
-  it("U-R7: TOGGLE_POSTING flips a posting option on then off", () => {
-    const once = studioReducer(init(), {
-      type: "TOGGLE_POSTING",
-      key: "postAutomatically",
+  it("U-R24: PICK_SCRIPTURE writes script + reference + translation onto the selected scene and dirties", () => {
+    const s = studioReducer(init(), {
+      type: "PICK_SCRIPTURE",
+      script: "In the beginning God created the heavens and the earth.",
+      reference: "Genesis 1:1",
+      translation: "ASV",
     });
-    expect(once.posting.postAutomatically).toBe(true);
-    const twice = studioReducer(once, {
-      type: "TOGGLE_POSTING",
-      key: "postAutomatically",
+    expect(selected(s)).toMatchObject({
+      script: "In the beginning God created the heavens and the earth.",
+      reference: "Genesis 1:1",
+      translation: "ASV",
     });
-    expect(twice.posting.postAutomatically).toBe(false);
+    expect(s.dirty).toBe(true);
+    // item 1's "and so does the caption for that scene" — the caption IS the script
+    expect(visibleCaption(selected(s))).toBe(
+      "In the beginning God created the heavens and the earth.",
+    );
+    // no other scene moved
+    expect(s.storyboard.scenes[0].script).toBe(DEMO_STORYBOARD.scenes[0].script);
+  });
+
+  it("U-R20: ADD_SCENE inserts after the selected scene, selects it, and dirties", () => {
+    const s = studioReducer(init(), { type: "ADD_SCENE" });
+    expect(s.storyboard.scenes).toHaveLength(DEMO_STORYBOARD.scenes.length + 1);
+    // the demo storyboard opens on s2, so the new scene lands at index 2 (0-based)
+    expect(s.storyboard.scenes[2].id).toBe(s.selectedSceneId);
+    expect(s.dirty).toBe(true);
+  });
+
+  it("U-R21: ADD_SCENE at MAX_SCENES changes nothing AND does not dirty", () => {
+    const full = {
+      ...init(),
+      storyboard: {
+        ...DEMO_STORYBOARD,
+        scenes: Array.from({ length: MAX_SCENES }, (_, i) => ({
+          ...DEMO_STORYBOARD.scenes[0],
+          id: `s${i + 1}`,
+          index: i + 1,
+        })),
+      },
+      selectedSceneId: "s1",
+    };
+    const s = studioReducer(full, { type: "ADD_SCENE" });
+    expect(s.storyboard.scenes).toHaveLength(MAX_SCENES);
+    expect(s.dirty).toBe(false);
+    expect(s).toEqual(full);
+  });
+
+  it("U-R22: DELETE_SCENE removes the scene, selects a neighbour, and dirties", () => {
+    const six = {
+      ...init(),
+      storyboard: {
+        ...DEMO_STORYBOARD,
+        scenes: Array.from({ length: 6 }, (_, i) => ({
+          ...DEMO_STORYBOARD.scenes[0],
+          id: `s${i + 1}`,
+          index: i + 1,
+        })),
+      },
+      selectedSceneId: "s3",
+    };
+    const s = studioReducer(six, { type: "DELETE_SCENE", id: "s3" });
+    expect(s.storyboard.scenes.map((sc) => sc.id)).toEqual([
+      "s1",
+      "s2",
+      "s4",
+      "s5",
+      "s6",
+    ]);
+    // the selection must land on a scene that still exists, or the inspector reads
+    // `scenes[0]` while the tree highlights nothing
+    expect(s.storyboard.scenes.some((sc) => sc.id === s.selectedSceneId)).toBe(true);
+    expect(s.dirty).toBe(true);
+  });
+
+  it("U-R23: DELETE_SCENE at MIN_SCENES changes nothing AND does not dirty", () => {
+    const floor = {
+      ...init(),
+      storyboard: {
+        ...DEMO_STORYBOARD,
+        scenes: Array.from({ length: MIN_SCENES }, (_, i) => ({
+          ...DEMO_STORYBOARD.scenes[0],
+          id: `s${i + 1}`,
+          index: i + 1,
+        })),
+      },
+      selectedSceneId: "s1",
+    };
+    const s = studioReducer(floor, { type: "DELETE_SCENE", id: "s1" });
+    expect(s.storyboard.scenes).toHaveLength(MIN_SCENES);
+    expect(s.dirty).toBe(false);
+    expect(s).toEqual(floor);
+  });
+
+  it("U-R25: VERSIONS_LOADED stores the list and does NOT dirty the project", () => {
+    const versions = [
+      {
+        id: "v1",
+        projectId: "p",
+        semver: "0.0.1",
+        branchName: "v0.0.1",
+        state: "working" as const,
+        commitMessage: null,
+        autoSummary: null,
+        changedFiles: [],
+        headCommitSha: "abc",
+        prNumber: null,
+        prUrl: null,
+        publishedAt: null,
+      },
+    ];
+    const s = studioReducer(init(), { type: "VERSIONS_LOADED", versions });
+    expect(s.versions).toEqual(versions);
+    expect(s.dirty).toBe(false);
+
+    // a failed refresh clears it back to "unknown" rather than keeping a stale answer
+    expect(studioReducer(s, { type: "VERSIONS_LOADED", versions: null }).versions).toBeNull();
   });
 
   it("U-R8: the two companion popovers are mutually exclusive", () => {
@@ -397,24 +519,43 @@ describe("studioReducer", () => {
     });
   });
 
-  it("U-R27: PUBLISH_REAL_DONE lands published+clean on the authoritative next branch (one-step)", () => {
-    const publishing = studioReducer(
-      studioReducer(init(), { type: "OPEN_PUBLISH" }),
-      { type: "PUBLISH_REAL_BEGIN" },
-    );
-    const done = studioReducer(publishing, {
-      type: "PUBLISH_REAL_DONE",
-      publishedTag: "v0.0.1",
-      nextBranch: "v0.0.2",
-    });
-    expect(done.publishFlow).toBe("published");
-    expect(done.publishing).toBe(false);
-    expect(done.dirty).toBe(false);
+  it("U-R27: PUBLISH_REAL_DONE lands published on the authoritative next branch (one-step) and CARRIES `dirty` THROUGH", () => {
+    const publish = (from: StudioState) =>
+      studioReducer(
+        studioReducer(studioReducer(from, { type: "OPEN_PUBLISH" }), {
+          type: "PUBLISH_REAL_BEGIN",
+        }),
+        { type: "PUBLISH_REAL_DONE", publishedTag: "v0.0.1", nextBranch: "v0.0.2" },
+      );
+
+    const fromClean = publish(init());
+    expect(fromClean.publishFlow).toBe("published");
+    expect(fromClean.publishing).toBe(false);
     // Model A one-step: published v0.0.1 live, now editing on v0.0.2 (NOT the mock v0.0.3)
-    expect(done.lastPublishedVersion).toBe("v0.0.1");
-    expect(done.versionBranch).toBe("v0.0.2");
-    expect(done.publishStages).toBeNull();
-    expect(done.publishError).toBeNull();
+    expect(fromClean.lastPublishedVersion).toBe("v0.0.1");
+    expect(fromClean.versionBranch).toBe("v0.0.2");
+    expect(fromClean.publishStages).toBeNull();
+    expect(fromClean.publishError).toBeNull();
+    expect(fromClean.dirty).toBe(false);
+
+    // ── THE CARRY-THROUGH, and it is the whole point of this case ──────────────
+    // A publish releases the LAST COMMIT: `publishVersionWorkflow` merges the version
+    // BRANCH into main. It never reads, writes or discards the uncommitted edits sitting
+    // in this browser tab, so PUBLISH_REAL_DONE has no information about them and must
+    // not assert one. It used to set `dirty: false` unconditionally, which made the
+    // header read "All changes committed" over unsaved edits and re-enabled the Render
+    // button — and a render does `cloneAtVersion`, so it would have produced a video
+    // WITHOUT those edits and given no hint why.
+    //
+    // Starting from a CLEAN state cannot tell "carried through" from "cleared" — both
+    // produce `false`. Only the dirty start distinguishes them, which is exactly why the
+    // previous version of this case did not catch the bug.
+    const edited = studioReducer(init(), {
+      type: "EDIT_SCRIPT",
+      script: "an edit that was never committed",
+    });
+    expect(edited.dirty).toBe(true); // the premise of the assertion below
+    expect(publish(edited).dirty).toBe(true);
   });
 
   it("U-R28: PUBLISH_FAILED clears publishing + records the error but STAYS on the publishing step", () => {
@@ -534,6 +675,9 @@ describe("generation state machine", () => {
       type: "NARRATION_GENERATED",
       assetKey: "projects/p1/narration/t.mp3",
       url: "http://minio/n",
+      // Narration now also reports the per-scene clips it produced; an empty list is the
+      // whole-project-only case this assertion is about.
+      scenes: [],
     });
     expect(s.storyboard.narrationAssetKey).toBe("projects/p1/narration/t.mp3");
     expect(s.storyboard.narrationUrl).toBe("http://minio/n");
@@ -604,7 +748,12 @@ describe("generation outcome mappers (polled terminal generation → action)", (
   it("U-G11: narration/music outcome map succeeded+assetKey → *_GENERATED (url optional)", () => {
     expect(
       narrationGenerationOutcome({ status: "succeeded", resultAssetKey: "n" } as never, "http://n"),
-    ).toEqual({ type: "NARRATION_GENERATED", assetKey: "n", url: "http://n" });
+    ).toEqual({
+      type: "NARRATION_GENERATED",
+      assetKey: "n",
+      url: "http://n",
+      scenes: [],
+    });
     expect(
       musicGenerationOutcome({ status: "succeeded", resultAssetKey: "m" } as never, null),
     ).toEqual({ type: "MUSIC_GENERATED", assetKey: "m", url: null });
@@ -873,5 +1022,68 @@ describe("renderOutcome (polled terminal render → the settling action)", () =>
       type: "RENDER_FAILED",
       error: "render_timeout",
     });
+  });
+});
+
+describe("narration generation writes PER-SCENE clips (render-bug work)", () => {
+  const gen = {
+    status: "succeeded",
+    resultAssetKey: "projects/p/assets/g1-scene-s1",
+    resultJson: {
+      kind: "narration",
+      narration: {
+        scenes: [
+          {
+            sceneId: "s1",
+            assetKey: "projects/p/assets/g1-scene-s1",
+            durationSeconds: 6.5,
+          },
+          {
+            sceneId: "s2",
+            assetKey: "projects/p/assets/g1-scene-s2",
+            durationSeconds: 4.25,
+          },
+        ],
+      },
+    },
+  };
+
+  it("U-N1: maps resultJson.narration onto the matching scenes, with measured lengths", () => {
+    // The whole point of the per-scene map: without it the studio has one asset key and no
+    // idea where any scene's audio begins, which is what made the narration drift.
+    const action = narrationGenerationOutcome(gen as never, "http://n");
+    expect(action.type).toBe("NARRATION_GENERATED");
+    if (action.type !== "NARRATION_GENERATED") return;
+    expect(action.scenes).toEqual([
+      { sceneId: "s1", assetKey: "projects/p/assets/g1-scene-s1", durationSeconds: 6.5 },
+      { sceneId: "s2", assetKey: "projects/p/assets/g1-scene-s2", durationSeconds: 4.25 },
+    ]);
+  });
+
+  it("U-N2: the reducer stores per-scene keys AND stretches the scenes to fit", () => {
+    const base = studioReducer(initialStudioState(DEMO_PROJECT), {
+      type: "SELECT_SCENE",
+      id: "s1",
+    });
+    const next = studioReducer(
+      base,
+      narrationGenerationOutcome(gen as never, "http://n"),
+    );
+    const s1 = next.storyboard.scenes.find((s) => s.id === "s1");
+    const s2 = next.storyboard.scenes.find((s) => s.id === "s2");
+    expect(s1?.narrationAssetKey).toBe("projects/p/assets/g1-scene-s1");
+    expect(s1?.narrationDurationSeconds).toBe(6.5);
+    expect(s2?.narrationAssetKey).toBe("projects/p/assets/g1-scene-s2");
+    // A scene not named in the map keeps whatever it had.
+    expect(next.storyboard.scenes[2]?.narrationAssetKey ?? null).toBeNull();
+  });
+
+  it("U-N3: a result with NO per-scene map still succeeds (whole-project fallback)", () => {
+    // Backward compatibility with generations produced before the map existed.
+    const legacy = { status: "succeeded", resultAssetKey: "k" };
+    const action = narrationGenerationOutcome(legacy as never, null);
+    expect(action.type).toBe("NARRATION_GENERATED");
+    if (action.type !== "NARRATION_GENERATED") return;
+    expect(action.scenes).toEqual([]);
   });
 });

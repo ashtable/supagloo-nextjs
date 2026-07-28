@@ -54,6 +54,31 @@ export async function presignStoryboardAssets(
   );
   for (const p of scenePresigns) if (p?.url) sb = setSceneVisualUrl(sb, p.id, p.url);
 
+  // PER-SCENE narration previews. Presigned alongside the visuals so the preview player can
+  // mount each scene's own clip inside that scene's <Sequence> — the whole-project URL
+  // below can only ever start at frame 0, which is what left narration drifting away from
+  // the picture.
+  const narrationPresigns = await Promise.all(
+    sb.scenes.map(async (sc) =>
+      sc.narrationAssetKey
+        ? { id: sc.id, url: await presignDownload(sc.narrationAssetKey, deps) }
+        : null,
+    ),
+  );
+  const narrationById = new Map(
+    narrationPresigns.filter((p) => p?.url).map((p) => [p!.id, p!.url as string]),
+  );
+  if (narrationById.size > 0) {
+    sb = {
+      ...sb,
+      scenes: sb.scenes.map((sc) =>
+        narrationById.has(sc.id)
+          ? { ...sc, narrationUrl: narrationById.get(sc.id) }
+          : sc,
+      ),
+    };
+  }
+
   if (sb.narrationAssetKey) {
     const url = await presignDownload(sb.narrationAssetKey, deps);
     if (url) sb = { ...sb, narrationUrl: url };

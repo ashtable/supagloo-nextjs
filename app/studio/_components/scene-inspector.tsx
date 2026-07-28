@@ -2,7 +2,9 @@
 
 import styles from "../studio.module.css";
 import { useStudio } from "./studio-context";
+import ScripturePicker from "./scripture-picker";
 import { imageSlot, NARRATION_SLOT, MUSIC_SLOT } from "@/lib/studio/reducer";
+import { MIN_SCENES, canDeleteScene } from "@/lib/studio/storyboard";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
 const MONO = "ui-monospace, Menlo, monospace";
@@ -46,8 +48,10 @@ export default function SceneInspector() {
     rerollVisual,
     regenerateNarration,
     regenerateMusic,
+    removeScene,
   } = useStudio();
   const { storyboard, selectedSceneId, generations } = state;
+  const canDelete = canDeleteScene(storyboard);
   const scene =
     storyboard.scenes.find((s) => s.id === selectedSceneId) ??
     storyboard.scenes[0];
@@ -119,30 +123,46 @@ export default function SceneInspector() {
           gap: 16,
         }}
       >
+        {/* SCRIPTURE — item 1's picker (real projects only, exactly like the AI
+            controls below: the mock catalogue keeps the canonical 13b inspector, and the
+            mock e2e lane keeps its zero-egress guarantee). */}
+        {aiEnabled ? <ScripturePicker /> : null}
+
         {/* SCRIPT — editable blockquote (the primary dirty seam) */}
         <div>
           <div style={LABEL}>{"SCRIPT"}</div>
           <textarea
             data-testid="script-input"
             aria-label="Narration script"
+            // Item 1's "respecting RTL/LTR". `dir="auto"` is the HTML first-strong-
+            // character algorithm — the same one the preview caption and the generated
+            // Remotion source use, so the editor, the preview and the render cannot
+            // disagree about direction. It needs no per-scene language field, and so no
+            // manifest schema change across four mirrors.
+            dir="auto"
             value={scene.script}
             onChange={(e) =>
               dispatch({ type: "EDIT_SCRIPT", script: e.target.value })
             }
             rows={2}
+            // `.scriptInput` carries the italic AND its `:dir(rtl)` override — see the
+            // rule's comment for why that answer belongs in CSS, not in a hand-written
+            // script detector.
+            className={styles.scriptInput}
             style={{
               width: "100%",
               resize: "none",
               fontFamily: ZILLA,
               fontWeight: 400,
-              fontStyle: "italic",
               fontSize: 16,
               lineHeight: 1.4,
               color: "#f1e7d6",
               background: "transparent",
               border: "none",
-              borderLeft: "3px solid #c6552b",
-              padding: "0 0 0 12px",
+              // LOGICAL properties: under RTL a `border-left` quote rule lands on the
+              // TRAILING edge of the text it is supposed to introduce.
+              borderInlineStart: "3px solid #c6552b",
+              paddingInlineStart: 12,
               outline: "none",
             }}
           />
@@ -440,6 +460,33 @@ export default function SceneInspector() {
             {`${scene.durationSeconds.toFixed(1)}s`}
           </span>
         </div>
+
+        {/* Delete scene — the other half of USER DECISION D3. Without it the 10-scene
+            ceiling would be a one-way door: a user who adds a screen they don't want has
+            no way back and the project is stuck a scene longer forever. The 5-scene floor
+            is enforced in the MODEL (`deleteScene` refuses); this button reports it. */}
+        <button
+          type="button"
+          data-testid="delete-scene"
+          onClick={() => removeScene(scene.id)}
+          disabled={!canDelete}
+          title={canDelete ? undefined : `Minimum ${MIN_SCENES} scenes.`}
+          className={canDelete ? styles.hoverable : undefined}
+          style={{
+            alignSelf: "flex-start",
+            padding: "7px 12px",
+            border: "1px solid rgba(230,180,120,.24)",
+            borderRadius: 8,
+            fontWeight: 700,
+            fontSize: 12,
+            color: canDelete ? "#e0745a" : "#a99b85",
+            background: "transparent",
+            opacity: canDelete ? 1 : 0.5,
+            cursor: canDelete ? "pointer" : "not-allowed",
+          }}
+        >
+          {"✕ Delete scene"}
+        </button>
       </div>
     </div>
   );

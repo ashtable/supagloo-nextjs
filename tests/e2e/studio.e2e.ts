@@ -162,6 +162,17 @@ async function dataAttr(testid: string, attr: string): Promise<string | null> {
   );
 }
 
+/** The live `disabled` PROPERTY (not the attribute) of a control, so a React-rendered
+ *  `disabled={true}` is read the way the browser actually gates the click. Absent
+ *  element ⇒ null, which is never equal to `true` and so fails loudly. */
+async function isDisabledTestId(testid: string): Promise<boolean | null> {
+  return page.evaluate((id) => {
+    const el = document.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+    if (!el) return null;
+    return (el as HTMLButtonElement).disabled === true;
+  }, testid);
+}
+
 /** getAttribute on the FIRST element matching a raw CSS selector — for compound
  *  selectors the testid-only helpers can't target (e.g. a specific scene-tree row
  *  `[data-testid="scene-tree-row"][data-scene-id="s3"]`, where several rows share
@@ -228,7 +239,13 @@ const EXACT_ANCHORS: readonly string[] = [
   "16:9",
   "1:1",
   "↻ Regenerate",
-  "Render & Share ▸", // source case; CSS uppercases it
+  // MIGRATED for task item 3: "Render & Share ▸" → "Share ▸". With a first-class
+  // `render-button` beside Commit (item 6), this control's only job is the share
+  // popover, and the old label promised a render it never started — the popover has no
+  // submit control at all. `Share ▸` keeps the house glyph grammar (▸ = opens something
+  // else) rather than a bare "Share", which the verb-first copy rule would not allow.
+  "Share ▸", // source case; CSS uppercases it
+  "Render ▸", // item 6's header render trigger
   // player overlay chrome
   "SCENE 02 / 04",
   "🔊 NARRATED · JEJ-STYLE",
@@ -469,23 +486,45 @@ describe("Wilderness Studio editor (5a)", () => {
     );
     await waitForGone("reroll-menu");
 
-    // Render & Share → SHIP IT menu
+    // Share ▸ → the SHARE popover.
+    //
+    // MIGRATED for task items 3/4/5. This block used to assert `SHIP IT`, `TikTok ✓`,
+    // `YT Shorts ✓` and `Post automatically · 6:00 AM`, and toggled `post-auto` from
+    // false to true. All four of those are gone on purpose:
+    //   - the platform chips are now DISABLED with tooltips (plan row 71's honesty
+    //     rule — a control with no backing capability ships visibly disabled);
+    //   - the whole "daily recurring post" block is REMOVED, along with its reducer
+    //     state, because no scheduler exists at any layer and Turns 7-17 never
+    //     re-introduce one (it is a Turn-5 artefact of a superseded direction).
+    // The popover's identity (`render-share` opens `ship-menu`) is unchanged, which is
+    // what `studio-publish.e2e.ts` E-RND1 depends on.
     await page.locator('[data-testid="render-share"]').click();
     await page.waitForSelector('[data-testid="ship-menu"]', {
       state: "visible",
       timeout: 4000,
     });
     const shipText = await testidText("ship-menu");
-    expect(shipText).toContain("SHIP IT");
-    expect(shipText).toContain("TikTok ✓");
-    expect(shipText).toContain("YT Shorts ✓");
-    expect(shipText).toContain("Post automatically · 6:00 AM");
+    expect(shipText).toContain("SHARE");
+    expect(shipText).not.toContain("SHIP IT");
+    expect(shipText).toContain("TikTok");
+    expect(shipText).toContain("YT Shorts");
+    expect(shipText).not.toContain("Post automatically");
+    expect(shipText).not.toContain("daily recurring post");
+    expect(await count('[data-testid="post-auto"]')).toBe(0);
 
-    // the "post automatically" checkbox holds local toggle state (default off)
-    expect(await dataAttr("post-auto", "data-checked")).toBe("false");
-    await page.locator('[data-testid="post-auto"]').click();
+    // the three platform chips are disabled, not merely inert
+    for (const id of ["share-tiktok", "share-yt-shorts", "share-add-platform"]) {
+      expect(await isDisabledTestId(id), `${id} must be disabled`).toBe(true);
+    }
+
+    // item 5 / USER DECISION D2: the gallery row ships disabled AND unchecked, and a
+    // click cannot change that. Checked would assert a behaviour the system lacks —
+    // gallery publication is opt-in per render and goes through the 16b dialog.
+    expect(await dataAttr("share-gallery", "data-checked")).toBe("false");
+    expect(await isDisabledTestId("share-gallery")).toBe(true);
+    await page.locator('[data-testid="share-gallery"]').click();
     await page.waitForTimeout(120);
-    expect(await dataAttr("post-auto", "data-checked")).toBe("true");
+    expect(await dataAttr("share-gallery", "data-checked")).toBe("false");
   });
 
   test("E10: the Wilderness palette is scoped to the studio (no leak)", async () => {

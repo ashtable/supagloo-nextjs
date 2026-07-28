@@ -32,7 +32,10 @@ export default defineConfig({
     environment: "node",
     include: ["tests/e2e/**/*.e2e.ts"],
     exclude: [
-      // ── the eleven real-stack specs (lane 2: vitest.e2e.real.config.ts) ──
+      // ── the twelve real-stack specs (lane 2: vitest.e2e.real.config.ts) ──
+      // Real YouVersion egress (§11.2: real provider or no provider). It needs the ROOT
+      // repo's `.env` for YOUVERSION_APP_KEY, which only the real/render lanes load.
+      "tests/e2e/bible-youversion-live.e2e.ts",
       "tests/e2e/bff-session.e2e.ts",
       "tests/e2e/gallery.e2e.ts",
       "tests/e2e/gallery-watch.e2e.ts",

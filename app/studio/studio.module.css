@@ -92,3 +92,23 @@
     animation: none;
   }
 }
+
+/**
+ * The inspector SCRIPT textarea. 13b draws quoted scripture in ITALIC Zilla Slab, but
+ * Arabic and Hebrew have no true italic forms — a browser synthesises an oblique slant
+ * that reads as broken type. 16a already sets quoted scripture upright on the watch
+ * page, so dropping the italic under RTL follows an in-design precedent rather than
+ * inventing one.
+ *
+ * `:dir(rtl)` reads the element's RESOLVED direction, which is what `dir="auto"` on the
+ * textarea computes from the verse text itself. Doing it in CSS rather than in JS means
+ * there is no hand-written script detector anywhere in this codebase — the platform's own
+ * bidi algorithm is the single source of that answer, in the editor, in the preview and
+ * in the rendered MP4.
+ */
+.scriptInput {
+  font-style: italic;
+}
+.scriptInput:dir(rtl) {
+  font-style: normal;
+}

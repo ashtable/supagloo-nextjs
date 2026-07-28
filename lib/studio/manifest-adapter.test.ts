@@ -296,3 +296,138 @@ describe("commitMessage", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Render-bug fields must survive the hydrate → edit → serialize round trip. A field the
+// composition READS but the adapter drops is erased on the next commit — the exact
+// regression `canonicalizeManifest` already suffered with narratorVoice.assetKey.
+// ---------------------------------------------------------------------------
+
+const RENDER_BUG_MANIFEST: ProjectManifest = {
+  manifestVersion: 1,
+  composition: { width: 1080, height: 1920, fps: 30, aspectRatio: "9:16" },
+  scenes: [
+    {
+      id: "s1",
+      name: "Alpha",
+      scriptText: "In the beginning God created the heaven and the earth.",
+      reference: "Genesis 1:1",
+      translation: "KJV",
+      visualPrompt: "a formless void",
+      durationSeconds: 4,
+      captions: true,
+      visualAssetKey: "projects/p/assets/img-1",
+      visualAssetKind: "image",
+      narrationAssetKey: "projects/p/assets/gen-1-scene-s1",
+      narrationDurationSeconds: 6.5,
+    },
+    {
+      id: "s2",
+      name: "Beta",
+      scriptText: "And God said, Let there be light.",
+      reference: "Genesis 1:3",
+      translation: "KJV",
+      visualPrompt: "first light",
+      durationSeconds: 5,
+      captions: false,
+      visualAssetKey: "projects/p/assets/clip-2",
+      visualAssetKind: "video",
+    },
+  ],
+  narratorVoice: { description: "Warm narrator" },
+  music: {
+    style: "ambient pads",
+    assetKey: "projects/p/assets/music-1",
+    durationSeconds: 29.07,
+  },
+};
+
+describe("manifest-adapter — render-bug fields", () => {
+  it("U-A20: hydrate carries per-scene narration, the visual kind, and the measured bed length", () => {
+    const sb = hydrateStoryboard(RENDER_BUG_MANIFEST);
+    expect(sb.scenes[0].narrationAssetKey).toBe("projects/p/assets/gen-1-scene-s1");
+    expect(sb.scenes[0].narrationDurationSeconds).toBe(6.5);
+    expect(sb.scenes[0].visualAssetKind).toBe("image");
+    expect(sb.scenes[1].visualAssetKind).toBe("video");
+    expect(sb.scenes[1].narrationAssetKey).toBeUndefined();
+    expect(sb.musicDurationSeconds).toBe(29.07);
+  });
+
+  it("U-A21: serialize∘hydrate is still an exact identity WITH the new fields present", () => {
+    // The flagship contract (U-A5) extended to the fields this change adds. If hydrate and
+    // serialize disagree about any one of them, a commit silently drops it and the render
+    // reverts to the pre-fix behaviour one commit later.
+    const round = serializeManifest(
+      hydrateStoryboard(RENDER_BUG_MANIFEST),
+      RENDER_BUG_MANIFEST,
+    );
+    expect(round).toEqual(RENDER_BUG_MANIFEST);
+    expect(ProjectManifestSchema.safeParse(round).success).toBe(true);
+  });
+
+  it("U-A22: editing a script preserves that scene's narration ref and measured length", () => {
+    const sb = hydrateStoryboard(RENDER_BUG_MANIFEST);
+    const edited = {
+      ...sb,
+      scenes: [{ ...sb.scenes[0], script: "Edited verse." }, sb.scenes[1]],
+    };
+    const out = serializeManifest(edited, RENDER_BUG_MANIFEST);
+    expect(out.scenes[0].scriptText).toBe("Edited verse.");
+    expect(out.scenes[0].narrationAssetKey).toBe("projects/p/assets/gen-1-scene-s1");
+    expect(out.scenes[0].narrationDurationSeconds).toBe(6.5);
+    expect(out.music?.durationSeconds).toBe(29.07);
+  });
+
+  it("U-A23: a v1 manifest with none of the new fields round-trips without materializing them", () => {
+    // A `narrationAssetKey: undefined` key would break deep-equality AND would be written
+    // into the committed JSON as an absent-but-present field. Absence must stay absence.
+    const round = serializeManifest(hydrateStoryboard(MANIFEST), MANIFEST);
+    expect(round).toEqual(MANIFEST);
+    expect("narrationAssetKey" in round.scenes[0]).toBe(false);
+    expect("visualAssetKind" in round.scenes[0]).toBe(false);
+  });
+});
+
+// ── D3: added / deleted scenes must survive the merge honestly ────────────────
+describe("serializeManifest — added and deleted scenes (USER DECISION D3)", () => {
+  it("U-MA20: an ADDED scene writes its OWN reference/translation, never scene 0's", () => {
+    // `serializeManifest` falls back to `base.scenes[0]` for an id it has never seen
+    // (manifest-adapter.ts:112-115). A scene added after s2 must therefore arrive
+    // carrying s2's scripture, or every new screen silently claims scene 1's verse —
+    // the same reattachment class of bug plan row 57 already fixed once.
+    const sb = hydrateStoryboard(MANIFEST);
+    const withOwnScripture = {
+      ...sb,
+      scenes: [
+        sb.scenes[0],
+        sb.scenes[1],
+        {
+          ...sb.scenes[1],
+          id: "s9",
+          index: 3,
+          script: "the second half of the line",
+          reference: "JOHN 1:24",
+          translation: "BSB",
+        },
+      ],
+    };
+    const out = serializeManifest(withOwnScripture, MANIFEST);
+    expect(out.scenes).toHaveLength(3);
+    expect(out.scenes[2].id).toBe("s9");
+    expect(out.scenes[2].reference).toBe("JOHN 1:24");
+    expect(out.scenes[2].translation).toBe("BSB");
+    // and specifically NOT the scene-0 fallback
+    expect(out.scenes[2].reference).not.toBe(MANIFEST.scenes[0].reference);
+    // the result is still a valid wire manifest
+    expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
+  });
+
+  it("U-MA21: a DELETED scene disappears and the survivors round-trip unchanged", () => {
+    const sb = hydrateStoryboard(MANIFEST);
+    const without = { ...sb, scenes: [sb.scenes[1]] };
+    const out = serializeManifest(without, MANIFEST);
+    expect(out.scenes.map((s) => s.id)).toEqual(["s2"]);
+    expect(out.scenes[0]).toEqual(MANIFEST.scenes[1]);
+    expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
+  });
+});

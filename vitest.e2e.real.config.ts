@@ -36,6 +36,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
+      // Task item 1 — the LIVE YouVersion contract behind the studio scripture picker.
+      // Browser-free: it drives `lib/youversion/client.ts` straight against
+      // api.youversion.com. It lives in this lane (not the mock one) because it makes
+      // real provider egress and needs the root `.env` app key.
+      "tests/e2e/bible-youversion-live.e2e.ts",
       "tests/e2e/bff-session.e2e.ts",
       // Row 41 — the public gallery + "Your videos". Needs Compose (postgres, minio,
       // migrate, api) and the ROOT repo's `tests/support/gallery-e2e-seed.mjs`, but NOT

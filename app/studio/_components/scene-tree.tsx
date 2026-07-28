@@ -2,7 +2,7 @@
 
 import styles from "../studio.module.css";
 import { useStudio } from "./studio-context";
-import { sceneTreeLabel } from "@/lib/studio/storyboard";
+import { MAX_SCENES, canAddScene, sceneTreeLabel } from "@/lib/studio/storyboard";
 import { aspectDimensions } from "@/lib/studio/aspect";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
@@ -18,9 +18,10 @@ const MONO = "ui-monospace, Menlo, monospace";
  * EndCard node (the model's final scene IS the end card — §7.5). Warm skin.
  */
 export default function SceneTree() {
-  const { state, project, selectScene } = useStudio();
+  const { state, project, selectScene, addScene } = useStudio();
   const { storyboard, selectedSceneId, aspect } = state;
   const dims = aspectDimensions(aspect);
+  const canAdd = canAddScene(storyboard);
 
   return (
     <div
@@ -142,24 +143,39 @@ export default function SceneTree() {
           );
         })}
 
-        {/* inert add affordance */}
-        <div
+        {/* USER DECISION D3: a REAL add affordance. This was an inert `<div>` from the
+            13b rebuild until now, which is why "spread one verse across several screens"
+            had no mechanism at all. The new scene copies the selected scene's line and
+            scripture, so the split is "duplicate, then trim each half" — and because the
+            caption IS the script, the captions follow with no extra plumbing.
+            The 10-scene ceiling is enforced in the MODEL (`addSceneAfter` refuses); this
+            button only reports it, per D3's "not only by disabling buttons". */}
+        <button
+          type="button"
           data-testid="scene-tree-add"
+          onClick={addScene}
+          disabled={!canAdd}
+          title={canAdd ? undefined : `Maximum ${MAX_SCENES} scenes.`}
+          className={canAdd ? styles.hoverable : undefined}
           style={{
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             gap: 8,
+            width: "100%",
             padding: "8px 10px",
             marginTop: 6,
             border: "1px dashed rgba(230,180,120,.24)",
+            background: "transparent",
             borderRadius: 8,
             fontSize: 12,
             color: "#a99b85",
+            opacity: canAdd ? 1 : 0.5,
+            cursor: canAdd ? "pointer" : "not-allowed",
           }}
         >
           {"＋ Add scene"}
-        </div>
+        </button>
       </div>
     </div>
   );

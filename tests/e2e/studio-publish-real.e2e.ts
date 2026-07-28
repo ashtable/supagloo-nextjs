@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
-import { type StagehandPage } from "./helpers";
+import { commitOneSceneViaBff, type StagehandPage } from "./helpers";
 import { completeGithubConnectViaCallback } from "./connect-helpers";
 import {
   createProjectViaExistingEmptyRepo,
@@ -48,7 +48,29 @@ import {
  *
  * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
  * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
- * three times. The unit-level proofs named below still stand alongside it. */
+ * three times. The unit-level proofs named below still stand alongside it.
+ *
+ * ── 2026-07-27: E-PUBR1 REWRITTEN, and why ───────────────────────────────────
+ * Until today this test created a project and clicked Publish immediately. That stopped
+ * being a publishable state on 2026-07-27 with dbos `de745d2`
+ * ("fix(scaffold): cut v0.0.1 from the merged base tip, not the local v0.0.0"): the
+ * working branch is now created AT `pr.mergeSha`, i.e. byte-identical to `main`, so a
+ * freshly-scaffolded project has ZERO commits to merge. Reproduced here on
+ * 2026-07-28 — the run reached the real endpoint and the DBOS worker recorded
+ *
+ *     ProjectJob(publish).error =
+ *       "open pull request failed: 422 — Validation Failed — No commits between main and v0.0.1"
+ *
+ * — so the old assertion (`publish-published-card` appears) was asking real GitHub for an
+ * outcome it cannot produce, and no UI change could have made it pass.
+ *
+ * That state is exactly what task item 7 exists to refuse, so the test now proves BOTH
+ * halves against real server data: Publish is DISABLED on the freshly-scaffolded project,
+ * and ENABLED (and successful, with the Model-A one-step bump) once a real commit is
+ * ahead of main. The commit is seeded through the app's OWN real BFF route with the real
+ * session cookie — the same "seed through the real routes" idiom the api e2e suite uses
+ * for provider connections — because a freshly-scaffolded manifest has `scenes: []` and
+ * the studio renders `<StudioEmpty />`, so there is no `script-input` to type into. */
 
 const BASE_URL = "http://localhost:3000";
 const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -99,6 +121,33 @@ async function waitForTestidTextContains(id: string, needle: string, timeoutMs =
     `[data-testid="${id}"] text never contained ${JSON.stringify(needle)} within ${timeoutMs}ms (last: ${JSON.stringify(last)})`,
   );
 }
+/** The live `disabled` PROPERTY of a control (not the attribute), so a React-rendered
+ *  `disabled={true}` is read the way the browser gates the click. */
+async function isDisabled(id: string): Promise<boolean> {
+  return page.evaluate((sel) => {
+    const el = document.querySelector<HTMLButtonElement>(`[data-testid="${sel}"]`);
+    return el ? el.disabled === true : false;
+  }, id);
+}
+async function waitForDisabled(id: string, want: boolean, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await isDisabled(id)) === want) return;
+    await page.waitForTimeout(200);
+  }
+  throw new Error(
+    `[data-testid="${id}"] never became disabled=${want} within ${timeoutMs}ms`,
+  );
+}
+async function attr(id: string, name: string): Promise<string | null> {
+  return page.evaluate(
+    ({ sel, a }) =>
+      document.querySelector<HTMLElement>(`[data-testid="${sel}"]`)?.getAttribute(a) ??
+      null,
+    { sel: id, a: name },
+  );
+}
+
 async function gotoWorkspace(url = SEED_URL) {
   await page.goto(url, { waitUntil: "load" });
   const deadline = Date.now() + 30_000;
@@ -166,11 +215,38 @@ describe("Publish a REAL project → real endpoint + polled stages + Model-A one
     expect(slug.length).toBeGreaterThan(0);
 
     // The editor mounted from the REAL project. A freshly-scaffolded manifest is empty,
-    // but the TopBar (identity / chip / Publish) is always present, so publish is reachable.
+    // but the TopBar (identity / chip / Publish) is always present.
     await waitForTestId("studio-frame");
     // Asserted against the repo the harness ACTUALLY created — owner and full name.
     expect(await testidText("studio-repo-path")).toContain(repoFullName);
     expect(await testidText("version-branch-chip")).toContain("v0.0.1");
+
+    // ── TASK ITEM 7, first half — against REAL server data ────────────────────
+    // Scaffold cuts v0.0.1 AT `pr.mergeSha`, so the working branch is byte-identical to
+    // `main` and there is genuinely nothing to merge. Before this, clicking Publish here
+    // reached the real endpoint and the worker recorded
+    // "open pull request failed: 422 — Validation Failed — No commits between main and
+    // v0.0.1". The button now refuses up front, and says what to do instead.
+    //
+    // Waited for rather than sampled: the gate is derived from `GET /versions`, and it
+    // FAILS OPEN until that read lands (an undecidable state must never deaden Publish).
+    await waitForDisabled("publish-button", true, 30_000);
+    expect(await attr("publish-button", "title")).toBe(
+      "Nothing new to publish — commit a change first.",
+    );
+    // …and the refusal is real, not cosmetic: no wizard opens.
+    await clickTestId("publish-button").catch(() => undefined);
+    await page.waitForTimeout(500);
+    expect(await countTestId("publish-wizard")).toBe(0);
+
+    // ── put ONE real commit ahead of main, through the app's own BFF ──────────
+    await commitOneSceneViaBff(page, slug, "v0.0.1");
+    await page.reload({ waitUntil: "load" });
+    await waitForTestId("studio-frame", 60_000);
+
+    // ── TASK ITEM 7, second half ──────────────────────────────────────────────
+    await waitForDisabled("publish-button", false, 30_000);
+    expect(await attr("publish-button", "title")).toBeNull();
 
     // Open the Publish wizard's review step, then confirm → the REAL endpoint.
     await clickTestId("publish-button");

@@ -7,6 +7,7 @@ import LogoMark from "../../_components/logo-mark";
 import OctocatIcon from "../../_components/octocat-icon";
 import { ASPECTS, type Aspect } from "@/lib/studio/aspect";
 import { publishLabel } from "@/lib/studio/project";
+import { publishButtonGate, renderButtonGate } from "@/lib/studio/top-bar-gates";
 
 const ASPECT_TESTID: Record<Aspect, string> = {
   "9:16": "aspect-9x16",
@@ -21,16 +22,57 @@ const MONO = "ui-monospace, Menlo, monospace";
  * Turn 13b top bar (D-TOPBAR, "extend" style): project identity + version-branch
  * chip + dirty caption + Commit/Publish + avatar, wired Back → "/". Builds these
  * NEW elements while KEEPING 5a's live actions (the aspect toggle, ↻ Regenerate,
- * Render & Share ▸) — only the old GENERATE/PREVIEW/SHARE step indicator is
- * dropped. Identity comes from the resolved `project`; the mutable branch/dirty/
+ * the share popover trigger) — only the old GENERATE/PREVIEW/SHARE step indicator
+ * is dropped. Identity comes from the resolved `project`; the mutable branch/dirty/
  * pending bits live in the reducer.
+ *
+ * Action row, left to right: `⤓ Commit` · (commit error) · `Render ▸` · `PUBLISH vX ▸`
+ * · `↻ Regenerate` · `Share ▸` · avatar.
+ *
+ * 2026-07-27 (the genesis-1 render-bug task):
+ *  - **item 6** added `Render ▸`. It is Commit's outline sibling and calls the
+ *    already-shipping `startRender()`; before it, the only ways to reach a rendered,
+ *    downloadable video were the publish wizard's post-publish CTA and the render
+ *    overlay's retry — i.e. you had to publish a version to get a video.
+ *  - **item 3** renamed 5a's `Render & Share ▸` to `Share ▸`. With a real Render
+ *    button beside Commit, that control's only job is the share popover, and the old
+ *    label promised a render it never started (the popover has no submit at all).
+ *  - **item 7** gates Publish on there being something to publish. Both gates are pure
+ *    predicates in `lib/studio/top-bar-gates.ts`; this file only renders their answer.
  */
 export default function TopBar() {
   const router = useRouter();
-  const { state, dispatch, project, commit, openPublish, toggleVersionMenu } =
-    useStudio();
+  const {
+    state,
+    dispatch,
+    project,
+    commit,
+    openPublish,
+    toggleVersionMenu,
+    startRender,
+  } = useStudio();
   const { aspect, versionBranch, dirty, committing, publishing, commitError } =
     state;
+
+  // Items 6 + 7. Both gates are pure and unit-tested in `lib/studio/top-bar-gates.ts`;
+  // this component only renders their answer. `renderButtonGate` reads `state.render`
+  // for DISPLAY only — the authoritative one-render-at-a-time guard is still the
+  // `renderRunRef` inside the provider, because a `state` read in a provider callback is
+  // always a latched guard (the lesson of the dead "Try again ▸" button).
+  const renderGate = renderButtonGate({
+    dirty,
+    committing,
+    renderOpen: state.render !== null,
+    sceneCount: state.storyboard.scenes.length,
+  });
+  const publishGate = publishButtonGate({
+    versions: state.versions,
+    isRealProject: Boolean(project.manifest),
+    publishing,
+    committing,
+    dirty,
+    workingBranch: versionBranch,
+  });
 
   return (
     <div
@@ -231,12 +273,54 @@ export default function TopBar() {
         </span>
       ) : null}
 
-      {/* Publish — opens the 14a wizard (no direct bump); label = next version */}
+      {/* Render — item 6. Commit's OUTLINE SIBLING, not a competitor to Publish: two
+          identical outline boxes side by side read as one group and the gradient PUBLISH
+          stays the only hero. `▸` because it opens the 14c overlay (the design's glyph
+          grammar: ▸ = opens something else). It calls the SAME `startRender` the publish
+          wizard's post-publish CTA does — the pipeline was never the problem, the missing
+          trigger was. Deliberately NOT the same control as `render-share`, which opens
+          the share popover (studio-publish.e2e.ts E-RND1 pins that distinction). */}
+      <button
+        type="button"
+        data-testid="render-button"
+        onClick={startRender}
+        disabled={!renderGate.enabled}
+        title={renderGate.reason ?? undefined}
+        className={styles.hoverable}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "9px 15px",
+          border: "1px solid rgba(230,180,120,.24)",
+          borderRadius: 9,
+          fontWeight: 700,
+          fontSize: 13,
+          color: "#f1e7d6",
+          background: "transparent",
+          opacity: renderGate.enabled ? 1 : 0.5,
+          cursor: renderGate.enabled ? "pointer" : "default",
+          flex: "none",
+        }}
+      >
+        {"Render ▸"}
+      </button>
+
+      {/* Publish — opens the 14a wizard (no direct bump); label = next version.
+          Item 7: disabled when the version rows say nothing is ahead of main (publish
+          merges working→main and GitHub answers 422 "No commits between" on an empty
+          diff), while a commit job is in flight (the per-project git-ops 409 guard), or
+          while publishing. The gate FAILS OPEN — see top-bar-gates.ts.
+          The disabled state SWAPS THE SURFACE rather than only fading: this is the
+          header's one saturated gradient, and `opacity:.5` on it reads as "faded", not
+          "disabled" — it would still be the most colourful thing up here. 16a's disabled
+          `⑂ Remix this` sets the same precedent. */}
       <button
         type="button"
         data-testid="publish-button"
         onClick={openPublish}
-        disabled={publishing}
+        disabled={!publishGate.enabled}
+        title={publishGate.reason ?? undefined}
         className={styles.hoverable}
         style={{
           display: "flex",
@@ -249,11 +333,23 @@ export default function TopBar() {
           fontSize: 13,
           letterSpacing: ".05em",
           textTransform: "uppercase",
-          color: "#fff",
-          background: "linear-gradient(150deg,#d4a24c,#c0392b 55%,#6d3b26)",
-          border: "1px solid #e69a5a",
-          boxShadow: "inset 0 1px 0 rgba(255,225,190,.55),0 6px 16px rgba(198,85,43,.4)",
           flex: "none",
+          ...(publishGate.enabled
+            ? {
+                color: "#fff",
+                background: "linear-gradient(150deg,#d4a24c,#c0392b 55%,#6d3b26)",
+                border: "1px solid #e69a5a",
+                boxShadow:
+                  "inset 0 1px 0 rgba(255,225,190,.55),0 6px 16px rgba(198,85,43,.4)",
+              }
+            : {
+                color: "#a99b85",
+                background: "#0f0b07",
+                border: "1px solid rgba(230,180,120,.24)",
+                boxShadow: "none",
+                opacity: 0.5,
+                cursor: "default",
+              }),
         }}
       >
         {publishLabel(versionBranch)}
@@ -283,7 +379,13 @@ export default function TopBar() {
         {"↻ Regenerate"}
       </button>
 
-      {/* retained 5a: Render & Share */}
+      {/* Share — item 3. Renamed from "Render & Share ▸": with a first-class Render
+          button beside Commit, this control's only job is the share popover, and the old
+          label promised a render it never started (the popover has no submit at all).
+          `Share ▸` rather than a bare `Share` keeps the house copy rule (buttons are
+          verb-first and specific) and the glyph grammar (▸ = opens something else),
+          matching `Publish v0.0.2 ▸` next to it. The testid is UNCHANGED because
+          studio-publish.e2e.ts E-RND1 identifies this control by it. */}
       <button
         type="button"
         data-testid="render-share"
@@ -308,7 +410,7 @@ export default function TopBar() {
           flex: "none",
         }}
       >
-        {"Render & Share ▸"}
+        {"Share ▸"}
       </button>
 
       {/* avatar */}

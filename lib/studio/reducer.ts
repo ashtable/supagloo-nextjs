@@ -6,12 +6,16 @@
 import type { Aspect } from "./aspect";
 import type { OnScreenText, Storyboard } from "./storyboard";
 import {
+  addSceneAfter,
+  deleteScene,
   setMusicMood,
   setSceneOnScreenText,
+  setSceneScripture,
   setSceneVisual,
   setSceneVisualUrl,
   setVoiceDescription,
   setNarrationAsset,
+  setSceneNarrationAssets,
   setMusicAsset,
   storyboardFromGenerated,
   totalFrames,
@@ -21,6 +25,7 @@ import {
 import {
   GeneratedScriptSchema,
   GeneratedStoryboardSchema,
+  NarrationResultSchema,
   type AiGenerationDto,
   type RenderJobDto,
 } from "../api/contracts";
@@ -44,13 +49,15 @@ import {
   type RenderState,
 } from "./render-model";
 import type { JobLike, LogRow } from "../project-wizard/job-log";
+import type { ProjectVersionDto } from "../api/contracts";
 
-export type PostingKey =
-  | "tiktok"
-  | "ytShorts"
-  | "recurring"
-  | "approveEachCut"
-  | "postAutomatically";
+// NOTE (task items 3+4): `PostingKey`, `StudioState.posting` and the `TOGGLE_POSTING`
+// action used to live here. They backed the SHIP IT popover's platform chips and its
+// "Make this a daily recurring post" block — Turn-5 "Wilderness Studio" artefacts of a
+// superseded design direction. Turns 7-17 never re-introduce scheduling or social
+// auto-posting, and no scheduler exists at any layer of the system. Item 3 disables the
+// chips and item 4 deletes the recurring block, which leaves the state with no live
+// reader, so it goes too. Pinned by `reducer.test.ts` U-R7b.
 
 /** The 14a publish wizard's step. */
 export type PublishFlow = "closed" | "review" | "publishing" | "published";
@@ -79,9 +86,14 @@ export interface StudioState {
   isPlaying: boolean;
   rerollMenuOpen: boolean;
   shipMenuOpen: boolean;
-  posting: Record<PostingKey, boolean>;
   /** Turn 13b: the version branch the editor is on (Publish bumps it). */
   versionBranch: string;
+  /** Task item 7: the project's version rows, or null when unknown (not fetched yet, a
+   *  mock catalogue project, or a failed read). The Publish gate derives
+   *  "are there commits ahead of main?" from these — see `top-bar-gates.ts` for why the
+   *  derivation is three-valued and fails open. Refreshed on mount and after every
+   *  landed commit/publish. */
+  versions: ProjectVersionDto[] | null;
   /** true once a content edit is made; Commit/Publish clear it. */
   dirty: boolean;
   /** mocked-async pending flags (caller-owned timers flip them). */
@@ -131,7 +143,17 @@ export type StudioAction =
   | { type: "TOGGLE_SHIP_MENU" }
   | { type: "TOGGLE_VERSION_MENU" }
   | { type: "CLOSE_MENUS" }
-  | { type: "TOGGLE_POSTING"; key: PostingKey }
+  // Task item 1: a picked verse, written as one atomic edit (script + reference +
+  // translation) so the manifest can never carry a script from one verse and a
+  // reference naming another.
+  | { type: "PICK_SCRIPTURE"; script: string; reference: string; translation: string }
+  // USER DECISION D3: bounded scene mutation. The bounds are enforced in the model
+  // (`addSceneAfter`/`deleteScene` return the SAME storyboard on refusal), and this
+  // reducer uses that identity to avoid dirtying the project over a no-op.
+  | { type: "ADD_SCENE" }
+  | { type: "DELETE_SCENE"; id: string }
+  // Task item 7: the polled version rows behind the Publish gate.
+  | { type: "VERSIONS_LOADED"; versions: ProjectVersionDto[] | null }
   | { type: "COMMIT_BEGIN" }
   | { type: "COMMIT_DONE" }
   | { type: "COMMIT_FAILED"; error: string }
@@ -164,7 +186,17 @@ export type StudioAction =
   | { type: "IMAGE_GENERATED"; sceneId: string; assetKey: string; url: string | null }
   | { type: "SET_SCENE_VISUAL_URL"; sceneId: string; url: string | null }
   | { type: "SCRIPT_GENERATED"; sceneId: string; scriptText: string }
-  | { type: "NARRATION_GENERATED"; assetKey: string; url: string | null }
+  | {
+      type: "NARRATION_GENERATED";
+      assetKey: string;
+      url: string | null;
+      /** The per-scene clips this generation produced (empty for a pre-map result). */
+      scenes: ReadonlyArray<{
+        sceneId: string;
+        assetKey: string;
+        durationSeconds?: number;
+      }>;
+    }
   | { type: "MUSIC_GENERATED"; assetKey: string; url: string | null }
   | { type: "STORYBOARD_GENERATED"; storyboard: Storyboard }
   | { type: "EDIT_VOICE_DESCRIPTION"; description: string };
@@ -198,14 +230,8 @@ export function initialStudioState(project: StudioProject): StudioState {
     isPlaying: false,
     rerollMenuOpen: false,
     shipMenuOpen: false,
-    posting: {
-      tiktok: true,
-      ytShorts: true,
-      recurring: true,
-      approveEachCut: true,
-      postAutomatically: false,
-    },
     versionBranch: project.versionBranch,
+    versions: null,
     dirty: false,
     committing: false,
     publishing: false,
@@ -311,14 +337,40 @@ export function studioReducer(
         shipMenuOpen: false,
         versionMenuOpen: false,
       };
-    case "TOGGLE_POSTING":
-      return {
-        ...state,
-        posting: {
-          ...state.posting,
-          [action.key]: !state.posting[action.key],
-        },
-      };
+    case "PICK_SCRIPTURE":
+      return edited(
+        state,
+        setSceneScripture(state.storyboard, state.selectedSceneId, {
+          script: action.script,
+          reference: action.reference,
+          translation: action.translation,
+        }),
+      );
+    case "ADD_SCENE": {
+      const storyboard = addSceneAfter(state.storyboard, state.selectedSceneId);
+      // Identity ⇒ the model refused (already at MAX_SCENES). Do NOT dirty: a commit
+      // whose only "change" was a rejected click would be a lie about what happened.
+      if (storyboard === state.storyboard) return state;
+      const at = storyboard.scenes.findIndex((s) => s.id === state.selectedSceneId);
+      const created = storyboard.scenes[at + 1] ?? storyboard.scenes[storyboard.scenes.length - 1];
+      // Select the new scene so the inspector is already editing the blank screen the
+      // user just made — that IS the "spread a verse across screens" workflow.
+      return { ...edited(state, storyboard), selectedSceneId: created.id };
+    }
+    case "DELETE_SCENE": {
+      const removedAt = state.storyboard.scenes.findIndex((s) => s.id === action.id);
+      const storyboard = deleteScene(state.storyboard, action.id);
+      if (storyboard === state.storyboard) return state;
+      // The selection must land on a scene that still exists, or the inspector silently
+      // falls back to `scenes[0]` while the tree highlights nothing.
+      const selectedSceneId = storyboard.scenes.some((s) => s.id === state.selectedSceneId)
+        ? state.selectedSceneId
+        : (storyboard.scenes[Math.min(removedAt, storyboard.scenes.length - 1)]?.id ?? "");
+      return { ...edited(state, storyboard), selectedSceneId };
+    }
+    case "VERSIONS_LOADED":
+      // NOT an edit: this is a read of server state, so `dirty` must not move.
+      return { ...state, versions: action.versions };
     case "COMMIT_BEGIN":
       return { ...state, committing: true, commitError: null };
     case "COMMIT_DONE":
@@ -392,11 +444,17 @@ export function studioReducer(
     case "PUBLISH_REAL_DONE":
       // The authoritative bump rides the payload (Model A one-step): the published tag
       // went live on main, and the editor now sits on the next working branch.
+      //
+      // `dirty` is CARRIED THROUGH, deliberately. A publish merges the version BRANCH
+      // into main — `publishVersionWorkflow` never sees the uncommitted edits in this
+      // browser tab, so this action has no information about them. It used to clear the
+      // flag anyway, which made the header claim "All changes committed" over unsaved
+      // work and re-enabled Render (which clones the COMMITTED branch, so it would have
+      // encoded a video without those edits). U-R27 pins the carry-through.
       return {
         ...state,
         publishFlow: "published",
         publishing: false,
-        dirty: false,
         lastPublishedVersion: action.publishedTag,
         versionBranch: action.nextBranch,
         publishStages: null,
@@ -527,7 +585,14 @@ export function studioReducer(
       return {
         ...edited(
           state,
-          setNarrationAsset(state.storyboard, action.assetKey, action.url),
+          // The whole-project key is still written (backward compatibility, and it is what
+          // `narratorVoice.assetKey` round-trips), then the per-scene clips are laid over
+          // it. The composition prefers the per-scene ones and ignores the whole-project
+          // track once any exist, so the two never double up.
+          setSceneNarrationAssets(
+            setNarrationAsset(state.storyboard, action.assetKey, action.url),
+            action.scenes,
+          ),
         ),
         generations: clearSlot(state.generations, NARRATION_SLOT),
       };
@@ -561,11 +626,16 @@ export function studioReducer(
 }
 
 /**
- * Map a POLLED terminal commit ProjectJob (or a null job = a POST failure / poll
- * timeout) to the reducer action that settles the commit. This is the real
- * replacement for the mocked `setTimeout(COMMIT_DONE)` — the transition is now
- * driven by the job's actual terminal status. `succeeded` → COMMIT_DONE (clean);
- * anything else (`failed`/`canceled`/timeout) → COMMIT_FAILED (stays dirty).
+ * Map a POLLED terminal commit ProjectJob to the reducer action that settles the commit.
+ * This is the real replacement for the mocked `setTimeout(COMMIT_DONE)` — the transition
+ * is now driven by the job's actual terminal status. `succeeded` → COMMIT_DONE (clean);
+ * anything else (`failed`/`canceled`) → COMMIT_FAILED (stays dirty).
+ *
+ * A null job means the POLL gave up, and ONLY that: `"commit_timeout"` is a true
+ * statement about a job that was created and never settled. A commit the server never
+ * accepted at all does NOT come through here — `studio-context.tsx`'s `if (!jobId)`
+ * branch dispatches `"commit_request_failed"` directly, because nothing that never
+ * started can have timed out.
  */
 export function commitOutcome(job: JobLike | null): StudioAction {
   if (job && job.status === "succeeded") return { type: "COMMIT_DONE" };
@@ -668,7 +738,18 @@ export function narrationGenerationOutcome(
   url: string | null,
 ): StudioAction {
   if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
-    return { type: "NARRATION_GENERATED", assetKey: gen.resultAssetKey, url };
+    // The row keeps ONE resultAssetKey; the remaining per-scene clips ride in resultJson
+    // (db-lib NarrationResultSchema). Parsed leniently: a generation produced before the
+    // map existed simply yields no scenes and falls back to the whole-project track.
+    const parsed = NarrationResultSchema.safeParse(
+      (gen.resultJson as { narration?: unknown } | null | undefined)?.narration,
+    );
+    return {
+      type: "NARRATION_GENERATED",
+      assetKey: gen.resultAssetKey,
+      url,
+      scenes: parsed.success ? parsed.data.scenes : [],
+    };
   }
   return { type: "GENERATION_FAILED", slot: NARRATION_SLOT, error: genError(gen) };
 }

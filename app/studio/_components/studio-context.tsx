@@ -88,6 +88,17 @@ interface StudioContextValue {
   project: StudioProject;
   /** Select a scene AND seek the Player to its start (the side-effect the pure reducer omits). */
   selectScene: (id: string) => void;
+  /** D3: add a scene after the selected one (bounded at MAX_SCENES by the model). */
+  addScene: () => void;
+  /** D3: delete a scene (bounded at MIN_SCENES by the model). */
+  removeScene: (id: string) => void;
+  /** Item 1: write a picked verse (script + reference + translation) onto the
+   *  selected scene as one edit. */
+  pickScripture: (pick: {
+    script: string;
+    reference: string;
+    translation: string;
+  }) => void;
   /** Mocked-async Commit — pends, then clears `dirty` (D-COMMIT-PUBLISH). */
   commit: () => void;
   // ── Turn 14 overlay drivers (the wizard/overlay components own the tickers) ──
@@ -163,6 +174,41 @@ export function StudioProvider({
   // these rules are simply better held as pure ones.
   const renderRunRef = useRef<RenderRunGate>(IDLE_RENDER_RUN_GATE);
 
+  /**
+   * Task item 7: keep the version rows in state so the top bar can answer "is there
+   * anything to publish?".
+   *
+   * Refreshed on mount and after every LANDED commit/publish, because those are the only
+   * two things that move `headCommitSha`. Real projects only — the mock catalogue has no
+   * versions endpoint and disabling Publish there would break `E-PUB4`/`E-SP3`.
+   *
+   * A failed read dispatches `null`, which the gate reads as "undecidable" and leaves the
+   * button live. Never a stale answer that could deaden Publish forever.
+   */
+  const refreshVersions = () => {
+    if (!project.manifest) return;
+    void (async () => {
+      const versions = await fetchVersions(project.id);
+      if (aliveRef.current) dispatch({ type: "VERSIONS_LOADED", versions });
+    })();
+  };
+  const hasManifest = Boolean(project.manifest);
+  useEffect(() => {
+    if (!hasManifest) return;
+    void (async () => {
+      const versions = await fetchVersions(project.id);
+      if (aliveRef.current) dispatch({ type: "VERSIONS_LOADED", versions });
+    })();
+  }, [project.id, hasManifest]);
+
+  const addScene = () => dispatch({ type: "ADD_SCENE" });
+  const removeScene = (id: string) => dispatch({ type: "DELETE_SCENE", id });
+  const pickScripture = (pick: {
+    script: string;
+    reference: string;
+    translation: string;
+  }) => dispatch({ type: "PICK_SCRIPTURE", ...pick });
+
   const selectScene = (id: string) => {
     dispatch({ type: "SELECT_SCENE", id });
     // Seek to the scene's SETTLED entry frame (start + a clamped offset) so its
@@ -197,7 +243,16 @@ export function StudioProvider({
       const jobId = await commitVersion(project.id, manifest, message);
       if (!aliveRef.current) return;
       if (!jobId) {
-        dispatch(commitOutcome(null));
+        // The POST itself did not produce a job: a non-2xx (409 `git_ops_in_flight`,
+        // 422 `manifest_invalid`), an unparseable body, or a thrown fetch. NOTHING
+        // started, so nothing can have timed out — and the api answers a 422 in
+        // milliseconds, which D3's shipped workflow makes easy to reach (duplicate a
+        // verse, clear a Script textarea to retype it, commit: `scriptText` is
+        // `z.string().min(1)` in both manifest mirrors). Routing this through
+        // `commitOutcome(null)` reported it as `commit_timeout`, naming a failure mode
+        // that did not occur. The POLL branch below keeps `commitOutcome`, where a null
+        // job really does mean the poll gave up.
+        dispatch({ type: "COMMIT_FAILED", error: "commit_request_failed" });
         return;
       }
       const job = await pollJobUntilTerminal(project.id, jobId);
@@ -207,6 +262,10 @@ export function StudioProvider({
       // the next commit's merge base) see the new scenes, not the stale prop.
       if (job?.status === "succeeded") {
         setProject((p) => projectWithManifest(p, manifest));
+        // A landed commit moves the working row's `headCommitSha`, which is exactly what
+        // the Publish gate reads — re-read it or Publish stays disabled after the very
+        // commit that made it publishable.
+        refreshVersions();
       }
       dispatch(commitOutcome(job));
     })();
@@ -248,6 +307,9 @@ export function StudioProvider({
       });
       if (!aliveRef.current) return;
       dispatch(publishOutcome(job, branch));
+      // Publish rewrites the whole version table (old working → published, a fresh
+      // working row cut from main), so the gate's inputs are stale the moment it lands.
+      if (job?.status === "succeeded") refreshVersions();
     })();
   };
   const closePublish = () => dispatch({ type: "CLOSE_PUBLISH" });
@@ -510,6 +572,9 @@ export function StudioProvider({
     playerRef,
     project,
     selectScene,
+    addScene,
+    removeScene,
+    pickScripture,
     commit,
     openPublish,
     confirmPublish,

@@ -49,6 +49,7 @@ export default function PlayerPanel() {
       fps,
       narrationUrl: storyboard.narrationUrl,
       musicUrl: storyboard.musicUrl,
+      musicDurationSeconds: storyboard.musicDurationSeconds,
     }),
     [
       storyboard.scenes,
@@ -56,6 +57,7 @@ export default function PlayerPanel() {
       fps,
       storyboard.narrationUrl,
       storyboard.musicUrl,
+      storyboard.musicDurationSeconds,
     ],
   );
 
