@@ -189,6 +189,16 @@ describe("Studio /studio/[id] — 13b top bar", () => {
     expect(await countTestId("regenerate")).toBeGreaterThan(0);
     expect(await countTestId("render-share")).toBeGreaterThan(0);
     expect(await countTestId("aspect-9x16")).toBeGreaterThan(0);
+
+    // Task item 6: a FIRST-CLASS header render trigger. Before this, `startRender` was
+    // reachable only from the publish wizard's post-publish CTA and the render overlay's
+    // retry — i.e. you had to publish a version to get a downloadable video. It is a
+    // separate control from `render-share` (which opens the share popover); E-RND1 in
+    // studio-publish.e2e.ts pins that distinction.
+    expect(await countTestId("render-button")).toBe(1);
+    expect(await testidText("render-button")).toContain("Render");
+    // clean project ⇒ the render would match what is committed ⇒ enabled
+    expect(await isDisabled("render-button")).toBe(false);
   });
 
   test("E-SP2: editing the SCRIPT dirties the chip; Commit returns it to clean", async () => {
@@ -201,11 +211,17 @@ describe("Studio /studio/[id] — 13b top bar", () => {
     expect(await countTestId("unsaved-dot")).toBeGreaterThan(0);
     expect(await isDisabled("commit-button")).toBe(false); // enabled when dirty
 
+    // Task item 6: a render does `cloneAtVersion` and builds from the last COMMIT, so
+    // rendering now would silently produce a video without the edit on screen. The
+    // button says so rather than lying.
+    expect(await isDisabled("render-button")).toBe(true);
+
     // Commit → pending → settled back to clean (poll, never a fixed sleep)
     await clickTestId("commit-button");
     await waitForDataAttr("version-branch-chip", "data-dirty", "false");
     expect(await testidText("dirty-caption")).toBe("All changes committed");
     expect(await countTestId("unsaved-dot")).toBe(0);
+    expect(await isDisabled("render-button")).toBe(false);
   });
 
   test("E-SP3: Publish now OPENS the publish wizard and does NOT directly bump the chip (Turn 14a migration)", async () => {

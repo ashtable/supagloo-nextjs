@@ -1,23 +1,25 @@
 "use client";
 
 import styles from "../studio.module.css";
-import { useStudio } from "./studio-context";
-import type { PostingKey } from "@/lib/studio/reducer";
+
+const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
 
 function CheckRow({
   testid,
   checked,
   label,
-  indent,
-  dim,
+  sublabel,
+  title,
+  disabled,
   onToggle,
 }: {
   testid?: string;
   checked: boolean;
   label: string;
-  indent?: boolean;
-  dim?: boolean;
-  onToggle: () => void;
+  sublabel?: string;
+  title?: string;
+  disabled?: boolean;
+  onToggle?: () => void;
 }) {
   return (
     <button
@@ -26,24 +28,33 @@ function CheckRow({
       data-checked={checked ? "true" : "false"}
       role="checkbox"
       aria-checked={checked}
+      aria-disabled={disabled || undefined}
+      disabled={disabled}
+      title={title}
       onClick={onToggle}
-      className={styles.hoverable}
+      className={disabled ? undefined : styles.hoverable}
       style={{
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         gap: 11,
-        paddingLeft: indent ? 29 : 0,
         background: "none",
         border: "none",
+        padding: 0,
         textAlign: "left",
         color: "#f1e7d6",
+        // 16b's `Allow remixes` recipe (whole row dimmed) + 16a's `cursor:not-allowed`.
+        opacity: disabled ? 0.45 : 1,
+        cursor: disabled ? "not-allowed" : "pointer",
       }}
     >
       <span
+        aria-hidden
         style={{
+          // 5a geometry, kept so the row matches the popover it lives in.
           width: 18,
           height: 18,
           flex: "none",
+          marginTop: 1,
           borderRadius: 5,
           display: "grid",
           placeItems: "center",
@@ -56,45 +67,81 @@ function CheckRow({
       >
         {checked ? "✓" : ""}
       </span>
-      <span
-        style={{
-          fontWeight: indent ? 400 : 600,
-          fontSize: indent ? 13 : 13.5,
-          color: dim ? "#8a7358" : indent ? "#c9baa2" : "#f1e7d6",
-        }}
-      >
-        {label}
+      <span>
+        <span style={{ display: "block", fontWeight: 600, fontSize: 13.5 }}>{label}</span>
+        {sublabel ? (
+          <span style={{ display: "block", fontSize: 11.5, color: "#a99b85", marginTop: 2 }}>
+            {sublabel}
+          </span>
+        ) : null}
       </span>
     </button>
   );
 }
 
-/** SHIP IT popover (opened by RENDER & SHARE ▸). Platform + posting toggles are
- * local UI state only — posting/rendering is inert (no backend). No blocking
- * overlay — dismissal is handled by the document listener in StudioFrame, which
- * skips `[data-menu-panel]` / `[data-menu-trigger]` (the [2] one-click-switch fix). */
+/** The three platform chips. All disabled: nothing in this system posts to a social
+ *  platform, and plan row 71's honesty rule says a control with no backing capability
+ *  ships **visibly disabled with a tooltip — never invisible, never a silent no-op**.
+ *  The `✓` that used to sit inside each label is dropped, because a tick on a dead
+ *  control reads as "selected". */
+function PlatformChip({ testid, label }: { testid: string; label: string }) {
+  return (
+    <button
+      type="button"
+      data-testid={testid}
+      disabled
+      aria-disabled
+      title="Posting to social platforms isn't wired up yet."
+      style={{
+        padding: "6px 12px",
+        borderRadius: 20,
+        fontWeight: 600,
+        fontSize: 12,
+        border: "1px solid rgba(230,180,120,.24)",
+        background: "transparent",
+        color: "#a99b85",
+        opacity: 0.5,
+        cursor: "not-allowed",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
+ * The SHARE popover (opened by `Share ▸` in the top bar) — task items 3, 4 and 5.
+ *
+ * ── Where this surface came from, and why it is being pruned ─────────────────────────
+ * `SHIP IT`, the platform chips and the "Make this a daily recurring post" block are
+ * Turn-5 "Wilderness Studio" artefacts: a design direction superseded by Turn 7's brand
+ * skin. Turns 7-17 never re-introduce scheduling, auto-posting or social distribution
+ * anywhere — the current design's whole sharing story is 15a → 16b → 16a — and no
+ * scheduler exists at any layer of the system. So item 4's deletion CONVERGES on the live
+ * design rather than departing from it, and item 3 disables what is left instead of
+ * hiding it.
+ *
+ * The `SHIP IT` title was Anton 19px, unique in the whole design document; every other
+ * popover and panel in the current skin (`REGENERATE`, `COMPOSITION`, `VERSIONS`,
+ * `SCENE NN · INSPECTOR`) uses a Barlow Semi Condensed eyebrow. `SHARE` adopts that.
+ *
+ * ── The gallery row (item 5 / USER DECISION D2) ──────────────────────────────────────
+ * Ships DISABLED and UNCHECKED. The item text justified a checked box with "we
+ * immediately share all videos today", and that premise is false:
+ * `POST /v1/renders/:id/gallery` is opt-in and owner-only, and 16b gates it behind a
+ * consent checkbox that deliberately ships unchecked. A pre-ticked box here would assert
+ * a behaviour the system does not have — and it is not wired to the publish endpoint.
+ *
+ * Still a popover, not a `<Modal>`; dismissal is the document listener in `StudioFrame`,
+ * which skips `[data-menu-panel]` / `[data-menu-trigger]`.
+ */
 export default function ShipMenu() {
-  const { state, dispatch } = useStudio();
-  const { posting } = state;
-  const toggle = (key: PostingKey) => () =>
-    dispatch({ type: "TOGGLE_POSTING", key });
-
-  const pill = (active: boolean): React.CSSProperties => ({
-    padding: "6px 12px",
-    borderRadius: 20,
-    fontWeight: 600,
-    fontSize: 12,
-    border: active ? "none" : "1px solid rgba(230,180,120,.24)",
-    background: active ? "linear-gradient(180deg,#d0632e,#b0481f)" : "transparent",
-    color: active ? "#fff" : "#a99b85",
-  });
-
   return (
     <div
       data-testid="ship-menu"
       data-menu-panel
       role="menu"
-      aria-label="Ship it"
+      aria-label="Share"
       style={{
         position: "absolute",
         top: 88,
@@ -111,46 +158,26 @@ export default function ShipMenu() {
     >
       <div
         style={{
-          fontFamily: "var(--font-anton), sans-serif",
-          fontSize: 19,
+          fontFamily: SEMI,
+          fontWeight: 700,
+          fontSize: 11,
+          letterSpacing: ".2em",
+          color: "#e6a43b",
           marginBottom: 14,
         }}
       >
-        {"SHIP IT"}
+        {"SHARE"}
       </div>
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          flexWrap: "wrap",
-          marginBottom: 16,
-        }}
-      >
-        <button
-          type="button"
-          onClick={() => dispatch({ type: "TOGGLE_POSTING", key: "tiktok" })}
-          className={styles.hoverable}
-          style={pill(posting.tiktok)}
-        >
-          {"TikTok ✓"}
-        </button>
-        <button
-          type="button"
-          onClick={() => dispatch({ type: "TOGGLE_POSTING", key: "ytShorts" })}
-          className={styles.hoverable}
-          style={pill(posting.ytShorts)}
-        >
-          {"YT Shorts ✓"}
-        </button>
-        <button
-          type="button"
-          onClick={() => {}}
-          className={styles.hoverable}
-          style={pill(false)}
-        >
-          {"＋ add"}
-        </button>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+        <PlatformChip testid="share-tiktok" label="TikTok" />
+        <PlatformChip testid="share-yt-shorts" label="YT Shorts" />
+        <PlatformChip testid="share-add-platform" label="＋ add" />
       </div>
+      <div style={{ fontSize: 11.5, color: "#8a7358", marginBottom: 16 }}>
+        {"Coming soon"}
+      </div>
+
       <div
         style={{
           borderTop: "1px solid rgba(230,180,120,.14)",
@@ -161,23 +188,12 @@ export default function ShipMenu() {
         }}
       >
         <CheckRow
-          checked={posting.recurring}
-          label="Make this a daily recurring post"
-          onToggle={toggle("recurring")}
-        />
-        <CheckRow
-          checked={posting.approveEachCut}
-          label="Approve each cut before it posts"
-          indent
-          onToggle={toggle("approveEachCut")}
-        />
-        <CheckRow
-          testid="post-auto"
-          checked={posting.postAutomatically}
-          label="Post automatically · 6:00 AM"
-          indent
-          dim
-          onToggle={toggle("postAutomatically")}
+          testid="share-gallery"
+          checked={false}
+          disabled
+          label="Share to the gallery"
+          sublabel="Coming soon — publish from Your videos"
+          title="Gallery publishing is done per video from Your videos, not from here."
         />
       </div>
     </div>

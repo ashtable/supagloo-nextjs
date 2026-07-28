@@ -22,7 +22,13 @@ import {
   type StudioState,
 } from "./reducer";
 import type { RenderJobDto } from "../api/contracts";
-import { DEMO_STORYBOARD, totalFrames, storyboardFromGenerated } from "./storyboard";
+import {
+  DEMO_STORYBOARD,
+  MAX_SCENES,
+  MIN_SCENES,
+  totalFrames,
+  storyboardFromGenerated,
+} from "./storyboard";
 import { visibleCaption } from "./captions";
 import { type StudioProject } from "./project";
 
@@ -47,20 +53,30 @@ function selected(state: StudioState) {
 const init = () => initialStudioState(DEMO_PROJECT);
 
 describe("initialStudioState", () => {
-  it("U-R1: opens on scene 2, 9:16, paused, menus closed, mock posting defaults", () => {
+  it("U-R1: opens on scene 2, 9:16, paused, menus closed, no versions loaded yet", () => {
     const s = init();
     expect(s.selectedSceneId).toBe("s2");
     expect(s.aspect).toBe("9:16");
     expect(s.isPlaying).toBe(false);
     expect(s.rerollMenuOpen).toBe(false);
     expect(s.shipMenuOpen).toBe(false);
-    expect(s.posting).toEqual({
-      tiktok: true,
-      ytShorts: true,
-      recurring: true,
-      approveEachCut: true,
-      postAutomatically: false,
-    });
+    expect(s.versions).toBeNull();
+  });
+
+  it("U-R7b: the posting/scheduling state is GONE — items 3+4 removed the only UI that read it", () => {
+    // The SHIP IT popover's platform chips and its "daily recurring post" block were
+    // Turn-5 artefacts of an abandoned direction; no scheduler exists at any layer.
+    // With the chips disabled and the recurring rows deleted there is no live caller
+    // left, so the backing state goes too rather than lingering as dead weight.
+    const s = init() as unknown as Record<string, unknown>;
+    expect(Object.keys(s)).not.toContain("posting");
+
+    // and an action of the old shape is inert, not a crash
+    const after = studioReducer(init(), {
+      type: "TOGGLE_POSTING",
+      key: "tiktok",
+    } as unknown as Parameters<typeof studioReducer>[1]);
+    expect(after).toEqual(init());
   });
 
   it("U-R11: defaults to the 2nd scene by INDEX (not a hardcoded 's2'), never crashing on odd storyboards ([3])", () => {
@@ -142,17 +158,123 @@ describe("studioReducer", () => {
     expect(s.storyboard.musicMood).toBe("Ambient pads");
   });
 
-  it("U-R7: TOGGLE_POSTING flips a posting option on then off", () => {
-    const once = studioReducer(init(), {
-      type: "TOGGLE_POSTING",
-      key: "postAutomatically",
+  it("U-R24: PICK_SCRIPTURE writes script + reference + translation onto the selected scene and dirties", () => {
+    const s = studioReducer(init(), {
+      type: "PICK_SCRIPTURE",
+      script: "In the beginning God created the heavens and the earth.",
+      reference: "Genesis 1:1",
+      translation: "ASV",
     });
-    expect(once.posting.postAutomatically).toBe(true);
-    const twice = studioReducer(once, {
-      type: "TOGGLE_POSTING",
-      key: "postAutomatically",
+    expect(selected(s)).toMatchObject({
+      script: "In the beginning God created the heavens and the earth.",
+      reference: "Genesis 1:1",
+      translation: "ASV",
     });
-    expect(twice.posting.postAutomatically).toBe(false);
+    expect(s.dirty).toBe(true);
+    // item 1's "and so does the caption for that scene" — the caption IS the script
+    expect(visibleCaption(selected(s))).toBe(
+      "In the beginning God created the heavens and the earth.",
+    );
+    // no other scene moved
+    expect(s.storyboard.scenes[0].script).toBe(DEMO_STORYBOARD.scenes[0].script);
+  });
+
+  it("U-R20: ADD_SCENE inserts after the selected scene, selects it, and dirties", () => {
+    const s = studioReducer(init(), { type: "ADD_SCENE" });
+    expect(s.storyboard.scenes).toHaveLength(DEMO_STORYBOARD.scenes.length + 1);
+    // the demo storyboard opens on s2, so the new scene lands at index 2 (0-based)
+    expect(s.storyboard.scenes[2].id).toBe(s.selectedSceneId);
+    expect(s.dirty).toBe(true);
+  });
+
+  it("U-R21: ADD_SCENE at MAX_SCENES changes nothing AND does not dirty", () => {
+    const full = {
+      ...init(),
+      storyboard: {
+        ...DEMO_STORYBOARD,
+        scenes: Array.from({ length: MAX_SCENES }, (_, i) => ({
+          ...DEMO_STORYBOARD.scenes[0],
+          id: `s${i + 1}`,
+          index: i + 1,
+        })),
+      },
+      selectedSceneId: "s1",
+    };
+    const s = studioReducer(full, { type: "ADD_SCENE" });
+    expect(s.storyboard.scenes).toHaveLength(MAX_SCENES);
+    expect(s.dirty).toBe(false);
+    expect(s).toEqual(full);
+  });
+
+  it("U-R22: DELETE_SCENE removes the scene, selects a neighbour, and dirties", () => {
+    const six = {
+      ...init(),
+      storyboard: {
+        ...DEMO_STORYBOARD,
+        scenes: Array.from({ length: 6 }, (_, i) => ({
+          ...DEMO_STORYBOARD.scenes[0],
+          id: `s${i + 1}`,
+          index: i + 1,
+        })),
+      },
+      selectedSceneId: "s3",
+    };
+    const s = studioReducer(six, { type: "DELETE_SCENE", id: "s3" });
+    expect(s.storyboard.scenes.map((sc) => sc.id)).toEqual([
+      "s1",
+      "s2",
+      "s4",
+      "s5",
+      "s6",
+    ]);
+    // the selection must land on a scene that still exists, or the inspector reads
+    // `scenes[0]` while the tree highlights nothing
+    expect(s.storyboard.scenes.some((sc) => sc.id === s.selectedSceneId)).toBe(true);
+    expect(s.dirty).toBe(true);
+  });
+
+  it("U-R23: DELETE_SCENE at MIN_SCENES changes nothing AND does not dirty", () => {
+    const floor = {
+      ...init(),
+      storyboard: {
+        ...DEMO_STORYBOARD,
+        scenes: Array.from({ length: MIN_SCENES }, (_, i) => ({
+          ...DEMO_STORYBOARD.scenes[0],
+          id: `s${i + 1}`,
+          index: i + 1,
+        })),
+      },
+      selectedSceneId: "s1",
+    };
+    const s = studioReducer(floor, { type: "DELETE_SCENE", id: "s1" });
+    expect(s.storyboard.scenes).toHaveLength(MIN_SCENES);
+    expect(s.dirty).toBe(false);
+    expect(s).toEqual(floor);
+  });
+
+  it("U-R25: VERSIONS_LOADED stores the list and does NOT dirty the project", () => {
+    const versions = [
+      {
+        id: "v1",
+        projectId: "p",
+        semver: "0.0.1",
+        branchName: "v0.0.1",
+        state: "working" as const,
+        commitMessage: null,
+        autoSummary: null,
+        changedFiles: [],
+        headCommitSha: "abc",
+        prNumber: null,
+        prUrl: null,
+        publishedAt: null,
+      },
+    ];
+    const s = studioReducer(init(), { type: "VERSIONS_LOADED", versions });
+    expect(s.versions).toEqual(versions);
+    expect(s.dirty).toBe(false);
+
+    // a failed refresh clears it back to "unknown" rather than keeping a stale answer
+    expect(studioReducer(s, { type: "VERSIONS_LOADED", versions: null }).versions).toBeNull();
   });
 
   it("U-R8: the two companion popovers are mutually exclusive", () => {

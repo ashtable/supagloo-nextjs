@@ -387,3 +387,47 @@ describe("manifest-adapter — render-bug fields", () => {
     expect("visualAssetKind" in round.scenes[0]).toBe(false);
   });
 });
+
+// ── D3: added / deleted scenes must survive the merge honestly ────────────────
+describe("serializeManifest — added and deleted scenes (USER DECISION D3)", () => {
+  it("U-MA20: an ADDED scene writes its OWN reference/translation, never scene 0's", () => {
+    // `serializeManifest` falls back to `base.scenes[0]` for an id it has never seen
+    // (manifest-adapter.ts:112-115). A scene added after s2 must therefore arrive
+    // carrying s2's scripture, or every new screen silently claims scene 1's verse —
+    // the same reattachment class of bug plan row 57 already fixed once.
+    const sb = hydrateStoryboard(MANIFEST);
+    const withOwnScripture = {
+      ...sb,
+      scenes: [
+        sb.scenes[0],
+        sb.scenes[1],
+        {
+          ...sb.scenes[1],
+          id: "s9",
+          index: 3,
+          script: "the second half of the line",
+          reference: "JOHN 1:24",
+          translation: "BSB",
+        },
+      ],
+    };
+    const out = serializeManifest(withOwnScripture, MANIFEST);
+    expect(out.scenes).toHaveLength(3);
+    expect(out.scenes[2].id).toBe("s9");
+    expect(out.scenes[2].reference).toBe("JOHN 1:24");
+    expect(out.scenes[2].translation).toBe("BSB");
+    // and specifically NOT the scene-0 fallback
+    expect(out.scenes[2].reference).not.toBe(MANIFEST.scenes[0].reference);
+    // the result is still a valid wire manifest
+    expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
+  });
+
+  it("U-MA21: a DELETED scene disappears and the survivors round-trip unchanged", () => {
+    const sb = hydrateStoryboard(MANIFEST);
+    const without = { ...sb, scenes: [sb.scenes[1]] };
+    const out = serializeManifest(without, MANIFEST);
+    expect(out.scenes.map((s) => s.id)).toEqual(["s2"]);
+    expect(out.scenes[0]).toEqual(MANIFEST.scenes[1]);
+    expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
+  });
+});

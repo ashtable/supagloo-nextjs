@@ -6,8 +6,11 @@
 import type { Aspect } from "./aspect";
 import type { OnScreenText, Storyboard } from "./storyboard";
 import {
+  addSceneAfter,
+  deleteScene,
   setMusicMood,
   setSceneOnScreenText,
+  setSceneScripture,
   setSceneVisual,
   setSceneVisualUrl,
   setVoiceDescription,
@@ -46,13 +49,15 @@ import {
   type RenderState,
 } from "./render-model";
 import type { JobLike, LogRow } from "../project-wizard/job-log";
+import type { ProjectVersionDto } from "../api/contracts";
 
-export type PostingKey =
-  | "tiktok"
-  | "ytShorts"
-  | "recurring"
-  | "approveEachCut"
-  | "postAutomatically";
+// NOTE (task items 3+4): `PostingKey`, `StudioState.posting` and the `TOGGLE_POSTING`
+// action used to live here. They backed the SHIP IT popover's platform chips and its
+// "Make this a daily recurring post" block — Turn-5 "Wilderness Studio" artefacts of a
+// superseded design direction. Turns 7-17 never re-introduce scheduling or social
+// auto-posting, and no scheduler exists at any layer of the system. Item 3 disables the
+// chips and item 4 deletes the recurring block, which leaves the state with no live
+// reader, so it goes too. Pinned by `reducer.test.ts` U-R7b.
 
 /** The 14a publish wizard's step. */
 export type PublishFlow = "closed" | "review" | "publishing" | "published";
@@ -81,9 +86,14 @@ export interface StudioState {
   isPlaying: boolean;
   rerollMenuOpen: boolean;
   shipMenuOpen: boolean;
-  posting: Record<PostingKey, boolean>;
   /** Turn 13b: the version branch the editor is on (Publish bumps it). */
   versionBranch: string;
+  /** Task item 7: the project's version rows, or null when unknown (not fetched yet, a
+   *  mock catalogue project, or a failed read). The Publish gate derives
+   *  "are there commits ahead of main?" from these — see `top-bar-gates.ts` for why the
+   *  derivation is three-valued and fails open. Refreshed on mount and after every
+   *  landed commit/publish. */
+  versions: ProjectVersionDto[] | null;
   /** true once a content edit is made; Commit/Publish clear it. */
   dirty: boolean;
   /** mocked-async pending flags (caller-owned timers flip them). */
@@ -133,7 +143,17 @@ export type StudioAction =
   | { type: "TOGGLE_SHIP_MENU" }
   | { type: "TOGGLE_VERSION_MENU" }
   | { type: "CLOSE_MENUS" }
-  | { type: "TOGGLE_POSTING"; key: PostingKey }
+  // Task item 1: a picked verse, written as one atomic edit (script + reference +
+  // translation) so the manifest can never carry a script from one verse and a
+  // reference naming another.
+  | { type: "PICK_SCRIPTURE"; script: string; reference: string; translation: string }
+  // USER DECISION D3: bounded scene mutation. The bounds are enforced in the model
+  // (`addSceneAfter`/`deleteScene` return the SAME storyboard on refusal), and this
+  // reducer uses that identity to avoid dirtying the project over a no-op.
+  | { type: "ADD_SCENE" }
+  | { type: "DELETE_SCENE"; id: string }
+  // Task item 7: the polled version rows behind the Publish gate.
+  | { type: "VERSIONS_LOADED"; versions: ProjectVersionDto[] | null }
   | { type: "COMMIT_BEGIN" }
   | { type: "COMMIT_DONE" }
   | { type: "COMMIT_FAILED"; error: string }
@@ -210,14 +230,8 @@ export function initialStudioState(project: StudioProject): StudioState {
     isPlaying: false,
     rerollMenuOpen: false,
     shipMenuOpen: false,
-    posting: {
-      tiktok: true,
-      ytShorts: true,
-      recurring: true,
-      approveEachCut: true,
-      postAutomatically: false,
-    },
     versionBranch: project.versionBranch,
+    versions: null,
     dirty: false,
     committing: false,
     publishing: false,
@@ -323,14 +337,40 @@ export function studioReducer(
         shipMenuOpen: false,
         versionMenuOpen: false,
       };
-    case "TOGGLE_POSTING":
-      return {
-        ...state,
-        posting: {
-          ...state.posting,
-          [action.key]: !state.posting[action.key],
-        },
-      };
+    case "PICK_SCRIPTURE":
+      return edited(
+        state,
+        setSceneScripture(state.storyboard, state.selectedSceneId, {
+          script: action.script,
+          reference: action.reference,
+          translation: action.translation,
+        }),
+      );
+    case "ADD_SCENE": {
+      const storyboard = addSceneAfter(state.storyboard, state.selectedSceneId);
+      // Identity ⇒ the model refused (already at MAX_SCENES). Do NOT dirty: a commit
+      // whose only "change" was a rejected click would be a lie about what happened.
+      if (storyboard === state.storyboard) return state;
+      const at = storyboard.scenes.findIndex((s) => s.id === state.selectedSceneId);
+      const created = storyboard.scenes[at + 1] ?? storyboard.scenes[storyboard.scenes.length - 1];
+      // Select the new scene so the inspector is already editing the blank screen the
+      // user just made — that IS the "spread a verse across screens" workflow.
+      return { ...edited(state, storyboard), selectedSceneId: created.id };
+    }
+    case "DELETE_SCENE": {
+      const removedAt = state.storyboard.scenes.findIndex((s) => s.id === action.id);
+      const storyboard = deleteScene(state.storyboard, action.id);
+      if (storyboard === state.storyboard) return state;
+      // The selection must land on a scene that still exists, or the inspector silently
+      // falls back to `scenes[0]` while the tree highlights nothing.
+      const selectedSceneId = storyboard.scenes.some((s) => s.id === state.selectedSceneId)
+        ? state.selectedSceneId
+        : (storyboard.scenes[Math.min(removedAt, storyboard.scenes.length - 1)]?.id ?? "");
+      return { ...edited(state, storyboard), selectedSceneId };
+    }
+    case "VERSIONS_LOADED":
+      // NOT an edit: this is a read of server state, so `dirty` must not move.
+      return { ...state, versions: action.versions };
     case "COMMIT_BEGIN":
       return { ...state, committing: true, commitError: null };
     case "COMMIT_DONE":

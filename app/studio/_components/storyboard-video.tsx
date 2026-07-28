@@ -129,6 +129,15 @@ function SceneContent({
           }}
         >
           <div
+            // Item 1's "respecting RTL/LTR", mirrored EXACTLY in the render generator
+            // (`supagloo-nodejs-dbos/src/remotion/templates.ts`). `dir="auto"` is the
+            // HTML first-strong-character algorithm; the preview (@remotion/player) and
+            // the render (@remotion/renderer) are both Chromium, so they resolve it with
+            // the same engine and cannot disagree — which a per-scene manifest field,
+            // mirrored across four schemas, would not have guaranteed any better.
+            // Centring is direction-neutral, so `dir` only fixes punctuation placement
+            // and mixed-content ordering, never the layout.
+            dir="auto"
             style={{
               textAlign: "center",
               color: "#fff",
@@ -152,6 +161,11 @@ function SceneContent({
         }}
       >
         <div
+          // Same reason as the caption. This one matters even more: YouVersion's own
+          // reference strings for RTL translations arrive pre-marked with U+200E around
+          // the numerals ("التكوين ‎1:1"), and rendering them in an LTR context reorders
+          // the numerals.
+          dir="auto"
           style={{
             color: "rgba(255,240,220,.7)",
             fontFamily:
