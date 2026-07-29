@@ -132,15 +132,31 @@ export async function pollGithubConnected(deps: PollDeps = {}): Promise<string |
 
 export type OpenWindow = (url: string, target?: string) => unknown;
 
-/** Open the GitHub App install flow in a new tab (matches the "Opens GitHub in a
- *  new tab" footnote). A blocked/throwing `open` is swallowed — the poll still
- *  resolves the connection regardless of the popup. */
-export function openGithubInstall(open: OpenWindow): void {
+/**
+ * Open `url` in a new tab and report whether the browser actually opened one.
+ *
+ * `window.open` signals a refused popup by returning `null`, NOT by throwing, so a
+ * bare try/catch sees a blocked popup as success. Both are treated as a refusal here.
+ *
+ * The refusal has to reach the caller because it is TERMINAL for these flows: the
+ * provider callback can only fire from inside that tab, so with no tab there is
+ * nothing for the poll to observe and it can only run out its timeout. The previous
+ * "the poll is the source of truth" posture was true of the poll and false of the
+ * user, who watched a spinner for two minutes and learned nothing.
+ */
+function openTab(open: OpenWindow, url: string): boolean {
   try {
-    open(START_URL, "_blank");
+    return open(url, "_blank") != null;
   } catch {
-    /* popup blocked — the main-tab poll is the source of truth */
+    return false;
   }
+}
+
+/** Open the GitHub App install flow in a new tab (matches the "Opens GitHub in a
+ *  new tab" footnote). Returns false when the browser refused the popup — see
+ *  {@link openTab} for why that is not swallowed. */
+export function openGithubInstall(open: OpenWindow): boolean {
+  return openTab(open, START_URL);
 }
 
 /**
@@ -153,14 +169,10 @@ export function openGithubInstall(open: OpenWindow): void {
  * page. No callback fires, the poll never sees a connection, and the only remaining
  * move is one the UI does not offer. This is that move.
  *
- * Same fire-and-forget posture as the install open — the poll is what decides.
+ * Same refusal reporting as the install open — see {@link openTab}.
  */
-export function openGithubLinkExisting(open: OpenWindow): void {
-  try {
-    open(LINK_EXISTING_URL, "_blank");
-  } catch {
-    /* popup blocked — the main-tab poll is the source of truth */
-  }
+export function openGithubLinkExisting(open: OpenWindow): boolean {
+  return openTab(open, LINK_EXISTING_URL);
 }
 
 // ── Callback route helpers (§6a) ──────────────────────────────────────────────

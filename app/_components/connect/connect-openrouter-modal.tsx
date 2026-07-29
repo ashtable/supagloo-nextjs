@@ -19,7 +19,7 @@ export default function ConnectOpenRouterModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const { connections, connectProvider } = useSession();
+  const { connections, connectProvider, connectErrors } = useSession();
   const openrouter = connections.openrouter;
 
   useEffect(() => {
@@ -39,6 +39,7 @@ export default function ConnectOpenRouterModal({
         onConnect={() => connectProvider("openrouter")}
         pending={openrouter.status === "pending"}
         showPkceCallout
+        error={connectErrors.openrouter}
       />
       <div
         style={{

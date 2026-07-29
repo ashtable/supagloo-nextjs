@@ -348,9 +348,11 @@ export async function connectOpenRouterViaProfile(
   await click("card-connect-openrouter");
   await waitFor("connect-openrouter-modal");
 
-  // `connectProvider("openrouter")` does `window.open(authorizeUrl, "_blank")`, so
-  // submitting spawns a real openrouter.ai consent tab. Snapshot the tabs first so
-  // that popup can be closed again below.
+  // `connectProvider("openrouter")` claims a BLANK tab synchronously under the click's
+  // user activation and points it at the authorize URL once the async PKCE challenge is
+  // computed (opening it after the await loses the activation and Safari refuses the
+  // popup — see `lib/connections/popup.ts`). Either way submitting spawns a real
+  // openrouter.ai consent tab. Snapshot the tabs first so that popup can be closed below.
   const tabsBefore = new Set(context.pages());
   await click("connect-openrouter-submit");
 

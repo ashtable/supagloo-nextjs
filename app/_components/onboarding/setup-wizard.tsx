@@ -71,6 +71,7 @@ export default function SetupWizard() {
     linkExistingGithub,
     glooError,
     clearGlooError,
+    connectErrors,
     markOnboarded,
   } =
     useSession();
@@ -145,6 +146,7 @@ export default function SetupWizard() {
             connections={connections}
             onAuthorize={() => connectProvider("github")}
             onLinkExisting={linkExistingGithub}
+            error={connectErrors.github}
           />
         )}
         {step === "openrouter" && (
@@ -152,6 +154,7 @@ export default function SetupWizard() {
             connections={connections}
             onConnect={() => connectProvider("openrouter")}
             onSkip={goSkip}
+            error={connectErrors.openrouter}
           />
         )}
         {step === "gloo" && (
@@ -353,10 +356,12 @@ function GithubStep({
   connections,
   onAuthorize,
   onLinkExisting,
+  error,
 }: {
   connections: ConnectionsState;
   onAuthorize: () => void;
   onLinkExisting: () => void;
+  error: string | null;
 }) {
   const pending = connections.github.status === "pending";
   return (
@@ -368,6 +373,7 @@ function GithubStep({
         onAuthorize={onAuthorize}
         onLinkExisting={onLinkExisting}
         pending={pending}
+        error={error}
       />
     </div>
   );
@@ -377,10 +383,12 @@ function OpenRouterStep({
   connections,
   onConnect,
   onSkip,
+  error,
 }: {
   connections: ConnectionsState;
   onConnect: () => void;
   onSkip: () => void;
+  error: string | null;
 }) {
   const pending = connections.openrouter.status === "pending";
   return (
@@ -392,6 +400,7 @@ function OpenRouterStep({
         onConnect={onConnect}
         pending={pending}
         showPkceCallout={false}
+        error={error}
       />
       <div style={{ textAlign: "center", marginTop: -8 }}>
         <button
