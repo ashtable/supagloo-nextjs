@@ -60,22 +60,50 @@ export interface ScaffoldExistingInput {
   repoName: string;
   projectName: string;
   visibility?: RepoVisibility;
+  /** Feature 2: the passage picked in the wizard's step 2. Absent for a blank project. */
+  scripture?: ProjectScriptureInput | null;
 }
 
-/** `POST /api/projects` for the "use existing empty repo" tab (the repo exists, so
- *  no JIT hop). Always `createdFrom: "blank"` in v1. */
+/**
+ * Feature 2 — the passage the wizard's step 2 collected, as it travels on the wire.
+ *
+ * `passageId` is the YouVersion USFM ECHOED from the chapters route, never constructed
+ * (`contracts.ts` closed constructing one as residual risk). The passage TEXT is
+ * deliberately absent: it is third-party licensed content and the manifest it seeds is
+ * committed into the user's GitHub repo.
+ */
+export interface ProjectScriptureInput {
+  reference: string;
+  translation: string;
+  language?: string;
+  passageId?: string;
+}
+
+/**
+ * `POST /api/projects` for the "use existing empty repo" tab (the repo exists, so no JIT
+ * hop).
+ *
+ * Feature 2: `createdFrom` is now `"passage"` when the wizard collected one, and `"blank"`
+ * when it did not. The enum has carried `"passage"` since task #7 and the api rejects only
+ * `"import"` here, so this needed no schema or gate change — only a caller that stops
+ * hardcoding the origin it was created from.
+ */
 export function scaffoldExistingRepo(
   input: ScaffoldExistingInput,
   deps: FetchDep = {},
 ): Promise<JobRef | null> {
+  const scripture = input.scripture ?? null;
   return postForJobRef(
     "/api/projects",
     {
       repoOwner: input.repoOwner,
       repoName: input.repoName,
       visibility: input.visibility ?? "private",
-      createdFrom: "blank" satisfies ProjectCreatedFrom,
+      createdFrom: (scripture
+        ? "passage"
+        : "blank") satisfies ProjectCreatedFrom,
       name: input.projectName,
+      ...(scripture ? { scripture } : {}),
     },
     deps,
   );
@@ -175,6 +203,10 @@ export interface CreateRepoParams {
   projectName: string;
   visibility: RepoVisibility;
   createdFrom: ProjectCreatedFrom;
+  /** Feature 2, the OTHER payload site. The create-new-repo tab hands its params through
+   *  `localStorage` to the OAuth callback page, so the passage has to survive that hop or
+   *  the feature works on one tab and silently does nothing on the other. */
+  scripture?: ProjectScriptureInput | null;
 }
 
 export interface CreateRepoResult extends JobRef {
@@ -252,6 +284,10 @@ export async function completeCreateRepo(
       visibility: params.visibility,
       createdFrom: params.createdFrom,
       name: params.projectName,
+      // Feature 2: the passage survived the localStorage handoff across the OAuth
+      // round-trip and travels on to the api, which seeds it into the scaffolded
+      // manifest — the same destination the other tab reaches directly.
+      ...(params.scripture ? { scripture: params.scripture } : {}),
     },
     deps,
   );

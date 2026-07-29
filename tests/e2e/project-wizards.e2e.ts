@@ -44,7 +44,8 @@ import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
  *   new-project-wizard           the wizard panel (dismissible modal)
  *   new-project-progress         the 6px progress track
  *   new-project-progress-fill    the filled portion; width === progressFill(step)% of track
- *   new-project-eyebrow          "NEW PROJECT · STEP n OF 3" (absent on the terminal ready card)
+ *   new-project-eyebrow          "NEW PROJECT · STEP n OF 4" (absent on the terminal ready card)
+ *   wizard-scripture-step        feature 2 / 18a — the new step 2 (repo → SCRIPTURE → scaffold → ready)
  *   new-project-close            the step-chrome 28×28 ✕ → onClose
  *   tab-create-new               "Create new repo" segment (aria-pressed)
  *   tab-existing-empty           "Use existing empty repo" segment (aria-pressed)
@@ -53,7 +54,9 @@ import { makeHelpers, type E2EHelpers, type StagehandPage } from "./helpers";
  *   project-name-display         the derived PROJECT NAME display
  *   repo-search                  the existing-empty search input
  *   repo-row-<shortName>         a repo row (+data-selected / +data-disabled)
- *   new-project-cta              the full-width gradient CTA (Create & scaffold → / Scaffold into this repo →)
+ *   new-project-cta              the full-width gradient CTA. Step 1 now ADVANCES
+ *                                ("Choose scripture →"); the per-tab scaffold labels moved
+ *                                to step 2, where they became true.
  *   provisioning-log             the scaffolding log box
  *   log-row                      a log line (+data-status="completed|active|queued")
  *   project-ready-card           the step-3 PROJECT READY. card
@@ -269,18 +272,21 @@ describe("New-project wizard (12a create-new)", () => {
 
     expect(await h.isVisibleByTestId("new-project-wizard")).toBe(true);
     expect(await h.isVisibleByTestId("modal-backdrop")).toBe(true);
+    // Feature 2 / 18a: FOUR steps now — repo → scripture → scaffold → ready. 13a was
+    // never redrawn for the insertion, so its "STEP 1 OF 3" eyebrow and 33% rail were
+    // both left describing a flow that no longer exists.
     expect(await testidText("new-project-eyebrow")).toBe(
-      "NEW PROJECT · STEP 1 OF 3",
+      "NEW PROJECT · STEP 1 OF 4",
     );
 
     const ratio = await progressRatio(
       "new-project-progress",
       "new-project-progress-fill",
     );
-    expect(ratio, `progress ratio=${ratio} (expected ≈0.33)`).toBeGreaterThan(
-      0.2,
+    expect(ratio, `progress ratio=${ratio} (expected ≈0.25)`).toBeGreaterThan(
+      0.15,
     );
-    expect(ratio).toBeLessThan(0.5);
+    expect(ratio).toBeLessThan(0.4);
 
     // create-new tab is the default active segment
     expect(await dataAttr("tab-create-new", "aria-pressed")).toBe("true");
@@ -294,7 +300,9 @@ describe("New-project wizard (12a create-new)", () => {
       "psalm-121",
       "🔒 Private",
       "PROJECT NAME",
-      "Create & scaffold →",
+      // Step 1 no longer scaffolds — it advances to the scripture step. "Create &
+      // scaffold →" moved to step 2, where it is true.
+      "Choose scripture →",
     ]) {
       expect(text, `E-NP1 anchor missing: ${a}`).toContain(a);
     }
@@ -306,18 +314,33 @@ describe("New-project wizard (12a create-new)", () => {
     await clickTestId("workspace-new-project");
     await waitForTestId("new-project-wizard");
 
-    // the create-new repo name is pre-filled to psalm-121, so the CTA scaffolds
+    // the create-new repo name is pre-filled to psalm-121, so the CTA advances
     expect(await countTestId("new-project-cta")).toBeGreaterThan(0);
     await clickTestId("new-project-cta");
 
-    // step 2 — scaffolding log
-    await waitForTestidText("new-project-eyebrow", "NEW PROJECT · STEP 2 OF 3");
+    // step 2 — CHOOSE SCRIPTURE (feature 2 / 18a). In the mock lane the YouVersion BFF is
+    // not reachable, so the cascade renders its unreachable advisory and the scaffold CTA
+    // stays disabled — which is exactly the tri-state contract this step inherited from the
+    // studio picker: "we could not ask" is not "there are none". Advancing past it here
+    // therefore drives the step machine directly rather than the picker.
+    await waitForTestidText("new-project-eyebrow", "NEW PROJECT · STEP 2 OF 4");
+    expect(await countTestId("wizard-scripture-step")).toBeGreaterThan(0);
+    const rS = await progressRatio(
+      "new-project-progress",
+      "new-project-progress-fill",
+    );
+    expect(rS, `scripture-step ratio=${rS} (expected ≈0.50)`).toBeGreaterThan(0.4);
+    expect(rS).toBeLessThan(0.65);
+    await clickTestId("new-project-cta");
+
+    // step 3 — scaffolding log
+    await waitForTestidText("new-project-eyebrow", "NEW PROJECT · STEP 3 OF 4");
     const r2 = await progressRatio(
       "new-project-progress",
       "new-project-progress-fill",
     );
-    expect(r2, `step-2 ratio=${r2} (expected ≈0.66)`).toBeGreaterThan(0.5);
-    expect(r2).toBeLessThan(0.8);
+    expect(r2, `step-3 ratio=${r2} (expected ≈0.75)`).toBeGreaterThan(0.6);
+    expect(r2).toBeLessThan(0.9);
     expect(await countTestId("provisioning-log")).toBeGreaterThan(0);
     expect(await countTestId("log-row")).toBe(7); // create-new = 7 lines
 
@@ -389,10 +412,9 @@ describe("New-project wizard (13a use existing empty repo)", () => {
       "true",
     );
 
-    // this tab's CTA reads differently (contrast E-NP1's "Create & scaffold →")
-    expect(await testidText("new-project-cta")).toContain(
-      "Scaffold into this repo →",
-    );
+    // Both tabs share step 1's CTA now — it advances rather than scaffolding, and the
+    // action is the same whichever repo you picked. The per-tab labels moved to step 2.
+    expect(await testidText("new-project-cta")).toContain("Choose scripture →");
 
     // selecting the empty repo marks it selected (→ CTA becomes actionable)
     await clickTestId("repo-row-psalm-121");
