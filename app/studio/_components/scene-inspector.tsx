@@ -396,20 +396,29 @@ export default function SceneInspector() {
                 {" · whole video"}
               </span>
             </div>
-            <input
+            {/* A TEXTAREA, matching NARRATOR VOICE above. It was a single-line `input`,
+                which silently truncated the prompt it was showing: "Cinematic, ethereal,
+                building fr…" rendered as one clipped line with no wrap and no scrollbar,
+                so a mood the user had actually written looked half-lost. Both fields hold
+                the same kind of value — a freeform descriptor of a whole-video track —
+                so they get the same control. */}
+            <textarea
               data-testid="music-input"
               aria-label="Music style"
               value={storyboard.musicMood}
               onChange={(e) => dispatch({ type: "SET_MUSIC_MOOD", mood: e.target.value })}
               placeholder="e.g. Swelling strings"
+              rows={3}
               style={{
                 width: "100%",
+                resize: "none",
                 border: "1px solid rgba(230,180,120,.18)",
                 borderRadius: 10,
                 background: "#0f0b07",
-                padding: "10px 12px",
+                padding: "11px 12px",
                 fontFamily: MONO,
                 fontSize: 11.5,
+                lineHeight: 1.5,
                 color: "#e8dcc6",
                 outline: "none",
               }}
