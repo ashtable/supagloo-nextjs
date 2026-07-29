@@ -134,6 +134,32 @@ describe("providerOptionsFor (U-AS7, U-AS8)", () => {
     ).toMatch(/video/i);
   });
 
+  it("U-AS8b2: with OpenRouter unlinked, SCENE VIDEO has NO available provider at all", () => {
+    // The two reasons compose into a third fact the panel acts on. Video is
+    // openrouter-ONLY (Gloo's catalogue has zero video entries and its video route 404s),
+    // so with OpenRouter unlinked BOTH options are unavailable and the kind cannot be
+    // configured by any means. `ai-settings-panel.tsx` derives `kindAvailable` from
+    // exactly this and disables the model select and dims the cost readout — otherwise
+    // the section offered a live model picker and a crisp price for a generation that
+    // could not be run.
+    const options = providerOptionsFor("video", connected({ openrouter: false }), CATALOGUE);
+    expect(options.some((o) => o.available)).toBe(false);
+
+    // …and it still EXPLAINS itself: OpenRouter's half stays actionable (`Link ▸`),
+    // Gloo's does not. A dead section with no reason would be the worse bug.
+    const or = options.find((o) => o.provider === "openrouter")!;
+    expect(or.connectable).toBe(true);
+    expect(options.find((o) => o.provider === "gloo")!.connectable).toBeFalsy();
+
+    // Contrast: image survives losing OpenRouter, because Gloo can serve it. The gate
+    // must be per-kind, never "OpenRouter is down, disable the panel".
+    expect(
+      providerOptionsFor("image", connected({ openrouter: false }), CATALOGUE).some(
+        (o) => o.available,
+      ),
+    ).toBe(true);
+  });
+
   it("U-AS8c: connected + matrix-allowed but NO catalogue model is its own reason", () => {
     // A catalogue read that came back empty for one provider must not present a picker
     // that produces a generation with no model id.

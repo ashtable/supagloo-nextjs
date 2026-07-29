@@ -8,24 +8,57 @@ import { resolveGenerationTarget, DEFAULT_GENERATION_MODELS } from "./ai-config"
  * Task #35 — the BFF-side provider/model resolver. The studio client never picks a
  * provider or model; it posts `{kind, projectId?, sceneId?, input}` and the BFF
  * enriches with `{provider, model}` via this pure resolver (server-side, env-
- * overridable, not in the client bundle). Provider defaults to openrouter for every
- * kind (valid across the whole matrix); model comes from `SUPAGLOO_AI_MODEL_<KIND>`
- * with a documented last-known-good fallback.
+ * overridable, not in the client bundle). Provider defaults per kind — openrouter
+ * everywhere except `image`, which defaults to gloo — and the model comes from
+ * `SUPAGLOO_AI_MODEL_<KIND>` with a documented last-known-good fallback.
  */
+/** The intended default provider per kind. `image` is gloo (faith-aligned generation is
+ *  the product's reason to exist, and Gloo has image-capable models since 2026-07-28);
+ *  narration/music/video are openrouter-ONLY in the matrix; text kinds allow gloo but
+ *  stay on openrouter. */
+const EXPECTED_DEFAULT_PROVIDER = {
+  storyboard: "openrouter",
+  script: "openrouter",
+  image: "gloo",
+  narration: "openrouter",
+  music: "openrouter",
+  video: "openrouter",
+} as const;
+
+const ALL_KINDS = [
+  "storyboard",
+  "script",
+  "image",
+  "narration",
+  "music",
+  "video",
+] as const;
+
 describe("resolveGenerationTarget", () => {
-  it("defaults provider to openrouter and model to the per-kind fallback", () => {
-    for (const kind of [
-      "storyboard",
-      "script",
-      "image",
-      "narration",
-      "music",
-      "video",
-    ] as const) {
+  it("defaults each kind to its intended provider and per-kind model", () => {
+    for (const kind of ALL_KINDS) {
       const t = resolveGenerationTarget(kind, {});
-      expect(t.provider).toBe("openrouter");
+      expect(`${kind}:${t.provider}`).toBe(`${kind}:${EXPECTED_DEFAULT_PROVIDER[kind]}`);
       expect(t.model).toBe(DEFAULT_GENERATION_MODELS[kind]);
       expect(t.model.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("pairs every default model with an id from its default provider's namespace", () => {
+    // The failure this exists to catch: moving a kind's default PROVIDER without moving
+    // its default MODEL (or vice versa). The pair is posted to
+    // `POST /v1/ai/generations` together, where the api enforces the compatibility matrix
+    // and answers 422 — so a mismatch is not a subtle degradation, it is every generation
+    // of that kind failing at enqueue. Gloo ids are `gloo-`-prefixed; OpenRouter ids are
+    // `vendor/model`.
+    for (const kind of ALL_KINDS) {
+      const { provider, model } = resolveGenerationTarget(kind, {});
+      if (provider === "gloo") {
+        expect(`${kind}:${model}`).toMatch(/^[a-z]+:gloo-/);
+      } else {
+        expect(`${kind}:${model}`).toMatch(/^[a-z]+:[^/]+\/.+/);
+        expect(model.startsWith("gloo-")).toBe(false);
+      }
     }
   });
 

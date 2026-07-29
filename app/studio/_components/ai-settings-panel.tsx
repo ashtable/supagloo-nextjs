@@ -253,8 +253,23 @@ export default function AiSettingsPanel() {
             ...(characters !== undefined ? { workload: { characters } } : {}),
           });
 
+          // A kind with NO available provider cannot be configured at all — every choice
+          // below it is inert. SCENE VIDEO is the live case: video is openrouter-only, so
+          // with OpenRouter unlinked both buttons are unavailable, yet the model select and
+          // the cost readout still rendered as ordinary live controls. Gating the whole
+          // block on the providers keeps this general — it holds for any kind whose
+          // providers all become unavailable, not just video — and the ProviderSwitch keeps
+          // rendering its reason badge (and `Link ▸` when the reason is actionable), so the
+          // section still explains itself rather than going quietly dead.
+          const kindAvailable = options.some((option) => option.available);
+
           return (
-            <div key={kind} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div
+              key={kind}
+              data-testid={`ai-kind-${kind}`}
+              data-available={kindAvailable ? "true" : "false"}
+              style={{ display: "flex", flexDirection: "column", gap: 6 }}
+            >
               <div style={LABEL}>{KIND_LABELS[kind]}</div>
 
               <ProviderSwitch
@@ -268,14 +283,21 @@ export default function AiSettingsPanel() {
                 data-testid={`ai-model-${kind}`}
                 aria-label={`${KIND_LABELS[kind]} model`}
                 value={choice.model ?? ""}
-                disabled={available.length === 0}
+                disabled={!kindAvailable || available.length === 0}
                 onChange={(e) => setAiModel(kind, e.target.value || null)}
-                style={{ ...BOX, opacity: available.length === 0 ? 0.5 : 1 }}
+                style={{
+                  ...BOX,
+                  opacity: !kindAvailable || available.length === 0 ? 0.5 : 1,
+                }}
               >
                 {/* The design's rule for an unmade choice: a dim placeholder, never a
                     silently-preselected first option. */}
                 <option value="">
-                  {available.length === 0 ? "no models available" : "select model"}
+                  {!kindAvailable
+                    ? "unavailable"
+                    : available.length === 0
+                      ? "no models available"
+                      : "select model"}
                 </option>
                 {available.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -292,20 +314,34 @@ export default function AiSettingsPanel() {
 
               {/* 13b's stat-row shape — the natural form for a read-only readout. The
                   sub-line carries the BASIS, which is what keeps the number honest: it
-                  says where it came from, and says so plainly when there is no number. */}
+                  says where it came from, and says so plainly when there is no number.
+
+                  It WRAPS, and the label column has a floor. Flexbox shrinks before it
+                  wraps, so with a `nowrap` value as wide as Gloo's
+                  "$0.0050 / 1K output tokens" and a basis as long as Gloo's per-token
+                  explanation, the left column was squeezed to about one word per line —
+                  a column of single words beside the price. `minWidth` on the left column
+                  means the value can no longer steal that space: it drops to its own
+                  line instead. Short pairs (OpenRouter's "<$0.0001") still sit side by
+                  side exactly as before, so the common case is unchanged. */}
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  rowGap: 4,
                   gap: 8,
                   padding: "8px 11px",
                   border: "1px solid rgba(230,180,120,.12)",
                   borderRadius: 10,
                   background: "#0f0b07",
+                  // Dimmed with the rest of the block when the kind cannot be configured:
+                  // a crisp price for a generation you cannot run is a false promise.
+                  opacity: kindAvailable ? 1 : 0.5,
                 }}
               >
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 148, flex: "1 1 auto" }}>
                   <div style={{ fontWeight: 700, fontSize: 12, color: "#f1e7d6" }}>
                     {"Est. cost"}
                   </div>
@@ -325,6 +361,7 @@ export default function AiSettingsPanel() {
                     fontSize: 12.5,
                     color: estimate.usdPerRun === null ? "#a99b85" : "#f1e7d6",
                     whiteSpace: "nowrap",
+                    marginLeft: "auto",
                   }}
                 >
                   {renderCostValue(estimate)}
