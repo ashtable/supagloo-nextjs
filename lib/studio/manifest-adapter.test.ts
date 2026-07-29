@@ -493,3 +493,72 @@ describe("manifest-adapter — narratorVoice (feature 1)", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 2 — the project's origin passage survives the studio's Commit
+// ---------------------------------------------------------------------------
+//
+// `serializeManifest` builds its result field-by-field with NO `...base` spread, so a
+// manifest field it does not name is deleted on every commit. `scripture` is seeded by
+// the scaffold (`project-jobs-service.ts` seeds it past the schema), so the data is
+// already in the user's repo — the studio was destroying it. This is the SECOND of two
+// independent erasure points; the first is the read-side parse in `lib/api/contracts.ts`.
+// Fixing only one leaves the other live, which is why both land together.
+describe("manifest-adapter — the project's origin passage (feature 2)", () => {
+  const SCRIPTURE = {
+    reference: "Psalm 121",
+    translation: "BSB",
+    language: "en",
+    passageId: "PSA.121",
+  } as const;
+  const withScripture: ProjectManifest = { ...MANIFEST, scripture: { ...SCRIPTURE } };
+
+  it("U-A26: serialize∘hydrate is an identity for a manifest carrying scripture", () => {
+    const back = serializeManifest(hydrateStoryboard(withScripture), withScripture);
+    expect(back).toEqual(withScripture);
+    expect(back.scripture).toEqual(SCRIPTURE);
+    expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
+  });
+
+  it("U-A27: an EDIT elsewhere still preserves the passage — the real commit path", () => {
+    // The studio does not edit the project passage, so it is preserved from `base`
+    // rather than carried on the UI `Storyboard`. This is the case that was broken:
+    // edit a scene's script, hit Commit, and the passage was gone from the repo.
+    const edited = updateSceneScript(
+      hydrateStoryboard(withScripture),
+      "s1",
+      "A brand new line",
+    );
+    const back = serializeManifest(edited, withScripture);
+    expect(back.scenes[0].scriptText).toBe("A brand new line");
+    expect(back.scripture).toEqual(SCRIPTURE);
+  });
+
+  it("U-A28: absent stays absent — no spurious empty block in the committed repo", () => {
+    const back = serializeManifest(hydrateStoryboard(MANIFEST), MANIFEST);
+    expect("scripture" in back).toBe(false);
+    expect(back).toEqual(MANIFEST);
+  });
+
+  it("U-A29: hydrate does not surface it on the Storyboard — it is project scope, not UI scope", () => {
+    // Deliberate: adding it to `Storyboard` would make it look editable in the studio,
+    // which is scope this feature does not have.
+    expect("scripture" in hydrateStoryboard(withScripture)).toBe(false);
+  });
+
+  // B5 / plan §D-1's promised bonus fix: the picker's tags are BCP-47, and this read
+  // used to hardcode "eng", silently re-resolving a non-English project against English.
+  it("U-A30: sceneScriptureContext prefers the stored language tag", () => {
+    expect(sceneScriptureContext(withScripture, "s1")?.language).toBe("en");
+  });
+
+  it("U-A31: sceneScriptureContext still falls back to 'eng' when no passage is stored", () => {
+    expect(sceneScriptureContext(MANIFEST, "s1")?.language).toBe("eng");
+    expect(
+      sceneScriptureContext(
+        { ...MANIFEST, scripture: { reference: "Psalm 121", translation: "BSB" } },
+        "s1",
+      )?.language,
+    ).toBe("eng");
+  });
+});

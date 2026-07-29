@@ -35,6 +35,7 @@ import {
   CreateRenderRequestSchema,
   CreateRenderResponseSchema,
   ManifestSceneSchema,
+  ManifestScriptureSchema,
   ProjectManifestSchema,
   ManifestResponseSchema,
   CommitVersionRequestSchema,
@@ -470,6 +471,82 @@ describe("ManifestSceneSchema + ProjectManifestSchema", () => {
     // still a non-empty string, not `any` — an empty translation is rejected.
     expect(
       ManifestSceneSchema.safeParse({ ...validManifestScene, translation: "" }).success,
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 2 — the project's origin passage, THIS repo's mirror of it
+// ---------------------------------------------------------------------------
+//
+// `contracts.ts` is a HAND-MIRROR of db-lib's `src/schemas.ts` — nextjs never imports
+// `@supagloo/database-lib` (one repo-wide reference: the comment at `contracts.ts:8`;
+// the vendored submodule is excluded from `tsconfig.json` and `eslint.config.mjs`).
+// So this mirror does NOT heal when the db-lib gitlink moves: without the schema below,
+// `ManifestResponseSchema.safeParse` (`lib/studio/studio-data.ts`) STRIPS `scripture`
+// off every manifest the studio reads, and the very next Commit writes it back absent.
+// That is erasure of data the scaffold already seeded, in the user's own git repo.
+const validScripture = {
+  reference: "Psalm 121",
+  translation: "BSB",
+  language: "en",
+  passageId: "PSA.121",
+};
+
+describe("ManifestScriptureSchema + ProjectManifest.scripture", () => {
+  it("parses the full block and keeps every field (mirrors db-lib ManifestScriptureSchema)", () => {
+    expect(ManifestScriptureSchema.parse(validScripture)).toEqual(validScripture);
+  });
+
+  it("accepts the minimal block — language and passageId are optional", () => {
+    const minimal = { reference: "Psalm 121", translation: "BSB" };
+    expect(ManifestScriptureSchema.parse(minimal)).toEqual(minimal);
+  });
+
+  it("rejects an empty reference, an empty translation and an empty passageId", () => {
+    expect(
+      ManifestScriptureSchema.safeParse({ ...validScripture, reference: "" }).success,
+    ).toBe(false);
+    expect(
+      ManifestScriptureSchema.safeParse({ ...validScripture, translation: "" }).success,
+    ).toBe(false);
+    expect(
+      ManifestScriptureSchema.safeParse({ ...validScripture, passageId: "" }).success,
+    ).toBe(false);
+    expect(ManifestScriptureSchema.safeParse({ translation: "BSB" }).success).toBe(false);
+  });
+
+  // THE erasure test. Parsing is the studio's read boundary; if the key is not declared
+  // here Zod drops it silently and `parsed.scripture` is `undefined` with no error.
+  it("ROUND-TRIPS scripture through the whole manifest — the studio's read boundary must not strip it", () => {
+    const manifest = { ...validManifest, scripture: validScripture };
+    const parsed = ProjectManifestSchema.parse(manifest);
+    expect(parsed.scripture).toEqual(validScripture);
+    // and through the response envelope the studio actually parses against
+    expect(
+      ManifestResponseSchema.parse({ manifest }).manifest.scripture,
+    ).toEqual(validScripture);
+  });
+
+  it("is OPTIONAL and manifestVersion stays 1 — every already-committed manifest still parses", () => {
+    const parsed = ProjectManifestSchema.parse(validManifest);
+    expect("scripture" in parsed).toBe(false);
+    expect(parsed.manifestVersion).toBe(1);
+    expect(
+      ProjectManifestSchema.safeParse({
+        ...validManifest,
+        scripture: validScripture,
+        manifestVersion: 2,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a malformed scripture block rather than silently dropping it", () => {
+    expect(
+      ProjectManifestSchema.safeParse({
+        ...validManifest,
+        scripture: { reference: "Psalm 121" },
+      }).success,
     ).toBe(false);
   });
 });

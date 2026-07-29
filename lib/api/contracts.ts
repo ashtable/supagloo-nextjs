@@ -378,6 +378,33 @@ export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
 export const TranslationSchema = z.string().min(1);
 export type Translation = z.infer<typeof TranslationSchema>;
 
+/** Feature 2: the passage a project was CREATED from (new-project wizard step 2) —
+ *  mirrors db-lib `ManifestScriptureSchema`. Project scope, not scene scope: it
+ *  survives a re-plan, which replaces `scenes` wholesale.
+ *
+ *  `passageId` is the YouVersion USFM **exactly as the chapters/verses routes handed it
+ *  out**. It is ECHOED, never constructed — see the residual-risk note above.
+ *  `language` is the picker's BCP-47 tag (`"en"`), persisted so a non-English project
+ *  stops being silently re-resolved against English (`sceneScriptureContext` used to
+ *  hardcode `"eng"`).
+ *
+ *  It deliberately does NOT carry the passage TEXT: the manifest is committed into the
+ *  user's (possibly public) repo and the verse text is third-party licensed content.
+ *
+ *  **Why this mirror is load-bearing.** nextjs does not import `@supagloo/database-lib`
+ *  at all (the vendored submodule is excluded from `tsconfig.json` and
+ *  `eslint.config.mjs`), so this schema does NOT heal when the db-lib gitlink moves.
+ *  Without it `ManifestResponseSchema.safeParse` in `lib/studio/studio-data.ts` strips
+ *  `scripture` off every manifest the studio reads, and the next Commit writes it back
+ *  absent — erasing data the scaffold already seeded into the user's git repo. */
+export const ManifestScriptureSchema = z.object({
+  reference: z.string().min(1),
+  translation: TranslationSchema,
+  language: z.string().min(1).optional(),
+  passageId: z.string().min(1).optional(),
+});
+export type ManifestScripture = z.infer<typeof ManifestScriptureSchema>;
+
 /** Composition metadata: pixel size, frame rate, aspect-ratio hint (mirrors db-lib
  *  `CompositionSpecSchema`). `aspectRatio` is a `"W:H"` display hint. */
 export const CompositionSpecSchema = z.object({
@@ -527,6 +554,9 @@ export const ProjectManifestSchema = z.object({
   narratorVoice: VoiceDescriptorSchema,
   music: MusicBedSchema.optional(),
   endCard: EndCardSchema.optional(),
+  /** Feature 2: the passage this project was created from (wizard step 2). OPTIONAL, and
+   *  `manifestVersion` stays 1 — every already-committed manifest must keep parsing. */
+  scripture: ManifestScriptureSchema.optional(),
   /** Genesis-1: the project's AI provider/model choices + faith alignment. OPTIONAL, and
    *  `manifestVersion` stays 1 — every already-committed manifest must keep parsing. */
   aiSettings: AiGenerationSettingsSchema.optional(),

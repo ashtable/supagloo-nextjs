@@ -143,6 +143,13 @@ export function serializeManifest(
     ...(music !== undefined ? { music } : {}),
     ...(aiSettings !== undefined ? { aiSettings } : {}),
     ...(base.endCard !== undefined ? { endCard: base.endCard } : {}),
+    // Feature 2: the project's origin passage, PRESERVED FROM `base`. This return builds
+    // its object field-by-field with no `...base` spread, so a field it does not name is
+    // deleted from the user's repo on every commit — and the scaffold seeds `scripture`,
+    // so the data is really there to destroy. Preserved rather than carried on the UI
+    // `Storyboard` because the studio does not edit the project passage; putting it on
+    // the storyboard would make it look editable, which is scope this feature lacks.
+    ...(base.scripture !== undefined ? { scripture: base.scripture } : {}),
     scenes: storyboard.scenes.map((s) => {
       const b = base.scenes.find((x) => x.id === s.id);
       const preserved = b ?? {
@@ -235,6 +242,13 @@ export function sceneScriptureContext(
 ): { reference: string; translation: string; language: string } | undefined {
   const s = manifest.scenes.find((x) => x.id === sceneId);
   return s
-    ? { reference: s.reference, translation: s.translation, language: "eng" }
+    ? {
+        reference: s.reference,
+        translation: s.translation,
+        // The project's stored BCP-47 tag when the wizard captured one; `"eng"` otherwise.
+        // The hardcoded `"eng"` silently re-resolved a non-English project against
+        // English. Byte-identical behaviour for every manifest with no `scripture` block.
+        language: manifest.scripture?.language ?? "eng",
+      }
     : undefined;
 }
