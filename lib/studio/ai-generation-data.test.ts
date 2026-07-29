@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  cancelGeneration,
   createGeneration,
   fetchGeneration,
   presignDownload,
@@ -116,7 +117,7 @@ describe("fetchGeneration", () => {
 
 describe("presignDownload", () => {
   it("returns the presigned url for a key", async () => {
-    const url = await presignDownload("projects/p1/assets/gen-1", {
+    const signed = await presignDownload("projects/p1/assets/gen-1", {
       fetchImpl: async (u) => {
         expect(String(u)).toContain(
           "/api/files/presign-download?key=projects%2Fp1%2Fassets%2Fgen-1",
@@ -124,7 +125,25 @@ describe("presignDownload", () => {
         return okJson({ url: "http://minio/signed", expiresAt: "2026-07-24T01:00:00.000Z" });
       },
     });
-    expect(url).toBe("http://minio/signed");
+    expect(signed?.url).toBe("http://minio/signed");
+  });
+
+  it("U-P15: returns expiresAt too — the studio cannot re-sign what it cannot date", () => {
+    // `expiresAt` has ridden this wire end-to-end since task #13
+    // (`FilePresignDownloadResponseSchema = {url, expiresAt}`, serialized in files.ts,
+    // gallery.ts and renders.ts, passed verbatim by the BFF) and was thrown away by ONE
+    // line here. The `Promise<string | null>` signature is what made expiry
+    // unrepresentable to every caller — which is why the fix is the return TYPE, not a
+    // second function nobody would remember to call.
+    return expect(
+      presignDownload("k", {
+        fetchImpl: async () =>
+          okJson({ url: "http://minio/signed", expiresAt: "2026-07-24T01:00:00.000Z" }),
+      }),
+    ).resolves.toEqual({
+      url: "http://minio/signed",
+      expiresAt: "2026-07-24T01:00:00.000Z",
+    });
   });
 
   it("returns null on a denied/unknown key (404) or a throw", async () => {
@@ -176,5 +195,45 @@ describe("pollGenerationUntilTerminal", () => {
       timeoutMs: 1500,
     });
     expect(terminal).toBeNull();
+  });
+});
+
+describe("cancelGeneration (figure 20a's Cancel)", () => {
+  it("U-L10: a 200 is a real cancel", async () => {
+    expect(
+      await cancelGeneration("gen-1", {
+        fetchImpl: async (u, init) => {
+          expect(String(u)).toBe("/api/ai/generations/gen-1/cancel");
+          expect(init?.method).toBe("POST");
+          return okJson({ generation: { status: "canceled" } });
+        },
+      }),
+    ).toBe("canceled");
+  });
+
+  it("U-L11: a 409 is a REFUSAL, distinct from a failure", async () => {
+    // `generation_not_cancelable` is a real, reachable answer — the generation is past the
+    // point of no return. The studio must be able to tell it apart from "the request did
+    // not land", because the two need different words on a blocking overlay.
+    expect(
+      await cancelGeneration("gen-1", {
+        fetchImpl: async () => okJson({ error: "generation_not_cancelable" }, 409),
+      }),
+    ).toBe("refused");
+  });
+
+  it("U-L12: a 404 or a thrown fetch is a failure, never a silent success", async () => {
+    // Reporting success here would drop the lock while the generation ran on, and it would
+    // land into an editor the user had resumed editing.
+    expect(
+      await cancelGeneration("gen-1", { fetchImpl: async () => okJson({}, 404) }),
+    ).toBe("failed");
+    expect(
+      await cancelGeneration("gen-1", {
+        fetchImpl: async () => {
+          throw new Error("offline");
+        },
+      }),
+    ).toBe("failed");
   });
 });

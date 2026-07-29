@@ -78,6 +78,21 @@
   animation: wsRenderPending 1.6s ease-in-out infinite;
 }
 
+/* 20a: the busy card's indeterminate sweep. Deliberately NOT a percentage — no
+   generation in this product reports progress, and a bar that stalls at 90% is worse
+   than an honest "working". */
+@keyframes wsSweep {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(360%);
+  }
+}
+.sweep {
+  animation: wsSweep 1.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .caret {
     animation: none;
@@ -89,6 +104,9 @@
     animation: none;
   }
   .renderBarPending {
+    animation: none;
+  }
+  .sweep {
     animation: none;
   }
 }

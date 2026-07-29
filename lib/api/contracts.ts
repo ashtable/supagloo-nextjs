@@ -396,6 +396,12 @@ export const VoiceDescriptorSchema = z.object({
   description: z.string().min(1),
   label: z.string().min(1).optional(),
   assetKey: z.string().min(1).nullable().optional(),
+  /** Feature 1: the CHOSEN provider voice id (e.g. `"zac"`) — the only field on this
+   *  object a provider ever sees. `description`/`label` are freeform prose, and were read
+   *  by zero provider-facing code: OpenRouter's speech endpoint takes a NAMED voice and
+   *  its request body has no field a descriptor could travel in. Optional, and
+   *  `manifestVersion` stays 1. */
+  voiceId: z.string().min(1).optional(),
 });
 export type VoiceDescriptor = z.infer<typeof VoiceDescriptorSchema>;
 
@@ -716,6 +722,13 @@ export type NarrationScene = z.infer<typeof NarrationSceneSchema>;
  *  scene's script (synthesized into one concatenated track, §7 workflow 7 D5). */
 export const NarrationSpecSchema = z.object({
   voice: VoiceDescriptorSchema,
+  /** Feature 1: the chosen provider voice id, a TOP-LEVEL sibling of `voice` rather than
+   *  a property of it. `GenerateNarrationInputSchema` is
+   *  `NarrationSpecSchema.passthrough()`, so a top-level key survives an api/dbos still
+   *  pinned to an older db-lib — a key nested inside `voice` would be stripped by
+   *  `VoiceDescriptorSchema`, which is a plain `z.object`. Same mechanism
+   *  `faithAlignment` already rides for image generations. */
+  voiceId: z.string().min(1).optional(),
   scenes: z.array(NarrationSceneSchema).min(1),
 });
 export type NarrationSpec = z.infer<typeof NarrationSpecSchema>;

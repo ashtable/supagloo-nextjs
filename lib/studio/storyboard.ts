@@ -29,6 +29,12 @@ export interface Scene {
    *  Never serialized to the manifest — it's a display-only signed URL that the
    *  composition renders as an `<Img>`; it is re-derived on load / after a reroll. */
   visualUrl?: string | null;
+  /** Feature 6: when `visualUrl` stops working (ISO-8601, straight off the presign
+   *  response). Ephemeral like the url itself and never serialized. Without it a stale
+   *  URL is indistinguishable from a live one — and because `storyboard-video.tsx`
+   *  branches on `visualUrl ?`, a stale-but-truthy URL takes the media branch and renders
+   *  as broken media rather than falling back to the gradient. */
+  visualUrlExpiresAt?: string | null;
   /** Task #57: the scene's OWN scripture reference/translation, carried on the UI
    *  Scene so it survives a re-plan. Populated by `hydrateStoryboard` (from the
    *  manifest) AND `storyboardFromGenerated` (from the LLM's authoritative per-scene
@@ -48,6 +54,8 @@ export interface Scene {
   narrationDurationSeconds?: number;
   /** EPHEMERAL presigned preview URL for this scene's narration (never serialized). */
   narrationUrl?: string | null;
+  /** Feature 6: when `narrationUrl` stops working. See `visualUrlExpiresAt`. */
+  narrationUrlExpiresAt?: string | null;
 }
 
 export interface Storyboard {
@@ -57,6 +65,11 @@ export interface Storyboard {
   fps: number;
   voiceDescription: string;
   voiceLabel: string;
+  /** Feature 1: the CHOSEN provider voice id (<-> `narratorVoice.voiceId`), picked from
+   *  the studio's curated per-model list. PROJECT-level, like the descriptor beside it —
+   *  one narrator reads the whole video. Absent until the user picks one; the synthesis
+   *  path then falls back to the provider default, exactly as before. */
+  voiceId?: string;
   musicMood: string;
   scenes: Scene[];
   /** Task #35: PERSISTED whole-project asset keys (↔ `narratorVoice.assetKey` /
@@ -71,6 +84,12 @@ export interface Storyboard {
    *  serialized) — the composition plays them as `<Audio>` when present. */
   narrationUrl?: string | null;
   musicUrl?: string | null;
+  /** Feature 6: when each of the two whole-project preview URLs stops working. All four
+   *  presigned surfaces (per-scene visual, per-scene narration, whole-project narration,
+   *  music) share the same 300 s TTL, so all four need a date or the refresh pass can
+   *  only fix the one it can see. */
+  narrationUrlExpiresAt?: string | null;
+  musicUrlExpiresAt?: string | null;
   /** Genesis-1: the project's AI provider/model choices + faith alignment
    *  (<-> `ProjectManifest.aiSettings`). PROJECT-level, so it lives on the Storyboard
    *  rather than the Scene. Absent until the user changes something — the system default
@@ -411,12 +430,19 @@ export function setMusicMood(sb: Storyboard, musicMood: string): Storyboard {
 export function setSceneVisual(
   sb: Storyboard,
   id: string,
-  visual: { assetKey: string; url: string | null; kind: "image" | "video" },
+  visual: {
+    assetKey: string;
+    url: string | null;
+    /** Feature 6: when `url` stops working, so the refresh pass can date it. */
+    urlExpiresAt?: string | null;
+    kind: "image" | "video";
+  },
 ): Storyboard {
   return mapScene(sb, id, (s) => ({
     ...s,
     visualAssetKey: visual.assetKey,
     visualUrl: visual.url,
+    visualUrlExpiresAt: visual.urlExpiresAt ?? null,
     // `kind` is REQUIRED, and written here rather than by a follow-up action, because the
     // key and the kind describe the same bytes. Until genesis-1 nothing outside test
     // fixtures ever wrote `visualAssetKind` -- harmless while the studio could not request
@@ -471,6 +497,7 @@ export function setSceneNarrationAssets(
           : {}),
         // The previous scene-local preview URL now points at superseded audio.
         narrationUrl: null,
+        narrationUrlExpiresAt: null,
       };
     }),
   };
@@ -482,8 +509,13 @@ export function setSceneVisualUrl(
   sb: Storyboard,
   id: string,
   url: string | null,
+  urlExpiresAt: string | null = null,
 ): Storyboard {
-  return mapScene(sb, id, (s) => ({ ...s, visualUrl: url }));
+  return mapScene(sb, id, (s) => ({
+    ...s,
+    visualUrl: url,
+    visualUrlExpiresAt: urlExpiresAt,
+  }));
 }
 
 /** Immutably replace the whole-video narrator voice description. */
@@ -499,8 +531,14 @@ export function setNarrationAsset(
   sb: Storyboard,
   assetKey: string,
   url: string | null = null,
+  urlExpiresAt: string | null = null,
 ): Storyboard {
-  return { ...sb, narrationAssetKey: assetKey, narrationUrl: url };
+  return {
+    ...sb,
+    narrationAssetKey: assetKey,
+    narrationUrl: url,
+    narrationUrlExpiresAt: urlExpiresAt,
+  };
 }
 
 /** Set the persisted whole-project music asset key + its ephemeral preview url. */
@@ -508,8 +546,14 @@ export function setMusicAsset(
   sb: Storyboard,
   assetKey: string,
   url: string | null = null,
+  urlExpiresAt: string | null = null,
 ): Storyboard {
-  return { ...sb, musicAssetKey: assetKey, musicUrl: url };
+  return {
+    ...sb,
+    musicAssetKey: assetKey,
+    musicUrl: url,
+    musicUrlExpiresAt: urlExpiresAt,
+  };
 }
 
 /** Every scene projected to the narration synthesis input `{sceneId, scriptText}`

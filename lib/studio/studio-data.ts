@@ -48,11 +48,16 @@ export async function presignStoryboardAssets(
   const scenePresigns = await Promise.all(
     sb.scenes.map(async (s) =>
       s.visualAssetKey
-        ? { id: s.id, url: await presignDownload(s.visualAssetKey, deps) }
+        ? { id: s.id, asset: await presignDownload(s.visualAssetKey, deps) }
         : null,
     ),
   );
-  for (const p of scenePresigns) if (p?.url) sb = setSceneVisualUrl(sb, p.id, p.url);
+  // Feature 6: the EXPIRY is recorded alongside every url. Hydration is one of only two
+  // moments the studio signs anything, and these urls die 300 s later — the refresh pass
+  // has nothing to act on unless it knows when.
+  for (const p of scenePresigns) {
+    if (p?.asset) sb = setSceneVisualUrl(sb, p.id, p.asset.url, p.asset.expiresAt);
+  }
 
   // PER-SCENE narration previews. Presigned alongside the visuals so the preview player can
   // mount each scene's own clip inside that scene's <Sequence> — the whole-project URL
@@ -61,31 +66,44 @@ export async function presignStoryboardAssets(
   const narrationPresigns = await Promise.all(
     sb.scenes.map(async (sc) =>
       sc.narrationAssetKey
-        ? { id: sc.id, url: await presignDownload(sc.narrationAssetKey, deps) }
+        ? { id: sc.id, asset: await presignDownload(sc.narrationAssetKey, deps) }
         : null,
     ),
   );
   const narrationById = new Map(
-    narrationPresigns.filter((p) => p?.url).map((p) => [p!.id, p!.url as string]),
+    narrationPresigns.filter((p) => p?.asset).map((p) => [p!.id, p!.asset!]),
   );
   if (narrationById.size > 0) {
     sb = {
       ...sb,
-      scenes: sb.scenes.map((sc) =>
-        narrationById.has(sc.id)
-          ? { ...sc, narrationUrl: narrationById.get(sc.id) }
-          : sc,
-      ),
+      scenes: sb.scenes.map((sc) => {
+        const signed = narrationById.get(sc.id);
+        return signed
+          ? {
+              ...sc,
+              narrationUrl: signed.url,
+              narrationUrlExpiresAt: signed.expiresAt,
+            }
+          : sc;
+      }),
     };
   }
 
   if (sb.narrationAssetKey) {
-    const url = await presignDownload(sb.narrationAssetKey, deps);
-    if (url) sb = { ...sb, narrationUrl: url };
+    const signed = await presignDownload(sb.narrationAssetKey, deps);
+    if (signed) {
+      sb = {
+        ...sb,
+        narrationUrl: signed.url,
+        narrationUrlExpiresAt: signed.expiresAt,
+      };
+    }
   }
   if (sb.musicAssetKey) {
-    const url = await presignDownload(sb.musicAssetKey, deps);
-    if (url) sb = { ...sb, musicUrl: url };
+    const signed = await presignDownload(sb.musicAssetKey, deps);
+    if (signed) {
+      sb = { ...sb, musicUrl: signed.url, musicUrlExpiresAt: signed.expiresAt };
+    }
   }
   return sb;
 }

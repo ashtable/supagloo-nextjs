@@ -54,6 +54,10 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     fps: manifest.composition.fps,
     voiceDescription: manifest.narratorVoice.description,
     voiceLabel: manifest.narratorVoice.label ?? "",
+    // Feature 1: the CHOSEN provider voice id. `undefined` stays `undefined` so the round
+    // trip is an exact identity — a materialized key would be a spurious diff in the
+    // user's committed repo on every save.
+    voiceId: manifest.narratorVoice.voiceId,
     musicMood: manifest.music?.style ?? "",
     // Task #35: the persisted whole-project audio keys (↔ narratorVoice/music).
     narrationAssetKey: manifest.narratorVoice.assetKey,
@@ -80,16 +84,27 @@ export function serializeManifest(
   storyboard: Storyboard,
   base: ProjectManifest,
 ): ProjectManifest {
+  // The label is written from the UI storyboard, like the description beside it.
+  // It used to come from `base.narratorVoice.label` — two fields of the SAME object read
+  // from two different places — so a label the user (or an LLM re-plan) produced was
+  // silently replaced by whatever was already on disk, on every commit, with nothing to
+  // indicate which won. Empty means ABSENT rather than `""`, because
+  // `VoiceDescriptorSchema.label` is `min(1)` and an empty string would make the manifest
+  // fail the api's 422 boundary.
+  const label = storyboard.voiceLabel || undefined;
   const narratorVoice = {
     description: storyboard.voiceDescription,
-    ...(base.narratorVoice.label !== undefined
-      ? { label: base.narratorVoice.label }
-      : {}),
+    ...(label !== undefined ? { label } : {}),
     // Task #35: the generated whole-project narration key comes from the storyboard
     // (a regeneration updates it), preserving absent/null/string exactly.
     ...(storyboard.narrationAssetKey !== undefined
       ? { assetKey: storyboard.narrationAssetKey }
       : {}),
+    // Feature 1: the chosen provider voice id, from the UI storyboard so a change to the
+    // voice list actually persists. Without this branch the control would appear to save
+    // and revert on the next commit — the exact failure `narratorVoice.assetKey` already
+    // shipped once.
+    ...(storyboard.voiceId !== undefined ? { voiceId: storyboard.voiceId } : {}),
   };
 
   const music = storyboard.musicMood

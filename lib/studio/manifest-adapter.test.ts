@@ -435,3 +435,61 @@ describe("serializeManifest — added and deleted scenes (USER DECISION D3)", ()
     expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 1 — the narrator voice: the chosen id, and the label that could not persist
+// ---------------------------------------------------------------------------
+
+describe("manifest-adapter — narratorVoice (feature 1)", () => {
+  const withVoice = (over: Record<string, unknown>): ProjectManifest => ({
+    ...MANIFEST,
+    narratorVoice: { ...MANIFEST.narratorVoice, ...over },
+  });
+
+  it("U-V28: the chosen voice id round-trips hydrate → serialize as an identity", () => {
+    const m = withVoice({ voiceId: "zac" });
+    const sb = hydrateStoryboard(m);
+    expect(sb.voiceId).toBe("zac");
+    expect(serializeManifest(sb, m)).toEqual(m);
+  });
+
+  it("U-V29: absent stays absent — an already-committed manifest is unchanged", () => {
+    const sb = hydrateStoryboard(MANIFEST);
+    expect(sb.voiceId).toBeUndefined();
+    const out = serializeManifest(sb, MANIFEST);
+    expect("voiceId" in out.narratorVoice).toBe(false);
+    expect(out).toEqual(MANIFEST);
+  });
+
+  it("U-V30: a CHANGED voice id is written back — the whole point of the control", () => {
+    const m = withVoice({ voiceId: "zac" });
+    const sb = { ...hydrateStoryboard(m), voiceId: "tara" };
+    expect(serializeManifest(sb, m).narratorVoice.voiceId).toBe("tara");
+  });
+
+  it("U-V31: THE voiceLabel BUG — an edited label now persists instead of being discarded", () => {
+    // `serializeManifest` wrote `description` from UI state but `label` from
+    // `base.narratorVoice.label`. So a label the user (or a re-plan) produced was silently
+    // replaced by the label already on disk, every single commit. Two fields of the same
+    // object, read from two different places, with nothing to indicate which won.
+    const m = withVoice({ label: "OLD LABEL" });
+    const sb = { ...hydrateStoryboard(m), voiceLabel: "NEW LABEL" };
+    expect(serializeManifest(sb, m).narratorVoice.label).toBe("NEW LABEL");
+  });
+
+  it("U-V32: clearing the label removes it rather than writing an empty string", () => {
+    // `VoiceDescriptorSchema.label` is `min(1)`, so an empty string would make the
+    // manifest un-committable at the api's 422 boundary.
+    const m = withVoice({ label: "OLD LABEL" });
+    const sb = { ...hydrateStoryboard(m), voiceLabel: "" };
+    const out = serializeManifest(sb, m);
+    expect("label" in out.narratorVoice).toBe(false);
+    expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
+  });
+
+  it("U-V33: a manifest carrying a voice id stays schema-valid", () => {
+    expect(ProjectManifestSchema.safeParse(withVoice({ voiceId: "zac" })).success).toBe(
+      true,
+    );
+  });
+});

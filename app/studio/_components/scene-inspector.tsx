@@ -4,6 +4,7 @@ import styles from "../studio.module.css";
 import { useStudio } from "./studio-context";
 import ScripturePicker from "./scripture-picker";
 import AiSettingsPanel from "./ai-settings-panel";
+import VoiceList from "./voice-list";
 import {
   imageSlot,
   videoSlot,
@@ -11,6 +12,7 @@ import {
   MUSIC_SLOT,
 } from "@/lib/studio/reducer";
 import { MIN_SCENES, canDeleteScene } from "@/lib/studio/storyboard";
+import { resolveChoice } from "@/lib/studio/ai-settings";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
 const MONO = "ui-monospace, Menlo, monospace";
@@ -25,6 +27,55 @@ const LABEL: React.CSSProperties = {
   marginBottom: 7,
 };
 const GOLD_LABEL: React.CSSProperties = { ...LABEL, color: "#e6a43b" };
+
+/**
+ * Figure 19a's card chrome. Geometry taken literally; COLOUR translated — 19a/19b/20a/20b
+ * are a third dark palette, consistently a few units off Wilderness, and the house rule at
+ * `scripture-picker.tsx:56` is take the geometry and translate the colour.
+ */
+const CARD: React.CSSProperties = {
+  border: "1px solid rgba(230,180,120,.13)",
+  borderRadius: 13,
+  overflow: "hidden",
+  background: "#1b1410",
+};
+const CARD_HEADER: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "11px 14px",
+  borderBottom: "1px solid rgba(230,180,120,.1)",
+};
+const CARD_BODY: React.CSSProperties = { padding: 14 };
+/** The model sub-block under a prompt: a hairline, then the controls. */
+const SUB_BLOCK: React.CSSProperties = {
+  marginTop: 16,
+  paddingTop: 14,
+  borderTop: "1px solid rgba(230,180,120,.1)",
+};
+
+/**
+ * 19a's scope tag. The vocabulary is closed — `this scene` / `whole video` — and it
+ * scopes the PROMPT the card is built around, not the model selector co-located beneath
+ * it. That distinction is load-bearing: `AiGenerationSettingsSchema` records that model
+ * choice is project-level and that going per-scene is a manifest migration against an
+ * explicit written decision.
+ */
+function ScopePill({ scope }: { scope: "this scene" | "whole video" }) {
+  return (
+    <span
+      style={{
+        fontSize: 9.5,
+        color: "#a99b85",
+        border: "1px solid rgba(230,180,120,.2)",
+        borderRadius: 20,
+        padding: "2px 8px",
+      }}
+    >
+      {scope}
+    </span>
+  );
+}
 const STAT_ROW: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -54,8 +105,9 @@ export default function SceneInspector() {
     rerollVisual,
     regenerateNarration,
     regenerateMusic,
-    generateSceneVideo,
+    requestSceneVideo,
     removeScene,
+    setVoiceId,
   } = useStudio();
   const { storyboard, selectedSceneId, generations } = state;
   const canDelete = canDeleteScene(storyboard);
@@ -70,6 +122,16 @@ export default function SceneInspector() {
   // specs stay green. Signal = `project.manifest`, the same one commit()/publish()
   // branch on.
   const aiEnabled = Boolean(project.manifest);
+
+  // 19a orders the narration card provider -> model -> VOICE, "because the voice options
+  // come FROM the model". This is the resolved speech model the list keys off; a change
+  // to it remaps the chosen voice (see `remapVoiceForSettings` in the reducer).
+  const narrationModelId = resolveChoice(
+    "narration",
+    storyboard.aiSettings,
+    state.modelCatalogue?.defaults ?? {},
+    state.modelCatalogue?.models ?? [],
+  ).model;
 
   const visualStatus = generations[imageSlot(scene.id)]?.status;
   const narrationStatus = generations[NARRATION_SLOT]?.status;
@@ -103,29 +165,107 @@ export default function SceneInspector() {
         flexDirection: "column",
       }}
     >
-      {/* header — SCENE NN · INSPECTOR (keeps the scene-number seam) */}
-      <div
-        style={{
-          height: 40,
-          flex: "none",
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "0 16px",
-          fontFamily: SEMI,
-          fontWeight: 700,
-          fontSize: 10,
-          letterSpacing: ".18em",
-          color: "#a99b85",
-          borderBottom: "1px solid rgba(230,180,120,.12)",
-        }}
-      >
-        {"SCENE "}
-        <span data-testid="scene-number">
-          {String(scene.index).padStart(2, "0")}
-        </span>
-        {" · INSPECTOR"}
-      </div>
+      {/* header. 19a moves Delete scene up here beside the scene name — "no longer buried
+          under three model blocks" — and adds the scene COUNT and NAME.
+
+          Gated on `aiEnabled` like every other 19a change: mock-lane e2e specs assert the
+          13b inspector's exact textContent ("SCENE", "INSPECTOR", "02"), and the lane's
+          zero-egress guarantee depends on the AI surface never mounting. So the mock
+          catalogue keeps today's header and its trailing Delete button byte-for-byte, and
+          only a REAL project gets the regroup. */}
+      {aiEnabled ? (
+        <div
+          data-testid="inspector-header"
+          style={{
+            flex: "none",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            padding: "13px 16px",
+            background: "#1b1410",
+            borderBottom: "1px solid rgba(230,180,120,.12)",
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontFamily: SEMI,
+                fontWeight: 700,
+                fontSize: 10,
+                letterSpacing: ".18em",
+                color: "#a99b85",
+              }}
+            >
+              {"SCENE "}
+              <span data-testid="scene-number">
+                {String(scene.index).padStart(2, "0")}
+              </span>
+              {` OF ${String(storyboard.scenes.length).padStart(2, "0")}`}
+            </div>
+            <div
+              data-testid="scene-name"
+              style={{
+                fontFamily: SEMI,
+                fontWeight: 700,
+                fontSize: 17,
+                lineHeight: 1.15,
+                marginTop: 2,
+                color: "#f1e7d6",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {scene.visualLabel}
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid="delete-scene"
+            onClick={() => removeScene(scene.id)}
+            disabled={!canDelete}
+            title={canDelete ? undefined : `Minimum ${MIN_SCENES} scenes.`}
+            className={canDelete ? styles.hoverable : undefined}
+            style={{
+              flex: "none",
+              padding: "8px 12px",
+              border: "1px solid rgba(198,85,43,.45)",
+              borderRadius: 9,
+              background: "rgba(198,85,43,.12)",
+              fontWeight: 700,
+              fontSize: 12.5,
+              color: canDelete ? "#e0745a" : "#a99b85",
+              opacity: canDelete ? 1 : 0.5,
+              cursor: canDelete ? "pointer" : "not-allowed",
+            }}
+          >
+            {"✕ Delete scene"}
+          </button>
+        </div>
+      ) : (
+        <div
+          style={{
+            height: 40,
+            flex: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "0 16px",
+            fontFamily: SEMI,
+            fontWeight: 700,
+            fontSize: 10,
+            letterSpacing: ".18em",
+            color: "#a99b85",
+            borderBottom: "1px solid rgba(230,180,120,.12)",
+          }}
+        >
+          {"SCENE "}
+          <span data-testid="scene-number">
+            {String(scene.index).padStart(2, "0")}
+          </span>
+          {" · INSPECTOR"}
+        </div>
+      )}
 
       <div
         style={{
@@ -180,22 +320,41 @@ export default function SceneInspector() {
           />
         </div>
 
-        {/* VISUAL PROMPT — editable dashed box + inert Reroll visual */}
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7 }}>
-            <span style={GOLD_LABEL}>{"VISUAL PROMPT"}</span>
-            <span
-              style={{
-                fontSize: 9,
-                color: "#a99b85",
-                border: "1px solid rgba(230,180,120,.18)",
-                borderRadius: 20,
-                padding: "2px 7px",
-              }}
-            >
-              {"→ AI"}
-            </span>
+        {/* VISUAL — 19a makes each prompt a CARD that owns its own model controls. The
+            `→ AI` chip is replaced by the scope tag (a deliberate deletion, not an
+            oversight: the gold label still marks the section as AI-driven). */}
+        <div
+          {...(aiEnabled ? { "data-testid": "visual-card" } : {})}
+          style={aiEnabled ? CARD : undefined}
+        >
+          <div
+            style={
+              aiEnabled
+                ? CARD_HEADER
+                : { display: "flex", alignItems: "center", gap: 7, marginBottom: 7 }
+            }
+          >
+            <span style={GOLD_LABEL}>{aiEnabled ? "VISUAL" : "VISUAL PROMPT"}</span>
+            {aiEnabled ? (
+              <>
+                <span style={{ flex: 1 }} />
+                <ScopePill scope="this scene" />
+              </>
+            ) : (
+              <span
+                style={{
+                  fontSize: 9,
+                  color: "#a99b85",
+                  border: "1px solid rgba(230,180,120,.18)",
+                  borderRadius: 20,
+                  padding: "2px 7px",
+                }}
+              >
+                {"→ AI"}
+              </span>
+            )}
           </div>
+          <div style={aiEnabled ? CARD_BODY : undefined}>
           <div
             style={{
               border: "1.5px dashed rgba(230,164,59,.5)",
@@ -261,7 +420,11 @@ export default function SceneInspector() {
               data-testid="generate-scene-video"
               data-state={sceneVideoStatus ?? "idle"}
               disabled={sceneVideoStatus === "running"}
-              onClick={() => generateSceneVideo(scene.id)}
+              // 20b: this now OPENS the cost/time confirmation rather than spending.
+              // The availability gate (`71e32a9`, "can this run at all?") is upstream and
+              // still applies — the two compose, and this only ever fires when video is
+              // already runnable.
+              onClick={() => requestSceneVideo(scene.id)}
               className={styles.hoverable}
               style={{
                 display: "inline-flex",
@@ -299,42 +462,95 @@ export default function SceneInspector() {
               {"Video generation failed — retry"}
             </span>
           ) : null}
+
+          {/* 19a: SCENE IMAGE + SCENE VIDEO move UNDER the visual prompt — "Visual = image
+              model AND video model, since both render this scene" — and FAITH ALIGNMENT
+              moves inside the image block, because it only affects Gloo-generated images.
+              The panel is rendered per-card rather than rewritten, so every per-kind testid
+              (`ai-kind-*`, `ai-provider-*`, `ai-model-*`, `ai-cost-*`, `faith-alignment`)
+              survives the move unchanged. */}
+          {aiEnabled ? (
+            <div style={SUB_BLOCK}>
+              {/* F16: the VISUAL card's scope pill reads `this scene`, and it scopes the
+                  PROMPT. The model selectors co-located beneath it are PROJECT-level —
+                  `AiGenerationSettingsSchema` records that a per-scene choice would make
+                  the user re-pick a model 5–10 times and that the reverse is a manifest
+                  migration. The panel's own `· whole video` qualifier is kept here (and
+                  only here — the narration and music cards already say it in their
+                  headers) so the co-location cannot be read as per-scene scope. */}
+              <AiSettingsPanel
+                rootTestId="ai-settings"
+                kinds={["image", "video"]}
+                heading="MODELS"
+                includeFaithAlignment
+              />
+            </div>
+          ) : null}
+          </div>
         </div>
 
         {/* NARRATOR VOICE · whole video. Mock catalog → the canonical 13b read-only
             box (keeps the exact-copy regression anchors in textContent). Real
             project → an editable descriptor + a real "↻ Regenerate narration". */}
-        <div>
-          <div style={{ marginBottom: 7 }}>
-            <span style={GOLD_LABEL}>{"NARRATOR VOICE"}</span>
-            <span style={{ fontFamily: SEMI, fontWeight: 600, fontSize: 10, color: "#a99b85" }}>
-              {" · whole video"}
+        <div
+          {...(aiEnabled ? { "data-testid": "narration-card" } : {})}
+          style={aiEnabled ? CARD : undefined}
+        >
+          <div style={aiEnabled ? CARD_HEADER : { marginBottom: 7 }}>
+            <span style={GOLD_LABEL}>
+              {aiEnabled ? "NARRATION" : "NARRATOR VOICE"}
             </span>
+            {aiEnabled ? (
+              <>
+                <span style={{ flex: 1 }} />
+                <ScopePill scope="whole video" />
+              </>
+            ) : (
+              <span
+                style={{ fontFamily: SEMI, fontWeight: 600, fontSize: 10, color: "#a99b85" }}
+              >
+                {" · whole video"}
+              </span>
+            )}
           </div>
           {aiEnabled ? (
-            <>
-              <textarea
-                data-testid="voice-input"
-                aria-label="Narrator voice description"
-                value={storyboard.voiceDescription}
-                onChange={(e) =>
-                  dispatch({ type: "EDIT_VOICE_DESCRIPTION", description: e.target.value })
-                }
-                rows={3}
+            <div style={CARD_BODY}>
+              {/* 19a lists provider → model → VOICE in that order, "because the voice
+                  options come FROM the model". */}
+              <AiSettingsPanel kinds={["narration"]} heading={null} includeFaithAlignment={false} />
+              <div style={{ marginTop: 14 }} />
+              {/* 19b — the curated per-model voice list REPLACES the free-text descriptor.
+                  The box is gone because it was a lie: OpenRouter's speech endpoint takes
+                  a NAMED voice, its request body is exactly
+                  `{model, input, voice, response_format}`, and the descriptor reached no
+                  provider-facing code at all — every project narrated in "alloy" however
+                  carefully the sentence was written. A control that cannot affect its
+                  output is worse than no control.
+
+                  The descriptor itself is NOT deleted: `VoiceDescriptorSchema.description`
+                  is required, the storyboard LLM produces it, and a re-plan is now told to
+                  keep it. It is shown read-only below, as context for the choice. */}
+              <VoiceList
+                modelId={narrationModelId}
+                selectedVoiceId={storyboard.voiceId}
+                onSelect={setVoiceId}
+              />
+              <div
+                data-testid="voice-description"
                 style={{
-                  width: "100%",
-                  resize: "none",
-                  border: "1px solid rgba(230,180,120,.18)",
+                  marginTop: 9,
+                  border: "1px solid rgba(230,180,120,.14)",
                   borderRadius: 10,
                   background: "#0f0b07",
-                  padding: "11px 12px",
+                  padding: "9px 11px",
                   fontFamily: MONO,
-                  fontSize: 11.5,
+                  fontSize: 11,
                   lineHeight: 1.5,
-                  color: "#e8dcc6",
-                  outline: "none",
+                  color: "#a99b85",
                 }}
-              />
+              >
+                {storyboard.voiceDescription}
+              </div>
               <button
                 type="button"
                 data-testid="regenerate-narration"
@@ -367,7 +583,7 @@ export default function SceneInspector() {
                   {"Generation failed — retry"}
                 </span>
               ) : null}
-            </>
+            </div>
           ) : (
             <div
               style={{
@@ -389,13 +605,13 @@ export default function SceneInspector() {
         {/* MUSIC BED · whole video — editable style + regenerate (real projects only;
             the 13b mock inspector has no music control). */}
         {aiEnabled ? (
-          <div>
-            <div style={{ marginBottom: 7 }}>
+          <div data-testid="music-card" style={CARD}>
+            <div style={CARD_HEADER}>
               <span style={GOLD_LABEL}>{"MUSIC BED"}</span>
-              <span style={{ fontFamily: SEMI, fontWeight: 600, fontSize: 10, color: "#a99b85" }}>
-                {" · whole video"}
-              </span>
+              <span style={{ flex: 1 }} />
+              <ScopePill scope="whole video" />
             </div>
+            <div style={CARD_BODY}>
             {/* A TEXTAREA, matching NARRATOR VOICE above. It was a single-line `input`,
                 which silently truncated the prompt it was showing: "Cinematic, ethereal,
                 building fr…" rendered as one clipped line with no wrap and no scrollbar,
@@ -455,15 +671,23 @@ export default function SceneInspector() {
                 {"Generation failed — retry"}
               </span>
             ) : null}
+            {/* 19a: the music model moves under the music bed it configures. */}
+            <div style={SUB_BLOCK}>
+              <AiSettingsPanel kinds={["music"]} heading={null} includeFaithAlignment={false} />
+            </div>
+            </div>
           </div>
         ) : null}
 
-        {/* GENERATION · whole video — items 1/2/3. A SIXTH section, which 13b does not
-            have: the screen is a transcription and this is an extension to it. Mounted
-            behind `aiEnabled` via the panel's own guard, so the mock catalogue keeps the
-            canonical five-section inspector and the mock e2e lane keeps its zero-egress
-            guarantee. */}
-        <AiSettingsPanel />
+        {/* The standalone `GENERATION · whole video` section is GONE (19a): "Generation
+            settings are no longer a separate section at the bottom." Its parts are
+            redistributed above — image + video under the visual prompt (with faith
+            alignment inside the image block), the speech model under narration, the music
+            model under the music bed. Nothing was deleted and no testid moved; the panel
+            is simply mounted three times with the kinds each card owns.
+
+            The mock catalogue never mounted it at all (the panel's own `project.manifest`
+            guard), so the byte-for-byte 13b inspector is unaffected either way. */}
 
         {/* On-screen captions — single switch (SET_ON_SCREEN_TEXT) */}
         <div style={STAT_ROW}>
@@ -533,29 +757,35 @@ export default function SceneInspector() {
         {/* Delete scene — the other half of USER DECISION D3. Without it the 10-scene
             ceiling would be a one-way door: a user who adds a screen they don't want has
             no way back and the project is stuck a scene longer forever. The 5-scene floor
-            is enforced in the MODEL (`deleteScene` refuses); this button reports it. */}
-        <button
-          type="button"
-          data-testid="delete-scene"
-          onClick={() => removeScene(scene.id)}
-          disabled={!canDelete}
-          title={canDelete ? undefined : `Minimum ${MIN_SCENES} scenes.`}
-          className={canDelete ? styles.hoverable : undefined}
-          style={{
-            alignSelf: "flex-start",
-            padding: "7px 12px",
-            border: "1px solid rgba(230,180,120,.24)",
-            borderRadius: 8,
-            fontWeight: 700,
-            fontSize: 12,
-            color: canDelete ? "#e0745a" : "#a99b85",
-            background: "transparent",
-            opacity: canDelete ? 1 : 0.5,
-            cursor: canDelete ? "pointer" : "not-allowed",
-          }}
-        >
-          {"✕ Delete scene"}
-        </button>
+            is enforced in the MODEL (`deleteScene` refuses); this button reports it.
+
+            REAL projects render it in the sticky header instead (19a: "no longer buried
+            under three model blocks"). The mock catalogue keeps it here, because the 13b
+            inspector's DOM is a byte-for-byte anchor for the mock e2e lane. */}
+        {aiEnabled ? null : (
+          <button
+            type="button"
+            data-testid="delete-scene"
+            onClick={() => removeScene(scene.id)}
+            disabled={!canDelete}
+            title={canDelete ? undefined : `Minimum ${MIN_SCENES} scenes.`}
+            className={canDelete ? styles.hoverable : undefined}
+            style={{
+              alignSelf: "flex-start",
+              padding: "7px 12px",
+              border: "1px solid rgba(230,180,120,.24)",
+              borderRadius: 8,
+              fontWeight: 700,
+              fontSize: 12,
+              color: canDelete ? "#e0745a" : "#a99b85",
+              background: "transparent",
+              opacity: canDelete ? 1 : 0.5,
+              cursor: canDelete ? "pointer" : "not-allowed",
+            }}
+          >
+            {"✕ Delete scene"}
+          </button>
+        )}
       </div>
     </div>
   );

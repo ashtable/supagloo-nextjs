@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useEffect } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { byTestId, deferred, flush, mount, queryTestId } from "./support/render";
@@ -71,7 +72,7 @@ vi.mock("@/lib/studio/ai-generation-data", () => ({
 }));
 
 import SceneInspector from "@/app/studio/_components/scene-inspector";
-import { StudioProvider } from "@/app/studio/_components/studio-context";
+import { StudioProvider, useStudio } from "@/app/studio/_components/studio-context";
 import { DEMO_STORYBOARD } from "@/lib/studio/storyboard";
 import type { StudioProject } from "@/lib/studio/project";
 import type { ProjectManifest } from "@/lib/api/contracts";
@@ -132,10 +133,31 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 
+/**
+ * 20b mounts its confirmation at the studio-FRAME level, not inside the inspector, so
+ * this inspector-only harness exposes the same context action the dialog's confirm button
+ * calls. That keeps the harness honest about where the dialog lives while still letting
+ * this file assert what happens AFTER a confirm.
+ */
+let confirmVideo: () => void = () => {
+  throw new Error("confirmVideo called before the studio mounted");
+};
+
+function VideoConfirmProbe() {
+  const { confirmSceneVideo } = useStudio();
+  // Published from an EFFECT, not during render: reassigning an outer binding in the
+  // render pass is a side effect whose timing depends on when React happens to re-render.
+  useEffect(() => {
+    confirmVideo = () => confirmSceneVideo(false);
+  });
+  return null;
+}
+
 async function open(project: StudioProject) {
   mounted = await mount(
     <StudioProvider project={project}>
       <SceneInspector />
+      <VideoConfirmProbe />
     </StudioProvider>,
   );
   await flush();
@@ -248,7 +270,14 @@ describe("the Inspector GENERATION section", () => {
     presignDownload.mockResolvedValue("https://s3.example.invalid/clip.mp4");
 
     const root = await open(realProject());
+    // 20b: `▶ Generate video` now opens the cost/time confirmation instead of spending —
+    // so the generation this test is about is the CONFIRMED one. The dialog is mounted at
+    // the studio-frame level, which this inspector-only harness does not render, so the
+    // confirm is driven through the context the dialog itself calls.
     byTestId(root, "generate-scene-video").click();
+    await flush();
+    expect(createGeneration).not.toHaveBeenCalled();
+    confirmVideo();
     await flush();
 
     // The request really is a per-scene VIDEO generation…

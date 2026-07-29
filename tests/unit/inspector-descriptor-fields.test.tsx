@@ -1,20 +1,27 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { byTestId, flush, mount } from "./support/render";
+import { byTestId, flush, mount, queryTestId } from "./support/render";
 import type { Mounted } from "./support/render";
 
 /**
- * The two whole-video descriptor fields — NARRATOR VOICE and MUSIC BED — hold the same
- * kind of value: a freeform sentence describing a track across the whole video. They
- * were built with different controls, and the mismatch was visible in production: MUSIC
- * BED was a single-line `<input>`, so "Cinematic, ethereal, building from a low drone…"
+ * MUSIC BED holds a freeform sentence describing a track across the whole video, and it
+ * was built as a single-line `<input>`: "Cinematic, ethereal, building from a low drone…"
  * rendered clipped to "Cinematic, ethereal, building fr" with no wrap and no scrollbar.
  * The text was still there; the control just refused to show it, which reads as data loss.
  *
- * Pinned as a PAIR rather than as "music is a textarea", because the property that
- * matters is that these two fields agree — the next descriptor field added here should
- * fail this test until it joins the convention.
+ * ## Why this is no longer a PAIR
+ *
+ * It used to pin NARRATOR VOICE and MUSIC BED together — same kind of value, so the same
+ * control — and that was the right property while both were freeform descriptors. Figure
+ * 19b removes the narrator one on purpose: OpenRouter speech models take a NAMED voice,
+ * the request body is exactly `{model, input, voice, response_format}`, and the typed
+ * descriptor reached no provider-facing code at all. It has been replaced by the curated
+ * voice list (`voice-list.test.tsx`), so there is no longer a second freeform descriptor
+ * for this one to agree with.
+ *
+ * The multi-line rule still stands for any descriptor field that IS freeform — that is
+ * what the surviving assertions hold.
  */
 
 vi.mock("@/lib/studio/studio-data", () => ({
@@ -72,22 +79,28 @@ async function openInspector() {
 }
 
 describe("whole-video descriptor fields", () => {
-  it("renders BOTH descriptors in a multi-line control", async () => {
+  it("renders the music descriptor in a multi-line control", async () => {
     const root = await openInspector();
-    for (const testId of ["voice-input", "music-input"]) {
-      const el = byTestId(root, testId);
-      expect(`${testId}: ${el.tagName}`).toBe(`${testId}: TEXTAREA`);
-    }
+    const el = byTestId(root, "music-input");
+    expect(el.tagName).toBe("TEXTAREA");
   });
 
-  it("gives both the same visible line budget", async () => {
-    // Equal `rows` is what makes them read as one pair of controls rather than two
-    // unrelated ones — and is what stops a long mood from being clipped to one line.
+  it("gives it more than one visible line", async () => {
+    // The original defect: one line, no wrap, no scrollbar, so a long mood looked
+    // truncated to the user even though the value was intact.
     const root = await openInspector();
-    const voice = byTestId(root, "voice-input") as HTMLTextAreaElement;
     const music = byTestId(root, "music-input") as HTMLTextAreaElement;
-    expect(music.rows).toBe(voice.rows);
     expect(music.rows).toBeGreaterThan(1);
+  });
+
+  it("no longer offers a free-text NARRATOR VOICE box (19b)", async () => {
+    // The removal is the feature, not collateral: a control whose value could not reach
+    // any provider was inviting users to write a sentence that did nothing. What replaced
+    // it is the curated voice list, and the descriptor survives as read-only context.
+    const root = await openInspector();
+    expect(queryTestId(root, "voice-input")).toBeNull();
+    expect(queryTestId(root, "voice-list")).not.toBeNull();
+    expect(queryTestId(root, "voice-description")).not.toBeNull();
   });
 
   it("holds the full descriptor text, not a truncation", async () => {

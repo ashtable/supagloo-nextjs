@@ -5,6 +5,7 @@
  */
 import type { Aspect } from "./aspect";
 import type { OnScreenText, Storyboard } from "./storyboard";
+import type { PresignedAsset } from "./presign-refresh";
 import {
   addSceneAfter,
   deleteScene,
@@ -34,11 +35,13 @@ import {
   type RenderJobDto,
 } from "../api/contracts";
 import {
+  resolveChoice,
   settingsAfterFaithAlignmentChange,
   settingsAfterModelChange,
   settingsAfterProviderChange,
   type SelectableKind,
 } from "./ai-settings";
+import { remapVoice } from "./speech-voices";
 import {
   nextVersion,
   postPublishBranch,
@@ -59,7 +62,10 @@ import {
   type RenderState,
 } from "./render-model";
 import type { JobLike, LogRow } from "../project-wizard/job-log";
-import type { ProjectVersionDto } from "../api/contracts";
+import type {
+  AiGenerationSettings,
+  ProjectVersionDto,
+} from "../api/contracts";
 
 // NOTE (task items 3+4): `PostingKey`, `StudioState.posting` and the `TOGGLE_POSTING`
 // action used to live here. They backed the SHIP IT popover's platform chips and its
@@ -91,6 +97,15 @@ export const videoSlot = (sceneId: string): string => `video:${sceneId}`;
 export interface GenerationEntry {
   status: "running" | "failed";
   error?: string;
+  /** 20a: the api generation id, retained so Cancel has something to address.
+   *  `runGeneration` used to keep it in a local closure only, which is why
+   *  `POST /v1/ai/generations/:id/cancel` — which has existed in the api all along — had
+   *  no client path at all. Null until `createGeneration` resolves. */
+  generationId?: string | null;
+  /** 20a: set when a cancel was REFUSED (the api's 409 `generation_not_cancelable`). The
+   *  lock stays up — dropping it would let the generation land into an editor the user had
+   *  resumed editing, which is the race the lock exists to prevent. */
+  cancelRefused?: boolean;
 }
 
 export interface StudioState {
@@ -200,14 +215,43 @@ export type StudioAction =
   | { type: "CLOSE_RENDER" }
   // Task #35 AI generation
   | { type: "GENERATION_BEGIN"; slot: string }
+  // 20a: the POST returned an id. A separate action from GENERATION_BEGIN because the
+  // lock must go up on the CLICK — the POST can take seconds, and an editor that stays
+  // live during them is exactly the window this feature closes.
+  | { type: "GENERATION_STARTED"; slot: string; generationId: string }
+  | { type: "GENERATION_CANCEL_REFUSED"; slot: string }
   | { type: "GENERATION_FAILED"; slot: string; error: string }
-  | { type: "IMAGE_GENERATED"; sceneId: string; assetKey: string; url: string | null }
-  | { type: "SET_SCENE_VISUAL_URL"; sceneId: string; url: string | null }
+  | {
+      type: "IMAGE_GENERATED";
+      sceneId: string;
+      assetKey: string;
+      url: string | null;
+      /** Feature 6: when `url` dies, so the refresh pass can re-sign before it does. */
+      urlExpiresAt?: string | null;
+    }
+  | {
+      type: "SET_SCENE_VISUAL_URL";
+      sceneId: string;
+      url: string | null;
+      urlExpiresAt?: string | null;
+    }
+  // Feature 6: the other three presigned surfaces. All four die at the same 300 s, so a
+  // refresh loop that could only write one of them would keep the picture alive while the
+  // narration and the music silently dropped out of the preview.
+  | {
+      type: "SET_SCENE_NARRATION_URL";
+      sceneId: string;
+      url: string | null;
+      urlExpiresAt?: string | null;
+    }
+  | { type: "SET_NARRATION_URL"; url: string | null; urlExpiresAt?: string | null }
+  | { type: "SET_MUSIC_URL"; url: string | null; urlExpiresAt?: string | null }
   | { type: "SCRIPT_GENERATED"; sceneId: string; scriptText: string }
   | {
       type: "NARRATION_GENERATED";
       assetKey: string;
       url: string | null;
+      urlExpiresAt?: string | null;
       /** The per-scene clips this generation produced (empty for a pre-map result). */
       scenes: ReadonlyArray<{
         sceneId: string;
@@ -215,11 +259,22 @@ export type StudioAction =
         durationSeconds?: number;
       }>;
     }
-  | { type: "MUSIC_GENERATED"; assetKey: string; url: string | null }
+  | {
+      type: "MUSIC_GENERATED";
+      assetKey: string;
+      url: string | null;
+      urlExpiresAt?: string | null;
+    }
   // Genesis-1 item 4. Carries the SAME payload as IMAGE_GENERATED; the difference is
   // entirely in what `visualAssetKind` is set to, which is why they are two actions and
   // not one with a flag the caller could forget.
-  | { type: "VIDEO_GENERATED"; sceneId: string; assetKey: string; url: string | null }
+  | {
+      type: "VIDEO_GENERATED";
+      sceneId: string;
+      assetKey: string;
+      url: string | null;
+      urlExpiresAt?: string | null;
+    }
   // Genesis-1 items 1/2 — the project-level AI settings. Content edits (they change what
   // the project generates and must reach the repo through Commit).
   | { type: "SET_AI_PROVIDER"; kind: SelectableKind; provider: AiProvider }
@@ -228,7 +283,10 @@ export type StudioAction =
   // NOT an edit: a background catalogue read must not arm the Commit button.
   | { type: "MODELS_LOADED"; catalogue: AiModelCatalogueResponse | null }
   | { type: "STORYBOARD_GENERATED"; storyboard: Storyboard }
-  | { type: "EDIT_VOICE_DESCRIPTION"; description: string };
+  | { type: "EDIT_VOICE_DESCRIPTION"; description: string }
+  // Feature 1 / 19b: pick a narrator from the curated per-model list. A content edit —
+  // it changes what the project generates and must reach the repo through Commit.
+  | { type: "SET_VOICE_ID"; voiceId: string };
 
 /** Mocked-async delay for the 13b Commit transition (ms). (Publish no longer has
  *  a single direct-bump delay — 14a's log ticks the mocked PR dance instead.) */
@@ -299,6 +357,101 @@ export function isPreviewGenerating(state: StudioState): boolean {
     state.generations[imageSlot(state.selectedSceneId)]?.status === "running" ||
     state.generations[STORYBOARD_SLOT]?.status === "running"
   );
+}
+
+/** What 20a's busy card is describing. */
+export interface ActiveGeneration {
+  /** The `generations` key, so a cancel/settle can address the right slot. */
+  slot: string;
+  /** Drives the card's kind label and its duration hint. */
+  kind: "image" | "video" | "narration" | "music" | "script" | "storyboard";
+  /** Present for the scene-scoped kinds; the shimmer marks THIS scene. */
+  sceneId: string | null;
+  /** The api generation id, once `createGeneration` has resolved. Null in the window
+   *  between the click and the POST returning — during which Cancel has nothing to
+   *  address, which is why the card renders it disabled rather than absent. */
+  generationId: string | null;
+}
+
+/**
+ * Figure 20a — is ANY generation running, and which one?
+ *
+ * Deliberately a SECOND predicate rather than a widening of `isPreviewGenerating`. Those
+ * two questions are different and both are right:
+ *
+ *   - `isPreviewGenerating` asks *"is the visible frame about to change?"* — the selected
+ *     scene's image, or a whole-storyboard re-plan. It scrims the Player only, and it
+ *     ignores narration/music/other scenes ON PURPOSE.
+ *   - this asks *"may the user edit anything at all?"* — 20a's answer is no, for every
+ *     kind, because any generation that lands into a concurrently-edited storyboard can
+ *     overwrite work.
+ *
+ * Widening the first would have silently changed the Player scrim's meaning as a side
+ * effect of adding a lock.
+ *
+ * Slot order is fixed and scenes are walked in composition order, so with two generations
+ * somehow in flight the card names the same one on every render rather than flickering.
+ */
+export function activeGeneration(state: StudioState): ActiveGeneration | null {
+  const running = (slot: string) =>
+    state.generations[slot]?.status === "running";
+  const entry = (
+    slot: string,
+    kind: ActiveGeneration["kind"],
+    sceneId: string | null,
+  ): ActiveGeneration => ({
+    slot,
+    kind,
+    sceneId,
+    generationId: state.generations[slot]?.generationId ?? null,
+  });
+
+  if (running(STORYBOARD_SLOT)) {
+    return entry(STORYBOARD_SLOT, "storyboard", null);
+  }
+  for (const scene of state.storyboard.scenes) {
+    if (running(imageSlot(scene.id))) return entry(imageSlot(scene.id), "image", scene.id);
+    if (running(videoSlot(scene.id))) return entry(videoSlot(scene.id), "video", scene.id);
+    if (running(scriptSlot(scene.id)))
+      return entry(scriptSlot(scene.id), "script", scene.id);
+  }
+  if (running(NARRATION_SLOT)) return entry(NARRATION_SLOT, "narration", null);
+  if (running(MUSIC_SLOT)) return entry(MUSIC_SLOT, "music", null);
+  return null;
+}
+
+/** 20a: the whole editor is locked while any generation runs. */
+export function isStudioLocked(state: StudioState): boolean {
+  return activeGeneration(state) !== null;
+}
+
+/**
+ * Feature 1 / 19b, verbatim: *"Change the speech model and the voices swap; the previously
+ * chosen voice maps to the nearest match or falls back to the recommended one."*
+ *
+ * This is what makes persisting a provider voice id SAFE. Without it, switching the speech
+ * model would leave a voice id the new model has never heard of on the manifest, and the
+ * next narration generation would be a hard provider 400 — the feature would break the
+ * exact thing it was added to fix, and the studio would still be displaying the voice it
+ * had already invalidated.
+ *
+ * Only the `narration` kind can move the voice, and only when a voice has actually been
+ * chosen: a project that never opened the voice list keeps sending nothing and keeps
+ * getting the provider default, byte-identically to before.
+ */
+function remapVoiceForSettings(
+  state: StudioState,
+  next: AiGenerationSettings,
+  kind: SelectableKind,
+): Storyboard {
+  const sb = setAiSettings(state.storyboard, next);
+  if (kind !== "narration" || sb.voiceId === undefined) return sb;
+  const defaults = state.modelCatalogue?.defaults ?? {};
+  const models = state.modelCatalogue?.models ?? [];
+  const before = resolveChoice("narration", state.storyboard.aiSettings, defaults, models);
+  const after = resolveChoice("narration", next, defaults, models);
+  if (before.model === after.model) return sb;
+  return { ...sb, voiceId: remapVoice(sb.voiceId, before.model, after.model) };
 }
 
 export function studioReducer(
@@ -569,10 +722,43 @@ export function studioReducer(
     case "GENERATION_BEGIN":
       // A fresh begin clears any prior failure on that slot; storyboard/dirty
       // untouched (nothing has changed yet).
+      //
+      // 20a: it also CLOSES THE MENUS. `studio-app.tsx` records that there is deliberately
+      // no blocking overlay because popover dismissal depends on pointerdown reaching
+      // other triggers — a scrim would swallow those. Reversing that decision means the
+      // lock has to close the popovers itself rather than fight them; a lock with a menu
+      // open behind it is the incoherent state.
       return {
         ...state,
+        rerollMenuOpen: false,
+        shipMenuOpen: false,
+        versionMenuOpen: false,
         generations: { ...state.generations, [action.slot]: { status: "running" } },
       };
+    case "GENERATION_STARTED": {
+      const current = state.generations[action.slot];
+      // Only decorates a slot that is still running: a generation that failed or landed
+      // between the POST and its response must not be resurrected by its own id arriving.
+      if (current?.status !== "running") return state;
+      return {
+        ...state,
+        generations: {
+          ...state.generations,
+          [action.slot]: { ...current, generationId: action.generationId },
+        },
+      };
+    }
+    case "GENERATION_CANCEL_REFUSED": {
+      const current = state.generations[action.slot];
+      if (current?.status !== "running") return state;
+      return {
+        ...state,
+        generations: {
+          ...state.generations,
+          [action.slot]: { ...current, cancelRefused: true },
+        },
+      };
+    }
     case "GENERATION_FAILED":
       // The generation did NOT land — record the error on the slot so the inspector
       // can surface a retry. No storyboard/dirty change.
@@ -595,6 +781,7 @@ export function studioReducer(
           setSceneVisual(state.storyboard, action.sceneId, {
             assetKey: action.assetKey,
             url: action.url,
+            urlExpiresAt: action.urlExpiresAt ?? null,
             kind: "image",
           }),
         ),
@@ -611,6 +798,7 @@ export function studioReducer(
           setSceneVisual(state.storyboard, action.sceneId, {
             assetKey: action.assetKey,
             url: action.url,
+            urlExpiresAt: action.urlExpiresAt ?? null,
             kind: "video",
           }),
         ),
@@ -619,14 +807,15 @@ export function studioReducer(
     case "SET_AI_PROVIDER":
       return edited(
         state,
-        setAiSettings(
-          state.storyboard,
+        remapVoiceForSettings(
+          state,
           settingsAfterProviderChange(
             state.storyboard.aiSettings,
             action.kind,
             action.provider,
             state.modelCatalogue?.defaults ?? {},
           ),
+          action.kind,
         ),
       );
     case "SET_AI_MODEL": {
@@ -635,14 +824,15 @@ export function studioReducer(
         current ?? state.modelCatalogue?.defaults?.[action.kind]?.provider ?? "openrouter";
       return edited(
         state,
-        setAiSettings(
-          state.storyboard,
+        remapVoiceForSettings(
+          state,
           settingsAfterModelChange(
             state.storyboard.aiSettings,
             action.kind,
             provider,
             action.model,
           ),
+          action.kind,
         ),
       );
     }
@@ -659,12 +849,53 @@ export function studioReducer(
       // here would arm Commit the moment the studio opened and make "All changes
       // committed" a lie about work the user never did.
       return { ...state, modelCatalogue: action.catalogue };
-    case "SET_SCENE_VISUAL_URL":
-      // Hydrate-time presign of an already-persisted key — a display-only URL, NOT
-      // an edit (dirty must stay as-is).
+    case "SET_SCENE_NARRATION_URL":
+      // Display-only, like every case in this group: NOT an edit.
       return {
         ...state,
-        storyboard: setSceneVisualUrl(state.storyboard, action.sceneId, action.url),
+        storyboard: {
+          ...state.storyboard,
+          scenes: state.storyboard.scenes.map((sc) =>
+            sc.id === action.sceneId
+              ? {
+                  ...sc,
+                  narrationUrl: action.url,
+                  narrationUrlExpiresAt: action.urlExpiresAt ?? null,
+                }
+              : sc,
+          ),
+        },
+      };
+    case "SET_NARRATION_URL":
+      return {
+        ...state,
+        storyboard: {
+          ...state.storyboard,
+          narrationUrl: action.url,
+          narrationUrlExpiresAt: action.urlExpiresAt ?? null,
+        },
+      };
+    case "SET_MUSIC_URL":
+      return {
+        ...state,
+        storyboard: {
+          ...state.storyboard,
+          musicUrl: action.url,
+          musicUrlExpiresAt: action.urlExpiresAt ?? null,
+        },
+      };
+    case "SET_SCENE_VISUAL_URL":
+      // A presign of an already-persisted key — at hydration, and (feature 6) on every
+      // refresh pass before the previous url expires. A display-only URL, NOT an edit:
+      // dirty must stay as-is, or simply leaving the studio open would arm Commit.
+      return {
+        ...state,
+        storyboard: setSceneVisualUrl(
+          state.storyboard,
+          action.sceneId,
+          action.url,
+          action.urlExpiresAt ?? null,
+        ),
       };
     case "SCRIPT_GENERATED":
       return {
@@ -683,7 +914,12 @@ export function studioReducer(
           // it. The composition prefers the per-scene ones and ignores the whole-project
           // track once any exist, so the two never double up.
           setSceneNarrationAssets(
-            setNarrationAsset(state.storyboard, action.assetKey, action.url),
+            setNarrationAsset(
+              state.storyboard,
+              action.assetKey,
+              action.url,
+              action.urlExpiresAt ?? null,
+            ),
             action.scenes,
           ),
         ),
@@ -693,7 +929,12 @@ export function studioReducer(
       return {
         ...edited(
           state,
-          setMusicAsset(state.storyboard, action.assetKey, action.url),
+          setMusicAsset(
+            state.storyboard,
+            action.assetKey,
+            action.url,
+            action.urlExpiresAt ?? null,
+          ),
         ),
         generations: clearSlot(state.generations, MUSIC_SLOT),
       };
@@ -713,6 +954,8 @@ export function studioReducer(
         state,
         setVoiceDescription(state.storyboard, action.description),
       );
+    case "SET_VOICE_ID":
+      return edited(state, { ...state.storyboard, voiceId: action.voiceId });
     default:
       return state;
   }
@@ -802,10 +1045,16 @@ function genError(gen: AiGenerationDto | null): string {
 export function imageGenerationOutcome(
   sceneId: string,
   gen: AiGenerationDto | null,
-  url: string | null,
+  asset: PresignedAsset | null,
 ): StudioAction {
   if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
-    return { type: "IMAGE_GENERATED", sceneId, assetKey: gen.resultAssetKey, url };
+    return {
+      type: "IMAGE_GENERATED",
+      sceneId,
+      assetKey: gen.resultAssetKey,
+      url: asset?.url ?? null,
+      urlExpiresAt: asset?.expiresAt ?? null,
+    };
   }
   return { type: "GENERATION_FAILED", slot: imageSlot(sceneId), error: genError(gen) };
 }
@@ -817,10 +1066,16 @@ export function imageGenerationOutcome(
 export function videoGenerationOutcome(
   sceneId: string,
   gen: AiGenerationDto | null,
-  url: string | null,
+  asset: PresignedAsset | null,
 ): StudioAction {
   if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
-    return { type: "VIDEO_GENERATED", sceneId, assetKey: gen.resultAssetKey, url };
+    return {
+      type: "VIDEO_GENERATED",
+      sceneId,
+      assetKey: gen.resultAssetKey,
+      url: asset?.url ?? null,
+      urlExpiresAt: asset?.expiresAt ?? null,
+    };
   }
   return { type: "GENERATION_FAILED", slot: videoSlot(sceneId), error: genError(gen) };
 }
@@ -843,7 +1098,7 @@ export function scriptGenerationOutcome(
 /** narration synth → NARRATION_GENERATED (needs a resultAssetKey; url optional). */
 export function narrationGenerationOutcome(
   gen: AiGenerationDto | null,
-  url: string | null,
+  asset: PresignedAsset | null,
 ): StudioAction {
   if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
     // The row keeps ONE resultAssetKey; the remaining per-scene clips ride in resultJson
@@ -855,7 +1110,8 @@ export function narrationGenerationOutcome(
     return {
       type: "NARRATION_GENERATED",
       assetKey: gen.resultAssetKey,
-      url,
+      url: asset?.url ?? null,
+      urlExpiresAt: asset?.expiresAt ?? null,
       scenes: parsed.success ? parsed.data.scenes : [],
     };
   }
@@ -865,10 +1121,15 @@ export function narrationGenerationOutcome(
 /** music synth → MUSIC_GENERATED (needs a resultAssetKey; url optional). */
 export function musicGenerationOutcome(
   gen: AiGenerationDto | null,
-  url: string | null,
+  asset: PresignedAsset | null,
 ): StudioAction {
   if (gen && gen.status === "succeeded" && gen.resultAssetKey) {
-    return { type: "MUSIC_GENERATED", assetKey: gen.resultAssetKey, url };
+    return {
+      type: "MUSIC_GENERATED",
+      assetKey: gen.resultAssetKey,
+      url: asset?.url ?? null,
+      urlExpiresAt: asset?.expiresAt ?? null,
+    };
   }
   return { type: "GENERATION_FAILED", slot: MUSIC_SLOT, error: genError(gen) };
 }

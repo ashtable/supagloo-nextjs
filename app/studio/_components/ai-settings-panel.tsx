@@ -188,7 +188,38 @@ function ProviderSwitch({
   );
 }
 
-export default function AiSettingsPanel() {
+export interface AiSettingsPanelProps {
+  /**
+   * Figure 19a dissolves the single `GENERATION` section and redistributes it: SCENE IMAGE
+   * + SCENE VIDEO under the visual prompt, the speech model under narration, the music
+   * model under the music bed — *"each prompt is a card that owns its own model controls"*.
+   *
+   * The panel is rendered once per card with the kinds that belong to it, rather than
+   * being rewritten three times. Every per-kind testid (`ai-kind-*`, `ai-provider-*`,
+   * `ai-model-*`, `ai-cost-*`) is unchanged by construction, which is what keeps the
+   * real-lane specs that drive them working across the move.
+   *
+   * Omitted ⇒ every selectable kind, i.e. exactly today's single-section behaviour.
+   */
+  kinds?: readonly SelectableKind[];
+  /** The gold section label. `null` renders none — 19a's cards carry their own header. */
+  heading?: string | null;
+  /**
+   * 19a moves FAITH ALIGNMENT inside the image block, *"because it only affects
+   * Gloo-generated images, so it belongs where that choice is made"*. Exactly one mount
+   * may claim it, or the studio would render the control several times.
+   */
+  includeFaithAlignment?: boolean;
+  /** Set on exactly ONE mount so `ai-settings` stays a unique seam. */
+  rootTestId?: string;
+}
+
+export default function AiSettingsPanel({
+  kinds,
+  heading = "GENERATION",
+  includeFaithAlignment = true,
+  rootTestId,
+}: AiSettingsPanelProps = {}) {
   const { state, project, setAiProvider, setAiModel, setFaithAlignment } = useStudio();
   // The NON-throwing read. This panel already models "the session is not known yet" and
   // renders it as "Checking…" with every provider disabled — and that is the right answer
@@ -212,23 +243,33 @@ export default function AiSettingsPanel() {
   const resolvedConnections =
     session && session.sessionResolved ? session.connections : null;
 
-  const showFaith = needsFaithAlignment(settings, defaults);
+  const shownKinds = kinds ?? SELECTABLE_KINDS;
+  const showFaith = includeFaithAlignment && needsFaithAlignment(settings, defaults);
 
   return (
-    <div data-testid="ai-settings" data-faith-visible={showFaith ? "true" : "false"}>
-      <div style={{ marginBottom: 9 }}>
-        <span style={GOLD_LABEL}>{"GENERATION"}</span>
-        {/* 13b's own scoping qualifier, reused rather than reinvented: these choices
-            configure the project, not this scene. */}
-        <span
-          style={{ fontFamily: SEMI, fontWeight: 600, fontSize: 10, color: "#a99b85" }}
-        >
-          {" · whole video"}
-        </span>
-      </div>
+    <div
+      {...(rootTestId ? { "data-testid": rootTestId } : {})}
+      data-faith-visible={showFaith ? "true" : "false"}
+    >
+      {heading ? (
+        <div style={{ marginBottom: 9 }}>
+          <span style={GOLD_LABEL}>{heading}</span>
+          {/* 13b's own scoping qualifier, reused rather than reinvented: these choices
+              configure the project, not this scene. It stays even where 19a co-locates the
+              selector inside a card tagged `this scene` — the pill scopes the PROMPT, and
+              `AiGenerationSettingsSchema` is emphatic that model choice is project-level
+              ("a per-scene choice would make the user re-pick a model 5–10 times … the
+              reverse is a manifest migration"). */}
+          <span
+            style={{ fontFamily: SEMI, fontWeight: 600, fontSize: 10, color: "#a99b85" }}
+          >
+            {" · whole video"}
+          </span>
+        </div>
+      ) : null}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {SELECTABLE_KINDS.map((kind) => {
+        {shownKinds.map((kind) => {
           const options = providerOptionsFor(kind, resolvedConnections, models);
           const choice = resolveChoice(kind, settings, defaults, models);
           const available = modelsFor(kind, choice.provider, models);

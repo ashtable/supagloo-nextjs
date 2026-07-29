@@ -15,9 +15,51 @@ import ShipMenu from "./ship-menu";
 import VersionMenu from "./version-menu";
 import PublishWizard from "./publish-wizard";
 import RenderOverlay from "./render-overlay";
+import StudioLock from "./studio-lock";
+import VideoWarningDialog from "./video-warning-dialog";
+import { resolveChoice } from "@/lib/studio/ai-settings";
+import { estimateGenerationCost } from "@/lib/studio/cost-estimate";
 
 const GRAIN =
   "url(\"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='140'%20height='140'%3E%3Cfilter%20id='n'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.85'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3C/filter%3E%3Crect%20width='100%25'%20height='100%25'%20filter='url(%23n)'/%3E%3C/svg%3E\")";
+
+/** 20b's dialog, mounted once at the frame level and driven from the studio context so
+ *  the inspector button stays a plain trigger. */
+function VideoWarningGate() {
+  const {
+    state,
+    videoWarningSceneId,
+    closeVideoWarning,
+    confirmSceneVideo,
+    useStillImageInstead,
+  } = useStudio();
+  if (!videoWarningSceneId) return null;
+  const scene = state.storyboard.scenes.find((s) => s.id === videoWarningSceneId);
+  if (!scene) return null;
+  const choice = resolveChoice(
+    "image",
+    state.storyboard.aiSettings,
+    state.modelCatalogue?.defaults ?? {},
+    state.modelCatalogue?.models ?? [],
+  );
+  // The still-image alternative is priced by the HONEST module, which for the shipped
+  // Gloo default answers `unpriced` and says why. 20b's `$0.003` is not that number.
+  const stillEstimate = estimateGenerationCost({
+    kind: "image",
+    model: state.modelCatalogue?.models.find((m) => m.id === choice.model) ?? null,
+  });
+  return (
+    <VideoWarningDialog
+      open
+      sceneLabel={`Scene ${String(scene.index).padStart(2, "0")} · ${scene.visualLabel}`}
+      sceneCount={state.storyboard.scenes.length}
+      stillEstimate={stillEstimate}
+      onClose={closeVideoWarning}
+      onUseStillImage={useStillImageInstead}
+      onGenerateVideo={confirmSceneVideo}
+    />
+  );
+}
 
 function StudioFrame() {
   const { state, dispatch } = useStudio();
@@ -132,6 +174,13 @@ function StudioFrame() {
       {state.versionMenuOpen ? <VersionMenu /> : null}
       {state.publishFlow !== "closed" ? <PublishWizard /> : null}
       {state.render && !state.render.backgrounded ? <RenderOverlay /> : null}
+      {/* 20a. Mounted LAST so it covers the popovers and the publish wizard too — the lock
+          is studio-wide, including the top bar. 14c's RenderOverlay is a DIFFERENT thing
+          (the final render, not a generation) and is deliberately not merged with it. */}
+      <StudioLock />
+      {/* 20b — fires before any video generation. `71e32a9`'s availability gate is
+          upstream of this and still applies; the two compose. */}
+      <VideoWarningGate />
     </div>
   );
 }
