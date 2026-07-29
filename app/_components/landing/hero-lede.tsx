@@ -3,6 +3,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { useYVAuth } from "@youversion/platform-react-ui";
 import SignInButton from "../sign-in-button";
+import DemoVideoModal from "./demo-video-modal";
 import { heroModel, HERO_COPY } from "@/lib/landing/hero-model";
 
 /**
@@ -67,6 +68,9 @@ const fullWidth: CSSProperties = { width: "100%", boxSizing: "border-box" };
 export default function HeroLede() {
   const { auth, userInfo } = useYVAuth();
   const [mounted, setMounted] = useState(false);
+  /** Both demo buttons — the desktop CTA row and the mobile stack — open the SAME modal.
+   *  They are two buttons only because the two layouts are; there is one behaviour. */
+  const [demoOpen, setDemoOpen] = useState(false);
 
   // Post-hydration mount gate — one-shot, intentional (see nav-auth.tsx).
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -166,6 +170,7 @@ export default function HeroLede() {
         <button
           type="button"
           data-testid="hero-demo"
+          onClick={() => setDemoOpen(true)}
           className="flex items-center cursor-pointer"
           style={m.primaryCta === "start" ? outlinePill : gradientPill}
         >
@@ -192,12 +197,24 @@ export default function HeroLede() {
         )}
         <button
           type="button"
+          data-testid="hero-demo-mobile"
+          onClick={() => setDemoOpen(true)}
           className="flex items-center justify-center cursor-pointer"
           style={{ ...outlinePill, ...fullWidth, padding: "13px" }}
         >
           {HERO_COPY.watchDemo}
         </button>
       </div>
+
+      {/* ONE modal for both buttons. Rendered here rather than beside each button so the
+          two layouts cannot drift into two different players — and so only one <video>
+          can ever exist. It is a portal (see `modal.tsx`), so its position in this tree
+          does not affect where it appears.
+
+          Mounted only while open, so closing throws away the presigned URL and the modal's
+          per-open state with it. A 120s presign must never survive a close and be replayed
+          into the next open. */}
+      {demoOpen && <DemoVideoModal onClose={() => setDemoOpen(false)} />}
     </>
   );
 }
