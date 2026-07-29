@@ -42,7 +42,11 @@ export interface GenerationTarget {
 export const DEFAULT_GENERATION_MODELS: Record<GenerationKind, string> = {
   storyboard: "google/gemma-4-26b-a4b-it:free",
   script: "google/gemma-4-26b-a4b-it:free",
-  image: "google/gemini-2.5-flash-image",
+  // A GLOO id, matching `DEFAULT_GENERATION_PROVIDERS.image` below. Verified against the
+  // live Gloo catalogue (`GET /platform/v2/models`, 2026-07-29): `output_modalities`
+  // `["text","image"]`. The OpenRouter equivalent — `google/gemini-2.5-flash-image`, the
+  // previous value — remains selectable in the picker; only the DEFAULT moved.
+  image: "gloo-google-gemini-2.5-flash-image",
   // MUST be a model from `GET /api/v1/models?output_modalities=speech` — the DEDICATED
   // batch-TTS catalogue that `POST /api/v1/audio/speech` serves. It was previously a
   // CONVERSATIONAL audio model from the `output_modalities=audio` catalogue, which is why
@@ -51,17 +55,26 @@ export const DEFAULT_GENERATION_MODELS: Record<GenerationKind, string> = {
   // endpoint with `400 Model … does not exist`. Verified live 2026-07-27.
   narration: "hexgrad/kokoro-82m",
   music: "google/lyria-3-clip-preview",
-  video: "alibaba/wan-2.7",
+  // Verified live 2026-07-29 in `GET /api/v1/models?output_modalities=video` as
+  // "xAI: Grok Imagine Video". NOT `x-ai/grok-imagine-video-1.5`, which is the adjacent
+  // "Grok Imagine Video 1.5" — the two are separate catalogue entries.
+  video: "x-ai/grok-imagine-video",
 };
 
-/** Provider per kind. openrouter is valid for EVERY kind in the compatibility
- *  matrix (`image`/`narration`/`music`/`video` are openrouter-only; text kinds
- *  allow gloo too but openrouter is the simplest always-valid default — no picker
- *  UI). Overridable via `SUPAGLOO_AI_PROVIDER_<KIND>`. */
+/** Provider per kind. Overridable via `SUPAGLOO_AI_PROVIDER_<KIND>`.
+ *
+ *  `narration`/`music`/`video` are openrouter-ONLY in the compatibility matrix — a
+ *  measured fact, not caution: Gloo's catalogue has zero audio/video entries and those
+ *  routes answer 404. `image` carries BOTH since 2026-07-28 (Gloo has image-capable
+ *  models, routed through `POST /ai/v2/responses`), and Gloo is now the DEFAULT for it —
+ *  faith-aligned generation is the product's reason to exist, so the image default should
+ *  be the aligned provider rather than the merely-always-valid one. The api enforces the
+ *  matrix at enqueue (422); `lib/studio/ai-settings.ts` mirrors it so the picker can
+ *  explain itself. Text kinds allow gloo too but stay on openrouter. */
 const DEFAULT_GENERATION_PROVIDERS: Record<GenerationKind, string> = {
   storyboard: "openrouter",
   script: "openrouter",
-  image: "openrouter",
+  image: "gloo",
   narration: "openrouter",
   music: "openrouter",
   video: "openrouter",
