@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount } from "./support/render";
+import { byTestId, mount } from "./support/render";
 
 /**
  * Feature 7, defect 2 — the project grid is unsynchronized with the session.
@@ -73,7 +73,11 @@ function sessionValue({ serverUserId }: SessionShape) {
   };
 }
 
-let mounted: { container: HTMLElement; unmount: () => void } | null = null;
+let mounted: {
+  container: HTMLElement;
+  rerender: (el: React.ReactElement) => Promise<void>;
+  unmount: () => void;
+} | null = null;
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -94,17 +98,27 @@ describe("WorkspaceHome — the grid waits for a real SERVER session", () => {
     expect(fetchProjectCards).not.toHaveBeenCalled();
   });
 
-  it("U-A8: THE BUG — fetches once the server session arrives, with no reload", async () => {
+  it("U-A8: THE BUG — fetches once the server session arrives, with NO reload and no remount", async () => {
+    // Driven through ONE mounted tree. Unmounting and mounting again would run the effect
+    // unconditionally on the fresh mount, so it would pass identically with the broken
+    // `[mounted, isMock]` deps — it would prove the effect exists, never that the
+    // dependency array reacts to `serverUserId`. That is the exact shape of the bug this
+    // test claims to hold, so the remount version could not see a recurrence.
     useSession.mockReturnValue(sessionValue({ serverUserId: null }));
     mounted = await mount(<WorkspaceHome />);
     expect(fetchProjectCards).not.toHaveBeenCalled();
+    const before = byTestId(mounted.container, "workspace-home");
 
     // The exchange lands and `serverUser` resolves — the same transition that already
-    // drives the connections effect. Re-render with the new session value.
+    // drives the connections effect, delivered the way React delivers it: the provider
+    // re-renders its children.
     useSession.mockReturnValue(sessionValue({ serverUserId: "u1" }));
-    mounted.unmount();
-    mounted = await mount(<WorkspaceHome />);
+    await mounted.rerender(<WorkspaceHome />);
+
     expect(fetchProjectCards).toHaveBeenCalledTimes(1);
+    // Same DOM node ⇒ the component was never unmounted, so the fetch came from the
+    // dependency change and not from a fresh mount.
+    expect(byTestId(mounted.container, "workspace-home")).toBe(before);
   });
 
   it("U-A9: a returning user with a cookie fetches immediately, exactly once", async () => {
@@ -122,14 +136,31 @@ describe("WorkspaceHome — the grid waits for a real SERVER session", () => {
     expect(fetchProjectCards).not.toHaveBeenCalled();
   });
 
-  it("U-A11: a switch of USER refetches — one account never shows another's grid", async () => {
+  it("U-A11: a switch of USER refetches in place — one account never shows another's grid", async () => {
+    // Same reasoning as U-A8: keying on the ID rather than a boolean is only observable
+    // across a re-render of the SAME tree. A remount here would pass under `[mounted,
+    // isMock]` and under a `Boolean(serverUserId)` gate alike.
+    useSession.mockReturnValue(sessionValue({ serverUserId: "u1" }));
+    mounted = await mount(<WorkspaceHome />);
+    expect(fetchProjectCards).toHaveBeenCalledTimes(1);
+    const before = byTestId(mounted.container, "workspace-home");
+
+    useSession.mockReturnValue(sessionValue({ serverUserId: "u2" }));
+    await mounted.rerender(<WorkspaceHome />);
+
+    expect(fetchProjectCards).toHaveBeenCalledTimes(2);
+    expect(byTestId(mounted.container, "workspace-home")).toBe(before);
+  });
+
+  it("U-A12: an unrelated re-render does NOT refetch — the gate is the value, not the render", async () => {
+    // Without this, `[mounted, isMock, serverUserId]` and a dep-less effect would both
+    // satisfy U-A8/U-A11. This is the half that says the array is doing work.
     useSession.mockReturnValue(sessionValue({ serverUserId: "u1" }));
     mounted = await mount(<WorkspaceHome />);
     expect(fetchProjectCards).toHaveBeenCalledTimes(1);
 
-    useSession.mockReturnValue(sessionValue({ serverUserId: "u2" }));
-    mounted.unmount();
-    mounted = await mount(<WorkspaceHome />);
-    expect(fetchProjectCards).toHaveBeenCalledTimes(2);
+    await mounted.rerender(<WorkspaceHome />);
+    await mounted.rerender(<WorkspaceHome />);
+    expect(fetchProjectCards).toHaveBeenCalledTimes(1);
   });
 });

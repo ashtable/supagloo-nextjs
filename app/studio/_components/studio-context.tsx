@@ -295,6 +295,23 @@ export function StudioProvider({
   // The ledger is a ref, not state: it must survive across ticks without re-rendering the
   // studio, and re-rendering on a failed re-sign would be a render loop.
   const resignLedgerRef = useRef(EMPTY_RESIGN_LEDGER);
+  // A pass can outlive its tick. `refreshStalePresigns` awaits one presign per stale
+  // target, and the ledger + the fresh urls are only written when that settles — so a
+  // slow round-trip lets the NEXT tick see the same still-stale targets and re-issue the
+  // same requests, N times over for as long as the API is slow, which is exactly when
+  // piling on more requests is worst. Each pass also reads `resignLedgerRef.current` at
+  // its start and overwrites it at its end, so overlapping passes discard each other's
+  // failure counts and the `MAX_RESIGN_FAILURES` stop can be pushed out indefinitely.
+  //
+  // A ref, not state: this must not re-render the studio, and it is read and written
+  // inside the timer callback, which holds no closure over a state value.
+  //
+  // NOT addressed here, deliberately: the UNBOUNDED re-sign ceiling. `canResign` bounds
+  // consecutive FAILURES, not total successful re-signs, so a studio left open all day
+  // re-signs every 30 s forever. Changing `canResign`'s semantics is a design decision
+  // this run did not scope and it would churn U-P16..U-P21; it is one request per 30 s of
+  // an idle tab — resource waste, not a correctness defect.
+  const refreshInFlightRef = useRef(false);
   // The timer below must read the CURRENT storyboard without re-subscribing on every
   // edit, so the latest value is mirrored into a ref from an effect (never during render,
   // which would be a side effect in the render pass).
@@ -305,16 +322,25 @@ export function StudioProvider({
   useEffect(() => {
     if (!hasManifest) return; // mock catalogue: nothing is presigned, nothing to refresh
     const id = setInterval(() => {
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
       void (async () => {
-        const { actions, ledger } = await refreshStalePresigns({
-          storyboard: storyboardRef.current,
-          nowMs: Date.now(),
-          ledger: resignLedgerRef.current,
-          presign: (assetKey) => presignDownload(assetKey),
-        });
-        if (!aliveRef.current) return;
-        resignLedgerRef.current = ledger;
-        for (const action of actions) dispatch(action);
+        try {
+          const { actions, ledger } = await refreshStalePresigns({
+            storyboard: storyboardRef.current,
+            nowMs: Date.now(),
+            ledger: resignLedgerRef.current,
+            presign: (assetKey) => presignDownload(assetKey),
+          });
+          if (!aliveRef.current) return;
+          resignLedgerRef.current = ledger;
+          for (const action of actions) dispatch(action);
+        } finally {
+          // `finally`, not the end of the try: a throw here would otherwise wedge the
+          // flag true and silently kill every future refresh for the session — a worse
+          // failure than the pile-on it prevents.
+          refreshInFlightRef.current = false;
+        }
       })();
     }, PRESIGN_REFRESH_INTERVAL_MS);
     return () => clearInterval(id);

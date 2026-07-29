@@ -24,8 +24,14 @@ const GRAIN =
   "url(\"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='140'%20height='140'%3E%3Cfilter%20id='n'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.85'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3C/filter%3E%3Crect%20width='100%25'%20height='100%25'%20filter='url(%23n)'/%3E%3C/svg%3E\")";
 
 /** 20b's dialog, mounted once at the frame level and driven from the studio context so
- *  the inspector button stays a plain trigger. */
-function VideoWarningGate() {
+ *  the inspector button stays a plain trigger.
+ *
+ *  Exported for `tests/unit/studio-lock.test.tsx`. It is the whole of the decision
+ *  "does the user ever see the confirmation?" — `requestSceneVideo` consults the
+ *  per-project preference and either spends or sets `videoWarningSceneId`, and this is
+ *  the only thing that turns that id into a dialog. `StudioFrame` is its sole other
+ *  reference, and mounting the whole frame to reach it would prove less. */
+export function VideoWarningGate() {
   const {
     state,
     videoWarningSceneId,

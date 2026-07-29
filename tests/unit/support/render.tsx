@@ -18,6 +18,16 @@ declare global {
 export interface Mounted {
   container: HTMLElement;
   root: Root;
+  /**
+   * Render again into the SAME root — a re-render, not a remount.
+   *
+   * The distinction is the whole point of having this: a fresh `mount` runs every effect
+   * unconditionally, so a test that "drives a transition" by unmounting and mounting again
+   * proves only that the effect exists, never that its dependency array reacts to the
+   * value that changed. Use this whenever the assertion is about an effect FIRING on a
+   * change rather than on mount.
+   */
+  rerender: (element: ReactElement) => Promise<void>;
   unmount: () => void;
 }
 
@@ -33,6 +43,11 @@ export async function mount(element: ReactElement): Promise<Mounted> {
   return {
     container,
     root,
+    rerender: async (next: ReactElement) => {
+      await act(async () => {
+        root.render(next);
+      });
+    },
     unmount: () => {
       act(() => root.unmount());
       container.remove();

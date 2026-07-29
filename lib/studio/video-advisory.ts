@@ -18,7 +18,7 @@
  *
  * **This module must never feed `cost-estimate.ts` or the 19a cost row.** That is not a
  * style preference; it is the difference between a number the product stands behind and a
- * rough figure someone measured once. It is enforced by `video-advisory-fence.test.ts`,
+ * rough figure someone measured once. It is enforced by U-D7 in `video-advisory.test.ts`,
  * which reads `cost-estimate.ts`'s SOURCE and fails if it so much as mentions this file.
  *
  * ## What this is instead

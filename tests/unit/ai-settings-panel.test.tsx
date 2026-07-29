@@ -73,7 +73,7 @@ vi.mock("@/lib/studio/ai-generation-data", () => ({
 
 import SceneInspector from "@/app/studio/_components/scene-inspector";
 import { StudioProvider, useStudio } from "@/app/studio/_components/studio-context";
-import { DEMO_STORYBOARD } from "@/lib/studio/storyboard";
+import { DEMO_STORYBOARD, type Storyboard } from "@/lib/studio/storyboard";
 import type { StudioProject } from "@/lib/studio/project";
 import type { ProjectManifest } from "@/lib/api/contracts";
 
@@ -143,12 +143,30 @@ let confirmVideo: () => void = () => {
   throw new Error("confirmVideo called before the studio mounted");
 };
 
-function VideoConfirmProbe() {
-  const { confirmSceneVideo } = useStudio();
+/** The studio's own storyboard, read through the context rather than scraped out of the
+ *  DOM: the scene visual is rendered inside the Remotion composition tree, which this
+ *  inspector-only harness does not mount, and the claim being made is about the state the
+ *  preview and the Commit both read. */
+let storyboardNow: () => Storyboard = () => {
+  throw new Error("storyboardNow called before the studio mounted");
+};
+let dirtyNow: () => boolean = () => {
+  throw new Error("dirtyNow called before the studio mounted");
+};
+
+/** A fixed epoch so every expiry below is an explicit offset from one instant. */
+const T0 = Date.UTC(2026, 6, 29, 12, 0, 0);
+const FIRST_URL = "https://s3.example.invalid/clip.mp4?sig=first";
+const SECOND_URL = "https://s3.example.invalid/clip.mp4?sig=second";
+
+function StudioProbe() {
+  const { confirmSceneVideo, state } = useStudio();
   // Published from an EFFECT, not during render: reassigning an outer binding in the
   // render pass is a side effect whose timing depends on when React happens to re-render.
   useEffect(() => {
     confirmVideo = () => confirmSceneVideo(false);
+    storyboardNow = () => state.storyboard;
+    dirtyNow = () => state.dirty;
   });
   return null;
 }
@@ -157,7 +175,7 @@ async function open(project: StudioProject) {
   mounted = await mount(
     <StudioProvider project={project}>
       <SceneInspector />
-      <VideoConfirmProbe />
+      <StudioProbe />
     </StudioProvider>,
   );
   await flush();
@@ -267,7 +285,15 @@ describe("the Inspector GENERATION section", () => {
       createdAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
     });
-    presignDownload.mockResolvedValue("https://s3.example.invalid/clip.mp4");
+    // `presignDownload` returns `Promise<PresignedAsset | null>`, NOT a string. This mock
+    // resolved a bare string, so `asset?.url` was `undefined`, `videoGenerationOutcome`
+    // dispatched `url: null`, and everything below the request assertions silently
+    // exercised the no-url path — the same path a FAILED presign takes. The fixture is the
+    // shape the real function returns, and the url is asserted to land.
+    presignDownload.mockResolvedValue({
+      url: FIRST_URL,
+      expiresAt: new Date(T0 + 300_000).toISOString(),
+    });
 
     const root = await open(realProject());
     // 20b: `▶ Generate video` now opens the cost/time confirmation instead of spending —
@@ -296,5 +322,148 @@ describe("the Inspector GENERATION section", () => {
       "gen-vid-1",
       { timeoutMs: 1_500_000 },
     ]);
+
+    // …and the presigned url actually REACHES the scene, as a clip. Without this the
+    // whole test passes on a generation that landed with no playable url — which is
+    // exactly what it was doing.
+    const scene = storyboardNow().scenes.find((s) => s.id === inspected.id)!;
+    expect(scene.visualUrl).toBe(FIRST_URL);
+    expect(scene.visualAssetKind).toBe("video");
+    expect(scene.visualAssetKey).toBe("assets/psalm-121/gen-vid-1");
+    expect(scene.visualUrlExpiresAt).toBe(new Date(T0 + 300_000).toISOString());
+  });
+
+  it("U-P22: an EXPIRING clip url is re-signed in place, without a reload or a reroll", async () => {
+    // The DOM half of feature 6. `presign-refresh.test.ts` and `presign-refresh-driver.
+    // test.ts` prove the staleness rule and the pass; `ai-generation-data.test.ts` proves
+    // the pair comes back off the wire. What none of them touches is the studio's own
+    // timer — the thing that decides the refreshed url ever reaches a scene. Deleting the
+    // whole interval effect would leave all of those green.
+    //
+    // The 300 s TTL is simulated by the clock. Nothing here waits on wall time.
+    const inspected = DEMO_STORYBOARD.scenes[1]!;
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    try {
+      fetchModelCatalogue.mockResolvedValue(CATALOGUE);
+      createGeneration.mockResolvedValue("gen-vid-1");
+      pollGenerationUntilTerminal.mockResolvedValue({
+        id: "gen-vid-1",
+        projectId: "psalm-121",
+        sceneId: inspected.id,
+        kind: "video",
+        provider: "openrouter",
+        model: "vendor/video",
+        status: "succeeded",
+        resultJson: null,
+        resultAssetKey: "assets/psalm-121/gen-vid-1",
+        error: null,
+        tokenUsage: null,
+        createdAt: new Date(T0).toISOString(),
+        completedAt: new Date(T0).toISOString(),
+      });
+      presignDownload.mockResolvedValue({
+        url: FIRST_URL,
+        expiresAt: new Date(T0 + 300_000).toISOString(),
+      });
+
+      const root = await open(realProject());
+      byTestId(root, "generate-scene-video").click();
+      await flush();
+      confirmVideo();
+      await flush();
+      expect(
+        storyboardNow().scenes.find((s) => s.id === inspected.id)!.visualUrl,
+      ).toBe(FIRST_URL);
+
+      // Not yet within the 15 s safety margin: the pass must issue NO request. Without
+      // this half, "it re-signs" would be satisfied by a timer that re-signs every tick
+      // forever — the request-per-tick loop `watch-view.tsx` learned the hard way.
+      const presignsAfterGeneration = presignDownload.mock.calls.length;
+      vi.setSystemTime(T0 + 60_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await flush();
+      expect(presignDownload.mock.calls.length).toBe(presignsAfterGeneration);
+      expect(
+        storyboardNow().scenes.find((s) => s.id === inspected.id)!.visualUrl,
+      ).toBe(FIRST_URL);
+
+      // Now inside the margin. The next tick re-signs and the SCENE takes the new url —
+      // the old one is gone, so a stale-but-truthy url can no longer render broken media.
+      presignDownload.mockResolvedValue({
+        url: SECOND_URL,
+        expiresAt: new Date(T0 + 590_000).toISOString(),
+      });
+      // A re-sign is a display-only url swap, never an edit. Captured across the tick
+      // rather than asserted absolutely, because the landed video generation before it IS
+      // an edit and has already armed Commit.
+      const dirtyBeforeRefresh = dirtyNow();
+      vi.setSystemTime(T0 + 290_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await flush();
+
+      expect(presignDownload).toHaveBeenLastCalledWith("assets/psalm-121/gen-vid-1");
+      const refreshed = storyboardNow().scenes.find((s) => s.id === inspected.id)!;
+      expect(refreshed.visualUrl).toBe(SECOND_URL);
+      expect(refreshed.visualUrlExpiresAt).toBe(new Date(T0 + 590_000).toISOString());
+      // A project that dirtied itself on a timer would offer to commit nothing at all.
+      expect(dirtyNow()).toBe(dirtyBeforeRefresh);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("U-P23: a SLOW refresh pass does not pile up — one tick at a time", async () => {
+    // The pass is only finished when its presigns settle, and the fresh urls (and the
+    // failure ledger) are written only then. So a slow round-trip left the next tick
+    // seeing the same still-stale targets and re-issuing the same requests — piling on
+    // more load at exactly the moment the API is already slow, and letting overlapping
+    // passes overwrite each other's `MAX_RESIGN_FAILURES` counts.
+    const inspected = DEMO_STORYBOARD.scenes[1]!;
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    try {
+      fetchModelCatalogue.mockResolvedValue(CATALOGUE);
+      createGeneration.mockResolvedValue("gen-vid-1");
+      pollGenerationUntilTerminal.mockResolvedValue({
+        id: "gen-vid-1",
+        projectId: "psalm-121",
+        sceneId: inspected.id,
+        kind: "video",
+        provider: "openrouter",
+        model: "vendor/video",
+        status: "succeeded",
+        resultJson: null,
+        resultAssetKey: "assets/psalm-121/gen-vid-1",
+        error: null,
+        tokenUsage: null,
+        createdAt: new Date(T0).toISOString(),
+        completedAt: new Date(T0).toISOString(),
+      });
+      presignDownload.mockResolvedValue({
+        url: FIRST_URL,
+        expiresAt: new Date(T0 + 300_000).toISOString(),
+      });
+
+      const root = await open(realProject());
+      byTestId(root, "generate-scene-video").click();
+      await flush();
+      confirmVideo();
+      await flush();
+
+      // From here the presign HANGS. The url is inside the safety margin, so every tick
+      // would otherwise find the same stale target and ask again.
+      const before = presignDownload.mock.calls.length;
+      presignDownload.mockReturnValue(new Promise(() => {}));
+      vi.setSystemTime(T0 + 290_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await flush();
+
+      expect(presignDownload.mock.calls.length - before).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -87,7 +87,7 @@ function durationHint(kind: ActiveGeneration["kind"]): string {
 }
 
 export default function StudioLock() {
-  const { state, project, cancelGeneration } = useStudio();
+  const { state, cancelGeneration } = useStudio();
   const active = activeGeneration(state);
   if (!active) return null;
 
@@ -249,7 +249,6 @@ export default function StudioLock() {
               {"Cancel"}
             </button>
           </div>
-          <span style={{ display: "none" }}>{project.projectName}</span>
         </div>
       </div>
     </div>

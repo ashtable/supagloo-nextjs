@@ -98,6 +98,17 @@ export interface ScriptureStepProps {
   /** 18a's `"Change"` — returns to step 1. */
   onChangeRepo: () => void;
   onSelect: (selection: ScriptureSelection | null) => void;
+  /**
+   * Leave step 2 with NO passage and scaffold a blank project.
+   *
+   * `canScaffold` gates the wizard's only forward control on a resolved passage, and step
+   * 2 sits between the repo choice and the scaffold — so without this control, a user who
+   * cannot reach YouVersion (or does not yet know their passage) has no way to finish
+   * creating a NEW project at all. The step's own copy already promises the passage can be
+   * picked later in the studio; this is the control that keeps that promise. (The Import
+   * wizard is a separate entry point and never passes through here.)
+   */
+  onSkip: () => void;
 }
 
 export default function ScriptureStep({
@@ -105,6 +116,7 @@ export default function ScriptureStep({
   projectName,
   onChangeRepo,
   onSelect,
+  onSkip,
 }: ScriptureStepProps) {
   const [selection, setSelection] = useState<PickerSelection>({
     ...EMPTY_SELECTION,
@@ -229,6 +241,17 @@ export default function ScriptureStep({
   const failed = (v: unknown[] | null | undefined) => v === null;
   const anyFailure =
     failed(languages) || failed(translations) || failed(books) || failed(chapters);
+
+  // Clear FIRST, then hand back to the wizard. A user who picked a chapter, changed their
+  // mind and skipped must not scaffold `createdFrom: "passage"` carrying the passage they
+  // backed out of. `onSelect(null)` is called directly rather than left to the cascade
+  // effect so the wizard's state is already clear by the time `onSkip` scaffolds.
+  const skipPassage = () => {
+    setPassage(undefined);
+    setSelection((s) => selectChapter(s, null));
+    onSelect(null);
+    onSkip();
+  };
 
   return (
     <div data-testid="wizard-scripture-step">
@@ -459,6 +482,33 @@ export default function ScriptureStep({
         {
           "The passage is saved with the project. You'll generate the storyboard from it in the studio."
         }
+      </div>
+
+      {/* The way out. Secondary by role — a link-weight button, not a second CTA — because
+          picking a passage is still the intended path. Deliberately NOT disabled by
+          `anyFailure`: an unreachable YouVersion is exactly when it is the only way
+          forward. */}
+      <div style={{ marginTop: 14 }}>
+        <button
+          type="button"
+          data-testid="wizard-skip-scripture"
+          onClick={skipPassage}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+            fontFamily: "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif",
+            fontWeight: 700,
+            fontSize: 11,
+            letterSpacing: ".06em",
+            color: "var(--sg-dim)",
+            textDecoration: "underline",
+            textUnderlineOffset: 3,
+          }}
+        >
+          {"SKIP — PICK THE PASSAGE LATER IN THE STUDIO"}
+        </button>
       </div>
     </div>
   );

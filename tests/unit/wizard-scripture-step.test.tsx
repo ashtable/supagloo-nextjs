@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { byTestId, flush, mount, queryTestId, selectOption } from "./support/render";
+import {
+  byTestId,
+  click,
+  flush,
+  mount,
+  queryTestId,
+  selectOption,
+} from "./support/render";
 
 /**
  * Feature 2 / figure 18a — the wizard's new step 2.
@@ -47,10 +54,12 @@ const PASSAGE = {
 let mounted: { container: HTMLElement; unmount: () => void } | null = null;
 type Reported = { reference: string; translation: string; passageId?: string } | null;
 let onSelect: ReturnType<typeof vi.fn<(s: Reported) => void>>;
+let onSkip: ReturnType<typeof vi.fn<() => void>>;
 
 beforeEach(() => {
   vi.resetAllMocks();
   onSelect = vi.fn<(s: Reported) => void>();
+  onSkip = vi.fn<() => void>();
   fetchBibleLanguages.mockResolvedValue(LANGUAGES);
   fetchBibleTranslations.mockResolvedValue(TRANSLATIONS);
   fetchBibleBooks.mockResolvedValue(BOOKS);
@@ -70,6 +79,7 @@ async function step() {
       projectName="psalm-121"
       onChangeRepo={() => {}}
       onSelect={onSelect}
+      onSkip={onSkip}
     />,
   );
   await flush();
@@ -189,5 +199,51 @@ describe("the wizard's scripture step", () => {
     expect(root.textContent).not.toContain("Whole chapter");
     expect(root.textContent).not.toContain("each verse becomes a scene");
     expect(onSelect.mock.calls.at(-1)![0]!.passageId).not.toContain("-");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The way out of step 2
+// ---------------------------------------------------------------------------
+//
+// `canScaffold` gates the ONLY forward control in the wizard on a resolved passage, and
+// step 2 sits between the repo choice and the scaffold. So with YouVersion unreachable —
+// or simply with a user who does not yet know their passage — new-project creation was
+// dead-ended: no forward control, and the step's own copy promising "you can also pick the
+// passage later in the studio" was a promise nothing on screen could keep. (The Import
+// wizard is a separate entry point and is unaffected; this is new-project creation only.)
+describe("the wizard's scripture step — skipping the passage", () => {
+  it("U-W41: offers a skip control that leaves the step without a passage", async () => {
+    const root = await step();
+    const skip = byTestId(root, "wizard-skip-scripture");
+    await click(skip);
+    expect(onSkip).toHaveBeenCalledTimes(1);
+  });
+
+  it("U-W42: the skip control is LIVE when YouVersion is unreachable — the dead end it exists to open", async () => {
+    // This is the case the step's own copy promises and the forward gate refuses: every
+    // cascade is disabled, `canScaffold` can never become true, and without this control
+    // the only remaining action is closing the wizard.
+    fetchBibleLanguages.mockResolvedValue(null);
+    const root = await step();
+    expect(queryTestId(root, "wizard-scripture-error")).not.toBeNull();
+    const skip = byTestId(root, "wizard-skip-scripture") as HTMLButtonElement;
+    expect(skip.disabled).toBe(false);
+    await click(skip);
+    expect(onSkip).toHaveBeenCalledTimes(1);
+  });
+
+  it("U-W43: skipping CLEARS a partly-made selection so no half-chosen passage is scaffolded", async () => {
+    // Without the clear, a user who picked a chapter, changed their mind and skipped
+    // would still scaffold `createdFrom: "passage"` carrying the passage they backed out
+    // of — the payload and the user's intent silently disagreeing.
+    const root = await step();
+    await pickPsalm121(root);
+    expect(onSelect).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reference: "Psalm 121" }),
+    );
+    await click(byTestId(root, "wizard-skip-scripture"));
+    expect(onSelect).toHaveBeenLastCalledWith(null);
+    expect(onSkip).toHaveBeenCalledTimes(1);
   });
 });

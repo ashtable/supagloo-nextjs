@@ -62,6 +62,22 @@ const json = (body: unknown, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+/**
+ * Feature 2's payload, shared by BOTH create paths.
+ *
+ * The two sites are genuinely independent: "use existing empty repo" POSTs
+ * `/api/projects` straight from the wizard tab, while "create new repo" has to survive a
+ * `localStorage` handoff across the GitHub OAuth round-trip into a different tab before
+ * it POSTs `/api/projects/create-repo`. Deleting either conditional spread used to leave
+ * this whole lane green.
+ */
+const SCRIPTURE = {
+  reference: "Psalm 121",
+  translation: "ASV",
+  language: "en",
+  passageId: "PSA.121",
+} as const;
+
 describe("scaffoldExistingRepo (use-existing-empty path — repo already exists, no JIT)", () => {
   it("U-PE1: POSTs /api/projects with createdFrom blank + returns { projectId, jobId }", async () => {
     const { fetchImpl, calls } = recordingFetch(() =>
@@ -81,6 +97,47 @@ describe("scaffoldExistingRepo (use-existing-empty path — repo already exists,
       name: "Psalm 121",
     });
     expect(res).toEqual({ projectId: "p1", jobId: "j1" });
+  });
+
+  it("U-PE1a: a PICKED passage travels on the body as `passage` + the scripture block", async () => {
+    const { fetchImpl, calls } = recordingFetch(() =>
+      json({ projectId: "p1", jobId: "j1" }, 201),
+    );
+    await scaffoldExistingRepo(
+      {
+        repoOwner: "acme",
+        repoName: "psalm-121",
+        projectName: "Psalm 121",
+        scripture: { ...SCRIPTURE },
+      },
+      { fetchImpl },
+    );
+    expect(calls[0].body?.createdFrom).toBe("passage");
+    expect(calls[0].body?.scripture).toEqual(SCRIPTURE);
+  });
+
+  it("U-PE1b: a SKIPPED passage sends `blank` and NO scripture key at all", async () => {
+    // Reachable only because step 2 now has a skip control (`wizard-skip-scripture`);
+    // before it, `canScaffold` gated the wizard's one forward control on a resolved
+    // passage, so this branch could not be produced by any sequence of clicks.
+    //
+    // The key must be ABSENT, not `null` or `{}` — the api's create schema is what seeds
+    // the scaffold manifest, and an empty block would seed an unusable `scripture` into
+    // the user's repo.
+    const { fetchImpl, calls } = recordingFetch(() =>
+      json({ projectId: "p1", jobId: "j1" }, 201),
+    );
+    await scaffoldExistingRepo(
+      {
+        repoOwner: "acme",
+        repoName: "psalm-121",
+        projectName: "Psalm 121",
+        scripture: null,
+      },
+      { fetchImpl },
+    );
+    expect(calls[0].body?.createdFrom).toBe("blank");
+    expect("scripture" in (calls[0].body ?? {})).toBe(false);
   });
 
   it("U-PE2: returns null on a non-2xx (e.g. 409)", async () => {
@@ -154,7 +211,18 @@ describe("fetchJob + pollJobUntilTerminal", () => {
 });
 
 describe("create-new-repo JIT cross-tab handoff", () => {
+  /** The wizard's real payload: a passage WAS picked, so `createdFrom` is `"passage"`.
+   *  This carried no scripture, which is why the whole create-new lane was blind to it. */
   const PARAMS: CreateRepoParams = {
+    repoName: "psalm-121",
+    projectName: "Psalm 121",
+    visibility: "private",
+    createdFrom: "passage",
+    scripture: { ...SCRIPTURE },
+  };
+
+  /** The skip path — `wizard-skip-scripture`. */
+  const BLANK_PARAMS: CreateRepoParams = {
     repoName: "psalm-121",
     projectName: "Psalm 121",
     visibility: "private",
@@ -166,6 +234,22 @@ describe("create-new-repo JIT cross-tab handoff", () => {
     stashCreateRepoParams("nonce-1", PARAMS, storage);
     expect(readCreateRepoParams("nonce-1", storage)).toEqual(PARAMS);
     expect(readCreateRepoParams("other", storage)).toBeNull();
+  });
+
+  it("U-PE6a: THE HANDOFF — the passage survives localStorage across the OAuth round-trip", () => {
+    // The main tab stashes, GitHub redirects the POPUP back, and the popup tab is what
+    // POSTs. So the passage crosses a JSON serialization boundary between two different
+    // documents; a field the stash drops is unrecoverable by the time anything notices.
+    const storage = memStorage();
+    stashCreateRepoParams("nonce-1", PARAMS, storage);
+    const read = readCreateRepoParams("nonce-1", storage);
+    expect(read?.scripture).toEqual(SCRIPTURE);
+    expect(read?.createdFrom).toBe("passage");
+    // And the skip path stays clean across the same boundary.
+    stashCreateRepoParams("nonce-2", BLANK_PARAMS, storage);
+    const blank = readCreateRepoParams("nonce-2", storage);
+    expect(blank?.createdFrom).toBe("blank");
+    expect(blank?.scripture).toBeUndefined();
   });
 
   it("U-PE7: write → read result round-trips under the state nonce", () => {
@@ -192,15 +276,29 @@ describe("create-new-repo JIT cross-tab handoff", () => {
       code: "gh-code",
       repoName: "psalm-121",
       visibility: "private",
-      createdFrom: "blank",
+      createdFrom: "passage",
       name: "Psalm 121",
     });
+    // THE SECOND payload site. `scaffoldExistingRepo` builds its own body from its own
+    // argument; this one rebuilds it from the stashed params in a different tab.
+    expect(calls[0].body?.scripture).toEqual(SCRIPTURE);
     expect(result).toMatchObject({ projectId: "p9", jobId: "j9" });
     // and the result is durably stashed for the main tab's poll to pick up.
     expect(readCreateRepoResult("nonce-1", storage)).toMatchObject({
       projectId: "p9",
       jobId: "j9",
     });
+  });
+
+  it("U-PE8a: the SKIPPED path POSTs `blank` with no scripture key", async () => {
+    const storage = memStorage();
+    stashCreateRepoParams("nonce-1", BLANK_PARAMS, storage);
+    const { fetchImpl, calls } = recordingFetch(() =>
+      json({ projectId: "p9", jobId: "j9" }, 201),
+    );
+    await completeCreateRepo("nonce-1", "gh-code", { fetchImpl, storage });
+    expect(calls[0].body?.createdFrom).toBe("blank");
+    expect("scripture" in (calls[0].body ?? {})).toBe(false);
   });
 
   it("U-PE9: pollCreateRepoResult (main tab) resolves once the callback writes the result", async () => {

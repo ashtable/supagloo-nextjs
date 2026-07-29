@@ -283,6 +283,20 @@ export type StudioAction =
   // NOT an edit: a background catalogue read must not arm the Commit button.
   | { type: "MODELS_LOADED"; catalogue: AiModelCatalogueResponse | null }
   | { type: "STORYBOARD_GENERATED"; storyboard: Storyboard }
+  // RETAINED DELIBERATELY, though nothing dispatches it any more.
+  //
+  // Feature 1 replaced the freeform narrator DESCRIPTION with a chosen provider voice id
+  // (`SET_VOICE_ID` below), because the description was read by zero provider-facing code:
+  // OpenRouter's speech endpoint takes a NAMED voice and its request body has no field a
+  // descriptor could travel in. The inspector's editable descriptor is gone, so this
+  // action — and `setVoiceDescription` under it — now has no caller.
+  //
+  // It is not deleted because `narratorVoice.description` is still a REQUIRED `min(1)`
+  // field on the manifest, is still committed to the user's repo, is still snapshotted
+  // into the gallery, and is still what an LLM re-plan writes. The field is live; only its
+  // UI is gone. Deleting the seam would mean the studio could never edit a field it still
+  // owns, and re-adding it later would touch four files again. U-G8/U-AI-S3 keep it
+  // honest: they assert what it does, and claim nothing about it being reachable.
   | { type: "EDIT_VOICE_DESCRIPTION"; description: string }
   // Feature 1 / 19b: pick a narrator from the curated per-model list. A content edit —
   // it changes what the project generates and must reach the repo through Commit.

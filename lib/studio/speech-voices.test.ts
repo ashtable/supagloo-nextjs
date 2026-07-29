@@ -45,10 +45,16 @@ describe("the catalogue's shape", () => {
   it("U-V12: every model recommends EXACTLY ONE voice, and it is one of its own", () => {
     // 19b badges exactly one row `RECOMMENDED`, and `remapVoice` falls back to it — a
     // recommendation the model does not have would be an unsendable default.
+    //
+    // Compared EXACTLY, not case-folded. The provider is sent this id verbatim, and the
+    // table's own ids are the only thing establishing what "one of its own" means — so a
+    // recommendation that differs only in case is a recommendation the module cannot find.
+    // Case-folding here is what let `recommended: "rex"` sit against ids `Rex/Eve/Ara/…`
+    // with all 18 tests green.
     for (const m of MODELS) {
       const rec = recommendedVoiceFor(m);
-      const ids = voicesForModel(m).map((v) => v.id.toLowerCase());
-      expect(ids, String(m)).toContain(rec.toLowerCase());
+      const ids = voicesForModel(m).map((v) => v.id);
+      expect(ids, String(m)).toContain(rec);
     }
   });
 
@@ -81,15 +87,18 @@ describe("remapVoice — 19b's stated rule", () => {
     // Swept over every (voice, from, to) pair in the table rather than three examples: a
     // test that claims a class has to drive the class, and this is the property that keeps
     // a model change from producing an unsendable manifest.
+    // Compared EXACTLY — see U-V12. The id is what goes on the wire, so "a voice the
+    // target model accepts" is an exact-string claim about this table, not a case-folded
+    // one; folding it made the invariant unable to see a mis-cased `recommended`.
     for (const from of MODELS) {
       for (const to of MODELS) {
-        const targetIds = voicesForModel(to).map((v) => v.id.toLowerCase());
+        const targetIds = voicesForModel(to).map((v) => v.id);
         for (const voice of voicesForModel(from)) {
           const mapped = remapVoice(voice.id, from, to);
           expect(
             targetIds,
             `${voice.id}: ${String(from)} → ${String(to)}`,
-          ).toContain(mapped.toLowerCase());
+          ).toContain(mapped);
         }
       }
     }

@@ -125,7 +125,10 @@ const OPENAI: SpeechVoiceSet = {
 const GROK: SpeechVoiceSet = {
   family: "Grok",
   match: ["grok-voice", "x-ai/"],
-  recommended: "rex",
+  // Exactly as it appears in `voices` below. This read `"rex"`, which is not an id this
+  // module has — so `remapVoice` returned, and the 19b list badged, a voice absent from
+  // the module's own list for every switch INTO this model.
+  recommended: "Rex",
   voices: [
     { id: "Rex", name: "Rex", descriptor: "firm · declarative", gender: "unknown", dramatic: true },
     { id: "Eve", name: "Eve", descriptor: "warm · conversational", gender: "unknown", dramatic: false },
