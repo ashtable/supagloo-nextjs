@@ -10,6 +10,8 @@ import {
   type ReactNode,
 } from "react";
 import { useYVAuth } from "@youversion/platform-react-ui";
+import { YouVersionPlatformConfiguration } from "@youversion/platform-core";
+import { resolveExchangeToken } from "@/lib/session/bootstrap";
 import {
   resolveSession,
   parseMockSession,
@@ -117,6 +119,23 @@ interface SessionContextValue {
    * pure-client `?mock=` mode, which asks nobody.
    */
   sessionResolved: boolean;
+  /**
+   * The id of the user behind the SERVER session (the httpOnly cookie), or null when
+   * there is not one yet.
+   *
+   * Distinct from `sessionResolved` and from `session.isAuthed`, and the distinction is
+   * load-bearing. `sessionResolved` is set in a `finally`, so it goes true even on a load
+   * where the sign-in exchange never ran; and `session.isAuthed` is true from YouVersion
+   * auth ALONE (resolveSession branch 3), before any cookie exists. Neither is a safe
+   * gate for a fetch to an owner-scoped endpoint: both are already true while
+   * `GET /api/projects` would 401.
+   *
+   * Anything that reads the user's own data must key its effect on THIS — it is the only
+   * value that changes when the cookie appears, so it is the only one that will make a
+   * pre-cookie fetch retry. The connections effect below already does; `WorkspaceHome`'s
+   * project grid did not, which is why the grid stayed empty for a whole extra reload.
+   */
+  serverUserId: string | null;
   firstSignIn: boolean;
   /** True only in the pure-client `?mock=` demo mode (`NEXT_PUBLIC_SUPAGLOO_DEMO=1`).
    *  The project wizards branch on this: mock → the fake ticker + mock repos; real/
@@ -180,7 +199,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   >({ github: null, openrouter: null, gloo: null });
   const bootstrappedRef = useRef(false);
 
-  const accessToken = yv.auth.accessToken;
+  /**
+   * The SDK's render-time token — correct on a warm load, and frozen `null` on the OAuth
+   * CALLBACK load, which is the one load that needed it. `useYVAuth` computes it with
+   * `useMemo(…, [])` over `localStorage`, before `handleAuthCallback()` has written
+   * anything. Kept in the effect's dep list (a warm load's value is the real one); the
+   * effect resolves the frozen case against storage — see `resolveExchangeToken`.
+   */
+  const memoizedAccessToken = yv.auth.accessToken;
 
   // Read as three primitives rather than the `userInfo` object: this feeds the effect's
   // dependency array below, and an object identity there would re-run it on every render.
@@ -247,7 +273,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        if (yv.auth.isAuthenticated && accessToken) {
+        // The token to exchange, resolving the SDK's frozen memo against its own live
+        // accessor. `isAuthenticated` is `!!userInfo`, and `userInfo` is only set once
+        // `handleAuthCallback()` has RESOLVED — which is after the token reached storage.
+        // So whenever this branch is reachable at all, a real token is readable; only the
+        // memo is stale. Reading here (in the effect) rather than in render is what makes
+        // it a fresh read on the pass where `isAuthenticated` flips.
+        const accessToken = resolveExchangeToken({
+          isAuthenticated: yv.auth.isAuthenticated,
+          memoizedToken: memoizedAccessToken,
+          readStoredToken: () => YouVersionPlatformConfiguration.accessToken,
+        });
+        if (accessToken) {
           if (bootstrappedRef.current) return;
           bootstrappedRef.current = true;
           try {
@@ -290,7 +327,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     mounted,
     search,
     yv.auth.isAuthenticated,
-    accessToken,
+    memoizedAccessToken,
     yvName,
     yvEmail,
     yvAvatar,
@@ -656,6 +693,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       void fetch("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
       setServerUser(null);
       bootstrappedRef.current = false;
+      // Connections are DERIVED FROM AN IDENTITY, so they must not outlive one. Without
+      // this a signed-out browser kept rendering the previous user's connected GitHub /
+      // OpenRouter / Gloo cards — including their username and masked key — until
+      // something forced a reload. Clearing `connectionsSeeded` too is what lets the next
+      // sign-in re-seed and re-hydrate rather than sitting on the stale object.
+      setConnections(seedNoneLinked());
+      setConnectionsSeeded(false);
     }
     yv.signOut();
   };
@@ -666,6 +710,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // `?mock=` resolves instantly: it asks nobody, so there is nothing to wait for.
     sessionResolved:
       mounted && (parseMockSession(search, DEMO_FLAG) !== null || probeSettled),
+    serverUserId: serverUser?.id ?? null,
     firstSignIn: computeFirstSignIn(session) && onboardingResolved,
     isMock: mounted && parseMockSession(search, DEMO_FLAG) !== null,
     connections,

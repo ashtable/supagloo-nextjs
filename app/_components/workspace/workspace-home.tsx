@@ -25,7 +25,7 @@ type WizardOpen = "none" | "new" | "import";
  * against a direct/hard nav render before the swap settles).
  */
 export default function WorkspaceHome() {
-  const { mounted, session, firstSignIn, isMock } = useSession();
+  const { mounted, session, firstSignIn, isMock, serverUserId } = useSession();
   const router = useRouter();
   const [wizard, setWizard] = useState<WizardOpen>("none");
   const [realProjects, setRealProjects] = useState<DemoProject[] | null>(null);
@@ -45,14 +45,27 @@ export default function WorkspaceHome() {
 
   // Real/seed mode: hydrate the grid from `GET /api/projects` (mock mode keeps the
   // DEMO_PROJECTS fallback inside RecentProjects).
+  //
+  // Gated on `serverUserId`, NOT on `mounted` alone — that asymmetry with the connections
+  // effect (`session-provider.tsx`, which has always gated on the server user) is the
+  // whole of the "grid is still empty after the first reload" half of the login bug. This
+  // component mounts the instant `session.isAuthed` flips true, and `isAuthed` is true
+  // from YouVersion auth ALONE, before the sign-in exchange has minted a cookie. The
+  // effect fired, `GET /api/projects` 401'd, `fetchProjectCards` swallowed it and returned
+  // `[]` (it returns `[]` on ANY failure), and with `[mounted, isMock]` deps nothing ever
+  // asked again — so "you have no projects" was rendered on top of a 401.
+  //
+  // Keying on the user ID rather than a boolean also makes a user SWITCH refetch, instead
+  // of showing one account the previous account's grid.
   useEffect(() => {
     if (!mounted || isMock) return;
+    if (!serverUserId) return; // no cookie yet → an owner-scoped read would 401
     let active = true;
     void fetchProjectCards().then((cards) => {
       if (active) setRealProjects(cards);
     });
     return () => void (active = false);
-  }, [mounted, isMock]);
+  }, [mounted, isMock, serverUserId]);
 
   if (!mounted || !session.isAuthed) return null;
 
