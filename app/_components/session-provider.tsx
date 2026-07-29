@@ -34,7 +34,6 @@ import {
 } from "@/lib/connections/connections-model";
 import {
   githubUsername,
-  githubSnapshotFromConnections,
   openGithubInstall,
   openGithubLinkExisting,
   type OpenWindow,
@@ -45,14 +44,12 @@ import {
   buildAuthorizeUrl,
   openrouterBrowserBaseUrl,
   maskOpenRouterKey,
-  openrouterSnapshotFromConnections,
   pollOpenRouterConnected,
   fetchOpenRouterCreditsLabel,
   storeVerifier,
   OPENROUTER_CALLBACK_PATH,
 } from "@/lib/connections/openrouter-connect";
 import {
-  glooSnapshotFromConnections,
   saveGlooCredentials,
   glooErrorMessage,
   type GlooCredentials,
@@ -66,6 +63,10 @@ import {
   navigateTab,
   POPUP_BLOCKED_MESSAGE,
 } from "@/lib/connections/popup";
+import {
+  applyConnectionsBase,
+  readConnectionsBase,
+} from "@/lib/connections/hydrate";
 import { generateCodeVerifier, computeCodeChallenge } from "@/lib/connections/pkce";
 import type { ConnectionsSeedName } from "@/lib/session/session-model";
 
@@ -354,7 +355,34 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
       if (!active || !body) return;
 
-      // GitHub — flip connected immediately, backfill the live repo count.
+      // ── 1. Every provider's CONNECTED state, from the one cheap read ──────────
+      //
+      // `body` already answers "is this connected?" for all three, so all three are
+      // decided here, before any decoration is fetched. That ordering is the whole
+      // point: this used to run github → await repo count → openrouter → await
+      // credits → gloo, which made Gloo's answer wait on two unrelated network calls.
+      // `GET /v1/github/repos?filter=all` is measured at 6.3–7.1s in production
+      // (847 repos, ~9 pages; every other endpoint is single- or double-digit ms), so
+      // a returning user watched Gloo render as NOT CONNECTED for ~7 seconds after
+      // every hard reload, then saw it flip for no visible reason. It was never a Gloo
+      // bug — Gloo was simply last in a queue behind a repo count nobody was waiting on.
+      //
+      // Each provider still yields to an in-flight `pending` so this cannot clobber an
+      // optimistic connect, and none of them is ever set to not-linked here.
+      const { ghUsername, orMaskedKey, glClientId } = readConnectionsBase(body);
+      setConnections((s) =>
+        applyConnectionsBase(
+          s,
+          { ghUsername, orMaskedKey, glClientId },
+          CREDIT_CHECKING,
+        ),
+      );
+
+      // ── 2. Live decorations — CONCURRENT, and independent of each other ────────
+      //
+      // Repo count and credit label are labels on an already-correct card, so they run
+      // in parallel and neither gates the other. Both helpers swallow their own
+      // failures (0 / null), so neither can reject this effect.
       //
       // COST NOTE (deferred review finding DR2). This effect's deps are
       // `[mounted, connectionsSeeded, search, serverUser]`, so `fetchGithubRepoCount`
@@ -370,49 +398,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // listing GETs throw when the limit is hit, so the repo picker broke outright
       // rather than degrading. If this card ever needs `empty`, it needs a different
       // endpoint, not a different filter here.
-      const gh = githubSnapshotFromConnections(body);
-      if (gh.connected && gh.login) {
-        const username = githubUsername(gh.login);
-        setConnections((s) =>
-          s.github.status === "pending" ? s : connectGithub(s, { username, repos: 0 }),
-        );
-        const repos = await fetchGithubRepoCount({});
-        if (active) {
-          setConnections((s) =>
-            s.github.status === "connected" ? connectGithub(s, { username, repos }) : s,
-          );
-        }
-      }
-
-      // OpenRouter — masked key now, live credits backfilled (§2.4/§9-Q5).
-      const or = openrouterSnapshotFromConnections(body);
-      if (active && or.connected && or.keyLast4) {
-        const maskedKey = maskOpenRouterKey(or.keyLast4);
-        setConnections((s) =>
-          s.openrouter.status === "pending"
-            ? s
-            : connectOpenRouter(s, { maskedKey, credit: CREDIT_CHECKING }),
-        );
-        const credit = await fetchOpenRouterCreditsLabel({});
-        if (active) {
-          setConnections((s) =>
-            s.openrouter.status === "connected"
-              ? connectOpenRouter(s, { maskedKey, credit: credit ?? CREDIT_UNAVAILABLE })
-              : s,
-          );
-        }
-      }
-
-      // Gloo — the real stored clientId.
-      const gl = glooSnapshotFromConnections(body);
-      if (active && gl.connected && gl.clientId) {
-        const clientId = gl.clientId;
-        setConnections((s) =>
-          s.gloo.status === "pending"
-            ? s
-            : connectGloo(s, { method: "CLIENT CREDENTIALS", clientId }),
-        );
-      }
+      await Promise.all([
+        // GitHub — the live repo count for "N repos accessible".
+        ghUsername
+          ? (async () => {
+              const repos = await fetchGithubRepoCount({});
+              if (!active) return;
+              setConnections((s) =>
+                s.github.status === "connected"
+                  ? connectGithub(s, { username: ghUsername, repos })
+                  : s,
+              );
+            })()
+          : null,
+        // OpenRouter — live credits (§2.4/§9-Q5).
+        orMaskedKey
+          ? (async () => {
+              const credit = await fetchOpenRouterCreditsLabel({});
+              if (!active) return;
+              setConnections((s) =>
+                s.openrouter.status === "connected"
+                  ? connectOpenRouter(s, {
+                      maskedKey: orMaskedKey,
+                      credit: credit ?? CREDIT_UNAVAILABLE,
+                    })
+                  : s,
+              );
+            })()
+          : null,
+      ]);
+      // Gloo needs no decoration — its clientId came from the read above, which is why
+      // it must not be sequenced behind two calls that do.
     })();
     return () => {
       active = false;
