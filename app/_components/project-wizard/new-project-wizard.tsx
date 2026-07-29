@@ -16,6 +16,7 @@ import {
   type MockRepo,
 } from "@/lib/project-wizard/repos-model";
 import {
+  canAdvanceFromRepo,
   canScaffold,
   ctaLabel,
   defaultProjectName,
@@ -24,7 +25,9 @@ import {
   stepEyebrow,
   type NewProjectStep,
   type RepoTab,
+  type ScriptureSelection,
 } from "@/lib/project-wizard/new-project-model";
+import ScriptureStep from "./scripture-step";
 import {
   advanceLog,
   initLog,
@@ -86,6 +89,10 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
   const [realRepos, setRealRepos] = useState<MockRepo[]>([]);
   const [realRows, setRealRows] = useState<LogRow[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Feature 2: the passage picked in the new step 2. Null until a chapter resolves — the
+  // scaffold CTA gates on it, so it cannot be armed against a reference the provider has
+  // not confirmed.
+  const [scripture, setScripture] = useState<ScriptureSelection | null>(null);
   // Mounted guard for the async scaffold flow (the task-26 `drivePolling` idiom, as
   // implemented in studio-context.tsx). The `= true` on every effect RUN is
   // load-bearing, not defensive: React StrictMode — on by default in `next dev` —
@@ -104,7 +111,7 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
     };
   }, []);
 
-  const input = { tab, repoName, selectedRepo };
+  const input = { tab, repoName, selectedRepo, scripture };
   const projectName =
     tab === "create-new"
       ? repoName.trim()
@@ -137,7 +144,13 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
     return () => clearTimeout(t);
   }, [isMock, step, log]);
 
-  const startScaffold = () => {
+  /**
+   * `passage` is an explicit ARGUMENT rather than a read of the `scripture` state because
+   * the skip control clears that state and scaffolds in the same handler: a `setScripture`
+   * from the same tick has not landed by the time the payload is built, so reading state
+   * here would post the passage the user just backed out of.
+   */
+  const startScaffold = (passage: ScriptureSelection | null = scripture) => {
     if (isMock) {
       const id = deriveProjectId(input);
       setScaffoldId(id);
@@ -157,9 +170,9 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
     setRealRows([]);
     setStep("scaffolding");
     if (tab === "create-new") {
-      void startRealCreateNew();
+      void startRealCreateNew(passage);
     } else if (selectedRepo) {
-      void startRealExisting(selectedRepo);
+      void startRealExisting(selectedRepo, passage);
     }
   };
 
@@ -167,7 +180,7 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
   // authorize popup, poll the localStorage result the callback page writes, then poll
   // the scaffold job. A full-page redirect would reset the wizard's step state, so this
   // mirrors the OpenRouter popup+poll pattern.
-  const startRealCreateNew = async () => {
+  const startRealCreateNew = async (passage: ScriptureSelection | null) => {
     const nonce = randomNonce();
     const name = projectName;
     stashCreateRepoParams(
@@ -176,7 +189,12 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
         repoName: deriveShortName(repoName),
         projectName: name,
         visibility: "private",
-        createdFrom: "blank",
+        // Feature 2: the ORIGIN is now what the wizard actually collected. `"passage"` has
+        // been in `ProjectCreatedFromSchema` since task #7 and the api rejects only
+        // `"import"` here, so this took no schema change — just a caller that stops
+        // hardcoding `"blank"`.
+        createdFrom: passage ? "passage" : "blank",
+        ...(passage ? { scripture: passage } : {}),
       },
       window.localStorage,
     );
@@ -201,11 +219,15 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
 
   // Real existing-empty: the repo already exists, so no JIT — POST straight to the
   // scaffold create endpoint, then poll the job.
-  const startRealExisting = async (repo: MockRepo) => {
+  const startRealExisting = async (
+    repo: MockRepo,
+    passage: ScriptureSelection | null,
+  ) => {
     const ref = await scaffoldExistingRepo({
       repoOwner: repo.owner,
       repoName: repo.shortName,
       projectName,
+      scripture: passage,
     });
     if (!aliveRef.current) return;
     if (!ref) {
@@ -264,7 +286,36 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
       progressTestId="new-project-progress"
       onClose={onClose}
     >
-      {step === "configure" ? (
+      {step === "scripture" ? (
+        <>
+          <ScriptureStep
+            repoFullName={
+              tab === "create-new"
+                ? `you/${deriveShortName(repoName) || "new-repo"}`
+                : (selectedRepo?.fullName ?? "")
+            }
+            projectName={projectName}
+            onChangeRepo={() => setStep("configure")}
+            onSelect={setScripture}
+            onSkip={() => {
+              setScripture(null);
+              // Explicitly `null`, not the state we just cleared — see `startScaffold`.
+              startScaffold(null);
+            }}
+          />
+          <WizardCta
+            label={ctaLabel("scripture", tab)}
+            testId="new-project-cta"
+            onClick={() => startScaffold()}
+            // The scripture requirement is a REAL-mode gate. `?mock=` is the pure-client
+            // demo lane: it makes zero network egress by design, so YouVersion is not
+            // reachable there and a passage can never resolve. Gating the demo flow on one
+            // would make the demo un-completable — and the mock path scaffolds nothing, so
+            // there is no manifest for a passage to seed anyway.
+            disabled={isMock ? !canAdvanceFromRepo(input) : !canScaffold(input)}
+          />
+        </>
+      ) : step === "configure" ? (
         <>
           <div
             style={{
@@ -412,10 +463,12 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
           </div>
 
           <WizardCta
-            label={ctaLabel(tab)}
+            label={ctaLabel("configure", tab)}
             testId="new-project-cta"
-            onClick={startScaffold}
-            disabled={!canScaffold(input)}
+            // 18a inserts an INPUT step here: step 1 no longer scaffolds, it advances.
+            // 13a's "Scaffold into this repo →" became wrong the moment it did.
+            onClick={() => setStep("scripture")}
+            disabled={!canAdvanceFromRepo(input)}
           />
         </>
       ) : (

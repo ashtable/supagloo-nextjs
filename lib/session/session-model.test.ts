@@ -31,6 +31,7 @@ function signedOutYv() {
 
 function serverUser(onboardingCompletedAt: string | null) {
   return {
+    id: "u1",
     displayName: "Grace Hopper",
     email: "grace@example.com",
     onboardingCompletedAt,

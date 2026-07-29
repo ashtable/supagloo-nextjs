@@ -204,11 +204,17 @@ describe("per-scene video (U-SV1)", () => {
   });
 
   it("U-SV1c: videoGenerationOutcome needs a resultAssetKey, else it is a failure", () => {
-    expect(videoGenerationOutcome("s1", succeeded("k"), "u")).toEqual({
+    expect(
+      videoGenerationOutcome("s1", succeeded("k"), {
+        url: "u",
+        expiresAt: "2026-07-29T13:00:00.000Z",
+      }),
+    ).toEqual({
       type: "VIDEO_GENERATED",
       sceneId: "s1",
       assetKey: "k",
       url: "u",
+      urlExpiresAt: "2026-07-29T13:00:00.000Z",
     });
 
     for (const gen of [
@@ -225,5 +231,103 @@ describe("per-scene video (U-SV1)", () => {
     // Video is per-scene by definition (item 4 is "a video per scene"), so two scenes must
     // be able to generate concurrently without one's in-flight state hiding the other's.
     expect(videoSlot("s1")).not.toBe(videoSlot("s2"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 1 / 19b — the chosen narrator voice, and the remap on a model change
+// ---------------------------------------------------------------------------
+
+const CATALOGUE = {
+  defaults: { narration: { provider: "openrouter" as const, model: "canopylabs/orpheus-3b" } },
+  models: [
+    {
+      id: "canopylabs/orpheus-3b",
+      provider: "openrouter" as const,
+      label: "Canopy Labs: Orpheus 3B",
+      kinds: ["narration" as const],
+      pricing: {},
+    },
+    {
+      id: "openai/gpt-4o-mini-tts",
+      provider: "openrouter" as const,
+      label: "OpenAI: GPT-4o mini TTS",
+      kinds: ["narration" as const],
+      pricing: {},
+    },
+  ],
+} as unknown as StudioState["modelCatalogue"];
+
+const withCatalogue = (): StudioState => ({ ...start(), modelCatalogue: CATALOGUE });
+
+describe("SET_VOICE_ID (19b's curated voice list)", () => {
+  it("U-V34: writes the chosen voice id and dirties the project", () => {
+    // A content edit: it changes what the project generates, so it must reach the repo
+    // through Commit like every other manifest field.
+    const next = studioReducer(start(), { type: "SET_VOICE_ID", voiceId: "tara" });
+    expect(next.storyboard.voiceId).toBe("tara");
+    expect(next.dirty).toBe(true);
+  });
+});
+
+describe("remapping the voice when the speech model changes", () => {
+  it("U-V35: THE INVARIANT — a model change never leaves an unsendable voice behind", () => {
+    // 19b: "Change the speech model and the voices swap; the previously chosen voice maps
+    // to the nearest match or falls back to the recommended one." Without this the
+    // manifest would carry a voice the new model has never heard of, and the next
+    // narration generation would be a hard provider 400 — the feature breaking the exact
+    // thing it was added to fix.
+    const chosen = studioReducer(withCatalogue(), {
+      type: "SET_VOICE_ID",
+      voiceId: "zac", // an Orpheus voice
+    });
+    const switched = studioReducer(chosen, {
+      type: "SET_AI_MODEL",
+      kind: "narration",
+      model: "openai/gpt-4o-mini-tts",
+    });
+    expect(switched.storyboard.voiceId).not.toBe("zac");
+    expect(["alloy", "onyx", "echo", "fable", "nova", "shimmer", "ash", "sage"]).toContain(
+      switched.storyboard.voiceId,
+    );
+  });
+
+  it("U-V36: a project that never picked a voice stays untouched", () => {
+    // Byte-identical to today's behaviour: nothing is sent, the provider default applies.
+    const switched = studioReducer(withCatalogue(), {
+      type: "SET_AI_MODEL",
+      kind: "narration",
+      model: "openai/gpt-4o-mini-tts",
+    });
+    expect(switched.storyboard.voiceId).toBeUndefined();
+  });
+
+  it("U-V37: changing a NON-narration model never touches the voice", () => {
+    // The image/video/music selectors have nothing to do with who is speaking.
+    const chosen = studioReducer(withCatalogue(), {
+      type: "SET_VOICE_ID",
+      voiceId: "zac",
+    });
+    for (const kind of ["image", "music", "video"] as const) {
+      const next = studioReducer(chosen, {
+        type: "SET_AI_MODEL",
+        kind,
+        model: "some/other-model",
+      });
+      expect(next.storyboard.voiceId, kind).toBe("zac");
+    }
+  });
+
+  it("U-V38: re-selecting the SAME narration model leaves the voice exactly as it was", () => {
+    const chosen = studioReducer(withCatalogue(), {
+      type: "SET_VOICE_ID",
+      voiceId: "tara",
+    });
+    const same = studioReducer(chosen, {
+      type: "SET_AI_MODEL",
+      kind: "narration",
+      model: "canopylabs/orpheus-3b",
+    });
+    expect(same.storyboard.voiceId).toBe("tara");
   });
 });

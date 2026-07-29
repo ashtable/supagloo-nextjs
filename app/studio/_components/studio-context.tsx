@@ -30,6 +30,7 @@ import {
   musicGenerationOutcome,
   storyboardGenerationOutcome,
   renderOutcome,
+  activeGeneration,
   type StudioAction,
   type StudioState,
 } from "@/lib/studio/reducer";
@@ -74,9 +75,17 @@ import {
   createGeneration,
   pollGenerationUntilTerminal,
   presignDownload,
+  cancelGeneration as cancelGenerationRequest,
   type CreateGenerationBody,
+  type PresignedAsset,
 } from "@/lib/studio/ai-generation-data";
 import { fetchModelCatalogue } from "@/lib/studio/model-catalogue-data";
+import {
+  shouldWarnBeforeVideo,
+  suppressVideoWarning,
+} from "@/lib/studio/video-warning-preference";
+import { refreshStalePresigns } from "@/lib/studio/presign-refresh-driver";
+import { EMPTY_RESIGN_LEDGER } from "@/lib/studio/presign-refresh";
 import {
   resolveChoice,
   type SelectableKind,
@@ -151,6 +160,20 @@ interface StudioContextValue {
   setFaithAlignment: (value: FaithAlignment | null) => void;
   /** Item 4: generate a VIDEO for a scene instead of a still image. */
   generateSceneVideo: (sceneId?: string) => void;
+  /** Feature 1 / 19b: pick the narrator from the model's curated voice list. */
+  setVoiceId: (voiceId: string) => void;
+  /** 20a: cancel the running generation — the ONLY live control behind the lock. */
+  cancelGeneration: () => void;
+  /** 20b: `▶ Generate video` now opens the confirmation instead of spending. */
+  requestSceneVideo: (sceneId?: string) => void;
+  /** 20b: which scene the confirmation is open for, or null. */
+  videoWarningSceneId: string | null;
+  /** 20b: dismiss the confirmation without generating anything. */
+  closeVideoWarning: () => void;
+  /** 20b: confirm — optionally suppressing the warning for this project from now on. */
+  confirmSceneVideo: (dontWarnAgain: boolean) => void;
+  /** 20b: take the recommended cheap path instead (an existing image generation). */
+  useStillImageInstead: (dontWarnAgain: boolean) => void;
 }
 
 /**
@@ -164,6 +187,16 @@ interface StudioContextValue {
  * workflow's own bound plus slack for the queue.
  */
 const VIDEO_GENERATION_POLL_TIMEOUT_MS = 1_500_000;
+
+/**
+ * Feature 6: how often the studio checks whether any preview URL is about to expire.
+ *
+ * Well inside the 300 s presign TTL, and cheap: a tick that finds nothing stale issues no
+ * requests at all (`stalePresignTargets` returns an empty list and the driver short-
+ * circuits). 30 s means the worst case is a URL replaced ~15–45 s before it dies, which is
+ * comfortably ahead of `RESIGN_SAFETY_MARGIN_SECONDS`.
+ */
+const PRESIGN_REFRESH_INTERVAL_MS = 30_000;
 
 const StudioContext = createContext<StudioContextValue | null>(null);
 
@@ -244,6 +277,73 @@ export function StudioProvider({
       const catalogue = await fetchModelCatalogue();
       if (aliveRef.current) dispatch({ type: "MODELS_LOADED", catalogue });
     })();
+  }, [hasManifest]);
+
+  // ── Feature 6: keep the presigned preview URLs alive ───────────────────────
+  //
+  // Every preview URL in the studio is signed for 300 s (`FilesService` default, no
+  // override anywhere), and the studio signed them exactly twice: once at hydration and
+  // once when a generation landed. Five minutes into an editing session every image,
+  // clip, narration clip and music bed URL was dead — and because `storyboard-video.tsx`
+  // branches on `visualUrl ?`, a stale-but-truthy URL took the media branch, so the studio
+  // rendered BROKEN media instead of the gradient fallback it already had.
+  //
+  // This ticks well inside the TTL and only issues a request when something is actually
+  // within `RESIGN_SAFETY_MARGIN_SECONDS` of expiry, so a short session costs nothing.
+  // The whole decision lives in `refreshStalePresigns`; this is the timer.
+  //
+  // The ledger is a ref, not state: it must survive across ticks without re-rendering the
+  // studio, and re-rendering on a failed re-sign would be a render loop.
+  const resignLedgerRef = useRef(EMPTY_RESIGN_LEDGER);
+  // A pass can outlive its tick. `refreshStalePresigns` awaits one presign per stale
+  // target, and the ledger + the fresh urls are only written when that settles — so a
+  // slow round-trip lets the NEXT tick see the same still-stale targets and re-issue the
+  // same requests, N times over for as long as the API is slow, which is exactly when
+  // piling on more requests is worst. Each pass also reads `resignLedgerRef.current` at
+  // its start and overwrites it at its end, so overlapping passes discard each other's
+  // failure counts and the `MAX_RESIGN_FAILURES` stop can be pushed out indefinitely.
+  //
+  // A ref, not state: this must not re-render the studio, and it is read and written
+  // inside the timer callback, which holds no closure over a state value.
+  //
+  // NOT addressed here, deliberately: the UNBOUNDED re-sign ceiling. `canResign` bounds
+  // consecutive FAILURES, not total successful re-signs, so a studio left open all day
+  // re-signs every 30 s forever. Changing `canResign`'s semantics is a design decision
+  // this run did not scope and it would churn U-P16..U-P21; it is one request per 30 s of
+  // an idle tab — resource waste, not a correctness defect.
+  const refreshInFlightRef = useRef(false);
+  // The timer below must read the CURRENT storyboard without re-subscribing on every
+  // edit, so the latest value is mirrored into a ref from an effect (never during render,
+  // which would be a side effect in the render pass).
+  const storyboardRef = useRef(state.storyboard);
+  useEffect(() => {
+    storyboardRef.current = state.storyboard;
+  }, [state.storyboard]);
+  useEffect(() => {
+    if (!hasManifest) return; // mock catalogue: nothing is presigned, nothing to refresh
+    const id = setInterval(() => {
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      void (async () => {
+        try {
+          const { actions, ledger } = await refreshStalePresigns({
+            storyboard: storyboardRef.current,
+            nowMs: Date.now(),
+            ledger: resignLedgerRef.current,
+            presign: (assetKey) => presignDownload(assetKey),
+          });
+          if (!aliveRef.current) return;
+          resignLedgerRef.current = ledger;
+          for (const action of actions) dispatch(action);
+        } finally {
+          // `finally`, not the end of the try: a throw here would otherwise wedge the
+          // flag true and silently kill every future refresh for the session — a worse
+          // failure than the pile-on it prevents.
+          refreshInFlightRef.current = false;
+        }
+      })();
+    }, PRESIGN_REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
   }, [hasManifest]);
 
   const addScene = () => dispatch({ type: "ADD_SCENE" });
@@ -493,7 +593,10 @@ export function StudioProvider({
   const runGeneration = (
     slot: string,
     body: CreateGenerationBody,
-    settle: (gen: AiGenerationDto | null, url: string | null) => StudioAction,
+    settle: (
+      gen: AiGenerationDto | null,
+      asset: PresignedAsset | null,
+    ) => StudioAction,
     presignResult: boolean,
     options: { timeoutMs?: number } = {},
   ) => {
@@ -506,17 +609,25 @@ export function StudioProvider({
         dispatch(settle(null, null));
         return;
       }
+      // 20a: retain the id so Cancel has something to address. It used to live only in
+      // this closure, which is why `POST /v1/ai/generations/:id/cancel` — shipped in the
+      // api since task #31 — had no client path at all.
+      dispatch({ type: "GENERATION_STARTED", slot, generationId: genId });
       const gen = await pollGenerationUntilTerminal(
         genId,
         options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {},
       );
       if (!aliveRef.current) return;
-      let url: string | null = null;
+      // Feature 6: the presign's EXPIRY travels with its url. A landed generation is one
+      // of only two moments the studio ever signs anything, and its url dies 300 s later
+      // like every other; without the date the refresh pass could not tell a
+      // just-generated url from a dead one.
+      let asset: PresignedAsset | null = null;
       if (presignResult && gen?.status === "succeeded" && gen.resultAssetKey) {
-        url = await presignDownload(gen.resultAssetKey);
+        asset = await presignDownload(gen.resultAssetKey);
         if (!aliveRef.current) return;
       }
-      dispatch(settle(gen, url));
+      dispatch(settle(gen, asset));
     })();
   };
 
@@ -573,7 +684,7 @@ export function StudioProvider({
           ...(faithAlignment ? { faithAlignment } : {}),
         },
       },
-      (gen, url) => imageGenerationOutcome(id, gen, url),
+      (gen, asset) => imageGenerationOutcome(id, gen, asset),
       true,
     );
   };
@@ -612,7 +723,7 @@ export function StudioProvider({
           durationSeconds: Math.max(1, Math.ceil(effectiveSceneDurationSeconds(scene))),
         },
       },
-      (gen, url) => videoGenerationOutcome(id, gen, url),
+      (gen, asset) => videoGenerationOutcome(id, gen, asset),
       true,
       // A video job is minutes, not seconds — the default 300 s budget would report a
       // failure while the workflow was still running.
@@ -626,6 +737,77 @@ export function StudioProvider({
     dispatch({ type: "SET_AI_MODEL", kind, model });
   const setFaithAlignment = (value: FaithAlignment | null) =>
     dispatch({ type: "SET_FAITH_ALIGNMENT", value });
+  const setVoiceId = (voiceId: string) => dispatch({ type: "SET_VOICE_ID", voiceId });
+
+  /**
+   * 20a's Cancel — the only interactive control behind the lock.
+   *
+   * A REFUSAL (409 `generation_not_cancelable`) leaves the lock UP on purpose. The
+   * generation is past the point of no return, and dropping the scrim would hand the
+   * editor back seconds before a result lands into it — the exact race the lock exists to
+   * prevent. The card says so instead.
+   */
+  const cancelActiveGeneration = () => {
+    const active = activeGeneration(state);
+    if (!active?.generationId) return;
+    void (async () => {
+      const outcome = await cancelGenerationRequest(active.generationId!);
+      if (!aliveRef.current) return;
+      if (outcome === "canceled") {
+        dispatch({
+          type: "GENERATION_FAILED",
+          slot: active.slot,
+          error: "canceled",
+        });
+        return;
+      }
+      dispatch({ type: "GENERATION_CANCEL_REFUSED", slot: active.slot });
+    })();
+  };
+
+  // ── 20b: the video confirmation ────────────────────────────────────────────
+  //
+  // `▶ Generate video` no longer spends directly. `71e32a9`'s availability gate (can this
+  // run at all?) is UPSTREAM of this and still applies — the two compose: 20b only ever
+  // fires when video is already runnable.
+  const [videoWarningSceneId, setVideoWarningSceneId] = useState<string | null>(null);
+
+  const requestSceneVideo = (sceneId?: string) => {
+    if (!project.manifest) return;
+    const id = sceneId ?? state.selectedSceneId;
+    if (!state.storyboard.scenes.some((s) => s.id === id)) return;
+    // The per-project preference is read at the moment of the click, never cached: it can
+    // be set from another tab, and a stale `true` here would be a dialog the user already
+    // told us to stop showing.
+    if (!shouldWarnBeforeVideo(project.id)) {
+      generateSceneVideo(id);
+      return;
+    }
+    setVideoWarningSceneId(id);
+  };
+
+  const closeVideoWarning = () => setVideoWarningSceneId(null);
+
+  const applyDontWarn = (dontWarnAgain: boolean) => {
+    if (dontWarnAgain) suppressVideoWarning(project.id);
+  };
+
+  const confirmSceneVideo = (dontWarnAgain: boolean) => {
+    const id = videoWarningSceneId;
+    setVideoWarningSceneId(null);
+    applyDontWarn(dontWarnAgain);
+    if (id) generateSceneVideo(id);
+  };
+
+  const useStillImageInstead = (dontWarnAgain: boolean) => {
+    const id = videoWarningSceneId;
+    setVideoWarningSceneId(null);
+    applyDontWarn(dontWarnAgain);
+    // 20b's recommended path needs NO new endpoint: this is the existing image generation
+    // for this scene, relabelled. Ken Burns is applied at render time to any
+    // `visualAssetKind: "image"`, so the drawn copy is accurate about what it does.
+    if (id) rerollVisual(id);
+  };
 
   const rewriteScript = (sceneId?: string) => {
     if (!project.manifest) return;
@@ -672,15 +854,33 @@ export function StudioProvider({
     if (!project.manifest) return;
     const scenes = narrationScenesOf(state.storyboard);
     if (scenes.length === 0) return;
-    const voice: { description: string; label?: string } = {
+    const voice: { description: string; label?: string; voiceId?: string } = {
       description: state.storyboard.voiceDescription,
     };
     if (state.storyboard.voiceLabel) voice.label = state.storyboard.voiceLabel;
+    if (state.storyboard.voiceId) voice.voiceId = state.storyboard.voiceId;
     const { target } = generationTarget("narration");
     runGeneration(
       NARRATION_SLOT,
-      { kind: "narration", projectId: project.id, ...target, input: { voice, scenes } },
-      (gen, url) => narrationGenerationOutcome(gen, url),
+      {
+        kind: "narration",
+        projectId: project.id,
+        ...target,
+        input: {
+          voice,
+          // Feature 1: the CHOSEN provider voice id, TOP-LEVEL — the only value the
+          // provider is ever sent. It is a sibling of `voice` rather than a property of
+          // it because `GenerateNarrationInputSchema` is
+          // `NarrationSpecSchema.passthrough()`: a top-level key survives an api/dbos
+          // still pinned to an older db-lib, while a key nested inside `voice` is
+          // stripped by `VoiceDescriptorSchema` (a plain `z.object`). Same mechanism
+          // `faithAlignment` already rides. Omitted when the user never picked one, so
+          // the provider default still applies, byte-identically to before.
+          ...(state.storyboard.voiceId ? { voiceId: state.storyboard.voiceId } : {}),
+          scenes,
+        },
+      },
+      (gen, asset) => narrationGenerationOutcome(gen, asset),
       true,
     );
   };
@@ -699,7 +899,7 @@ export function StudioProvider({
           durationSeconds: totalDurationSeconds(state.storyboard) || 30,
         },
       },
-      (gen, url) => musicGenerationOutcome(gen, url),
+      (gen, asset) => musicGenerationOutcome(gen, asset),
       true,
     );
   };
@@ -733,6 +933,13 @@ export function StudioProvider({
     setAiProvider,
     setAiModel,
     setFaithAlignment,
+    setVoiceId,
+    cancelGeneration: cancelActiveGeneration,
+    requestSceneVideo,
+    videoWarningSceneId,
+    closeVideoWarning,
+    confirmSceneVideo,
+    useStillImageInstead,
     generateSceneVideo,
   };
 

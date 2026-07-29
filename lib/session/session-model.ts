@@ -85,6 +85,11 @@ export function parseSeedRequest(
 /** The minimal shape of the server `AuthUser` this pure module consumes (from
  *  `GET /api/me` / the session exchange). */
 export interface AuthUserLike {
+  /** The api's `User.id`. Present on `AuthUserSchema` since task #10 and on every
+   *  `{ user }` body the BFF proxies. Feature 7 reads it as the SERVER-session identity
+   *  the project grid keys its fetch on — see `SessionContextValue.serverUserId` for why
+   *  neither `sessionResolved` nor `session.isAuthed` can play that role. */
+  id: string;
   displayName: string;
   email: string;
   onboardingCompletedAt: string | null;

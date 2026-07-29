@@ -718,8 +718,16 @@ describe("generation outcome mappers (polled terminal generation → action)", (
 
   it("U-G9: imageGenerationOutcome maps succeeded+assetKey+url → IMAGE_GENERATED, else GENERATION_FAILED", () => {
     expect(
-      imageGenerationOutcome("s2", { status: "succeeded", resultAssetKey: "k" } as never, "http://u"),
-    ).toEqual({ type: "IMAGE_GENERATED", sceneId: "s2", assetKey: "k", url: "http://u" });
+      imageGenerationOutcome("s2", { status: "succeeded", resultAssetKey: "k" } as never, { url: "http://u", expiresAt: "2026-07-29T13:00:00.000Z" }),
+    ).toEqual({
+      type: "IMAGE_GENERATED",
+      sceneId: "s2",
+      assetKey: "k",
+      url: "http://u",
+      // Feature 6: the presign's expiry rides with its url so the refresh pass can
+      // replace it before it dies.
+      urlExpiresAt: "2026-07-29T13:00:00.000Z",
+    });
     expect(imageGenerationOutcome("s2", { status: "failed", error: "e" } as never, null)).toEqual({
       type: "GENERATION_FAILED",
       slot: imageSlot("s2"),
@@ -747,16 +755,24 @@ describe("generation outcome mappers (polled terminal generation → action)", (
 
   it("U-G11: narration/music outcome map succeeded+assetKey → *_GENERATED (url optional)", () => {
     expect(
-      narrationGenerationOutcome({ status: "succeeded", resultAssetKey: "n" } as never, "http://n"),
+      narrationGenerationOutcome({ status: "succeeded", resultAssetKey: "n" } as never, { url: "http://n", expiresAt: "2026-07-29T13:00:00.000Z" }),
     ).toEqual({
       type: "NARRATION_GENERATED",
       assetKey: "n",
       url: "http://n",
+      urlExpiresAt: "2026-07-29T13:00:00.000Z",
       scenes: [],
     });
+    // A generation whose presign FAILED still lands its assetKey — with no url and no
+    // expiry, which the refresh pass reads as "stale" and retries.
     expect(
       musicGenerationOutcome({ status: "succeeded", resultAssetKey: "m" } as never, null),
-    ).toEqual({ type: "MUSIC_GENERATED", assetKey: "m", url: null });
+    ).toEqual({
+      type: "MUSIC_GENERATED",
+      assetKey: "m",
+      url: null,
+      urlExpiresAt: null,
+    });
     expect(narrationGenerationOutcome({ status: "failed" } as never, null).type).toBe(
       "GENERATION_FAILED",
     );
@@ -1051,7 +1067,7 @@ describe("narration generation writes PER-SCENE clips (render-bug work)", () => 
   it("U-N1: maps resultJson.narration onto the matching scenes, with measured lengths", () => {
     // The whole point of the per-scene map: without it the studio has one asset key and no
     // idea where any scene's audio begins, which is what made the narration drift.
-    const action = narrationGenerationOutcome(gen as never, "http://n");
+    const action = narrationGenerationOutcome(gen as never, { url: "http://n", expiresAt: "2026-07-29T13:00:00.000Z" });
     expect(action.type).toBe("NARRATION_GENERATED");
     if (action.type !== "NARRATION_GENERATED") return;
     expect(action.scenes).toEqual([
@@ -1067,7 +1083,7 @@ describe("narration generation writes PER-SCENE clips (render-bug work)", () => 
     });
     const next = studioReducer(
       base,
-      narrationGenerationOutcome(gen as never, "http://n"),
+      narrationGenerationOutcome(gen as never, { url: "http://n", expiresAt: "2026-07-29T13:00:00.000Z" }),
     );
     const s1 = next.storyboard.scenes.find((s) => s.id === "s1");
     const s2 = next.storyboard.scenes.find((s) => s.id === "s2");

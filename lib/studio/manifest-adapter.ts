@@ -54,6 +54,10 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     fps: manifest.composition.fps,
     voiceDescription: manifest.narratorVoice.description,
     voiceLabel: manifest.narratorVoice.label ?? "",
+    // Feature 1: the CHOSEN provider voice id. `undefined` stays `undefined` so the round
+    // trip is an exact identity — a materialized key would be a spurious diff in the
+    // user's committed repo on every save.
+    voiceId: manifest.narratorVoice.voiceId,
     musicMood: manifest.music?.style ?? "",
     // Task #35: the persisted whole-project audio keys (↔ narratorVoice/music).
     narrationAssetKey: manifest.narratorVoice.assetKey,
@@ -80,16 +84,27 @@ export function serializeManifest(
   storyboard: Storyboard,
   base: ProjectManifest,
 ): ProjectManifest {
+  // The label is written from the UI storyboard, like the description beside it.
+  // It used to come from `base.narratorVoice.label` — two fields of the SAME object read
+  // from two different places — so a label the user (or an LLM re-plan) produced was
+  // silently replaced by whatever was already on disk, on every commit, with nothing to
+  // indicate which won. Empty means ABSENT rather than `""`, because
+  // `VoiceDescriptorSchema.label` is `min(1)` and an empty string would make the manifest
+  // fail the api's 422 boundary.
+  const label = storyboard.voiceLabel || undefined;
   const narratorVoice = {
     description: storyboard.voiceDescription,
-    ...(base.narratorVoice.label !== undefined
-      ? { label: base.narratorVoice.label }
-      : {}),
+    ...(label !== undefined ? { label } : {}),
     // Task #35: the generated whole-project narration key comes from the storyboard
     // (a regeneration updates it), preserving absent/null/string exactly.
     ...(storyboard.narrationAssetKey !== undefined
       ? { assetKey: storyboard.narrationAssetKey }
       : {}),
+    // Feature 1: the chosen provider voice id, from the UI storyboard so a change to the
+    // voice list actually persists. Without this branch the control would appear to save
+    // and revert on the next commit — the exact failure `narratorVoice.assetKey` already
+    // shipped once.
+    ...(storyboard.voiceId !== undefined ? { voiceId: storyboard.voiceId } : {}),
   };
 
   const music = storyboard.musicMood
@@ -128,6 +143,13 @@ export function serializeManifest(
     ...(music !== undefined ? { music } : {}),
     ...(aiSettings !== undefined ? { aiSettings } : {}),
     ...(base.endCard !== undefined ? { endCard: base.endCard } : {}),
+    // Feature 2: the project's origin passage, PRESERVED FROM `base`. This return builds
+    // its object field-by-field with no `...base` spread, so a field it does not name is
+    // deleted from the user's repo on every commit — and the scaffold seeds `scripture`,
+    // so the data is really there to destroy. Preserved rather than carried on the UI
+    // `Storyboard` because the studio does not edit the project passage; putting it on
+    // the storyboard would make it look editable, which is scope this feature lacks.
+    ...(base.scripture !== undefined ? { scripture: base.scripture } : {}),
     scenes: storyboard.scenes.map((s) => {
       const b = base.scenes.find((x) => x.id === s.id);
       const preserved = b ?? {
@@ -220,6 +242,13 @@ export function sceneScriptureContext(
 ): { reference: string; translation: string; language: string } | undefined {
   const s = manifest.scenes.find((x) => x.id === sceneId);
   return s
-    ? { reference: s.reference, translation: s.translation, language: "eng" }
+    ? {
+        reference: s.reference,
+        translation: s.translation,
+        // The project's stored BCP-47 tag when the wizard captured one; `"eng"` otherwise.
+        // The hardcoded `"eng"` silently re-resolved a non-English project against
+        // English. Byte-identical behaviour for every manifest with no `scripture` block.
+        language: manifest.scripture?.language ?? "eng",
+      }
     : undefined;
 }

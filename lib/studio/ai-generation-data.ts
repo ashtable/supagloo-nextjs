@@ -15,6 +15,9 @@ import {
   type AiGenerationDto,
   type AiGenerationKind,
 } from "../api/contracts";
+import type { PresignedAsset } from "./presign-refresh";
+
+export type { PresignedAsset };
 
 interface FetchDep {
   fetchImpl?: typeof fetch;
@@ -69,12 +72,26 @@ export async function fetchGeneration(
   }
 }
 
-/** `GET /api/files/presign-download?key=` → a short-lived presigned GET url for the
- *  scene preview. Null on a denied/unknown key (404) or any failure. */
+/**
+ * `GET /api/files/presign-download?key=` → a short-lived presigned GET url for the scene
+ * preview, **with its expiry**. Null on a denied/unknown key (404) or any failure.
+ *
+ * Feature 6: this used to return `Promise<string | null>` and drop `expiresAt` on the
+ * floor — `return parsed.success ? parsed.data.url : null;`. `expiresAt` has ridden this
+ * wire end-to-end since task #13 (`FilePresignDownloadResponseSchema = {url, expiresAt}`,
+ * serialized by files.ts / gallery.ts / renders.ts, passed verbatim by the BFF); the only
+ * place it died was here. The signature is what mattered: with `string | null` there was
+ * no way for any caller to even ASK when a URL stops working, so the studio's 300 s
+ * presigns silently became broken media five minutes into every session.
+ *
+ * Returning the pair (rather than adding a second function) is deliberate — a parallel
+ * `presignDownloadWithExpiry` would leave the lossy one in place for the next caller to
+ * reach for.
+ */
 export async function presignDownload(
   key: string,
   deps: FetchDep = {},
-): Promise<string | null> {
+): Promise<PresignedAsset | null> {
   const doFetch = doFetchOf(deps);
   try {
     const res = await doFetch(
@@ -83,9 +100,41 @@ export async function presignDownload(
     );
     if (!res.ok) return null;
     const parsed = FilePresignDownloadResponseSchema.safeParse(await res.json());
-    return parsed.success ? parsed.data.url : null;
+    return parsed.success
+      ? { url: parsed.data.url, expiresAt: parsed.data.expiresAt }
+      : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * `POST /api/ai/generations/:id/cancel` — figure 20a's Cancel.
+ *
+ * Three outcomes, and they are genuinely different:
+ *   - `"canceled"` — the api flipped it; the lock comes down.
+ *   - `"refused"` — 409 `generation_not_cancelable`. The generation is past the point of
+ *     no return. The lock STAYS UP and says so: dropping it would let the result land
+ *     into an editor the user had resumed editing, which is the race the lock exists to
+ *     prevent.
+ *   - `"failed"` — anything else (404, network, unparseable). Treated like a refusal for
+ *     safety, and distinguished so the card can say something different.
+ */
+export type CancelGenerationOutcome = "canceled" | "refused" | "failed";
+
+export async function cancelGeneration(
+  id: string,
+  deps: FetchDep = {},
+): Promise<CancelGenerationOutcome> {
+  const doFetch = doFetchOf(deps);
+  try {
+    const res = await doFetch(`/api/ai/generations/${id}/cancel`, {
+      method: "POST",
+    });
+    if (res.ok) return "canceled";
+    return res.status === 409 ? "refused" : "failed";
+  } catch {
+    return "failed";
   }
 }
 

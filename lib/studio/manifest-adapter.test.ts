@@ -435,3 +435,130 @@ describe("serializeManifest — added and deleted scenes (USER DECISION D3)", ()
     expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Feature 1 — the narrator voice: the chosen id, and the label that could not persist
+// ---------------------------------------------------------------------------
+
+describe("manifest-adapter — narratorVoice (feature 1)", () => {
+  const withVoice = (over: Record<string, unknown>): ProjectManifest => ({
+    ...MANIFEST,
+    narratorVoice: { ...MANIFEST.narratorVoice, ...over },
+  });
+
+  it("U-V28: the chosen voice id round-trips hydrate → serialize as an identity", () => {
+    const m = withVoice({ voiceId: "zac" });
+    const sb = hydrateStoryboard(m);
+    expect(sb.voiceId).toBe("zac");
+    expect(serializeManifest(sb, m)).toEqual(m);
+  });
+
+  it("U-V29: absent stays absent — an already-committed manifest is unchanged", () => {
+    const sb = hydrateStoryboard(MANIFEST);
+    expect(sb.voiceId).toBeUndefined();
+    const out = serializeManifest(sb, MANIFEST);
+    expect("voiceId" in out.narratorVoice).toBe(false);
+    expect(out).toEqual(MANIFEST);
+  });
+
+  it("U-V30: a CHANGED voice id is written back — the whole point of the control", () => {
+    const m = withVoice({ voiceId: "zac" });
+    const sb = { ...hydrateStoryboard(m), voiceId: "tara" };
+    expect(serializeManifest(sb, m).narratorVoice.voiceId).toBe("tara");
+  });
+
+  it("U-V31: THE voiceLabel BUG — an edited label now persists instead of being discarded", () => {
+    // `serializeManifest` wrote `description` from UI state but `label` from
+    // `base.narratorVoice.label`. So a label the user (or a re-plan) produced was silently
+    // replaced by the label already on disk, every single commit. Two fields of the same
+    // object, read from two different places, with nothing to indicate which won.
+    const m = withVoice({ label: "OLD LABEL" });
+    const sb = { ...hydrateStoryboard(m), voiceLabel: "NEW LABEL" };
+    expect(serializeManifest(sb, m).narratorVoice.label).toBe("NEW LABEL");
+  });
+
+  it("U-V32: clearing the label removes it rather than writing an empty string", () => {
+    // `VoiceDescriptorSchema.label` is `min(1)`, so an empty string would make the
+    // manifest un-committable at the api's 422 boundary.
+    const m = withVoice({ label: "OLD LABEL" });
+    const sb = { ...hydrateStoryboard(m), voiceLabel: "" };
+    const out = serializeManifest(sb, m);
+    expect("label" in out.narratorVoice).toBe(false);
+    expect(ProjectManifestSchema.safeParse(out).success).toBe(true);
+  });
+
+  it("U-V33: a manifest carrying a voice id stays schema-valid", () => {
+    expect(ProjectManifestSchema.safeParse(withVoice({ voiceId: "zac" })).success).toBe(
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 2 — the project's origin passage survives the studio's Commit
+// ---------------------------------------------------------------------------
+//
+// `serializeManifest` builds its result field-by-field with NO `...base` spread, so a
+// manifest field it does not name is deleted on every commit. `scripture` is seeded by
+// the scaffold (`project-jobs-service.ts` seeds it past the schema), so the data is
+// already in the user's repo — the studio was destroying it. This is the SECOND of two
+// independent erasure points; the first is the read-side parse in `lib/api/contracts.ts`.
+// Fixing only one leaves the other live, which is why both land together.
+describe("manifest-adapter — the project's origin passage (feature 2)", () => {
+  const SCRIPTURE = {
+    reference: "Psalm 121",
+    translation: "BSB",
+    language: "en",
+    passageId: "PSA.121",
+  } as const;
+  const withScripture: ProjectManifest = { ...MANIFEST, scripture: { ...SCRIPTURE } };
+
+  it("U-A26: serialize∘hydrate is an identity for a manifest carrying scripture", () => {
+    const back = serializeManifest(hydrateStoryboard(withScripture), withScripture);
+    expect(back).toEqual(withScripture);
+    expect(back.scripture).toEqual(SCRIPTURE);
+    expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
+  });
+
+  it("U-A27: an EDIT elsewhere still preserves the passage — the real commit path", () => {
+    // The studio does not edit the project passage, so it is preserved from `base`
+    // rather than carried on the UI `Storyboard`. This is the case that was broken:
+    // edit a scene's script, hit Commit, and the passage was gone from the repo.
+    const edited = updateSceneScript(
+      hydrateStoryboard(withScripture),
+      "s1",
+      "A brand new line",
+    );
+    const back = serializeManifest(edited, withScripture);
+    expect(back.scenes[0].scriptText).toBe("A brand new line");
+    expect(back.scripture).toEqual(SCRIPTURE);
+  });
+
+  it("U-A28: absent stays absent — no spurious empty block in the committed repo", () => {
+    const back = serializeManifest(hydrateStoryboard(MANIFEST), MANIFEST);
+    expect("scripture" in back).toBe(false);
+    expect(back).toEqual(MANIFEST);
+  });
+
+  it("U-A29: hydrate does not surface it on the Storyboard — it is project scope, not UI scope", () => {
+    // Deliberate: adding it to `Storyboard` would make it look editable in the studio,
+    // which is scope this feature does not have.
+    expect("scripture" in hydrateStoryboard(withScripture)).toBe(false);
+  });
+
+  // B5 / plan §D-1's promised bonus fix: the picker's tags are BCP-47, and this read
+  // used to hardcode "eng", silently re-resolving a non-English project against English.
+  it("U-A30: sceneScriptureContext prefers the stored language tag", () => {
+    expect(sceneScriptureContext(withScripture, "s1")?.language).toBe("en");
+  });
+
+  it("U-A31: sceneScriptureContext still falls back to 'eng' when no passage is stored", () => {
+    expect(sceneScriptureContext(MANIFEST, "s1")?.language).toBe("eng");
+    expect(
+      sceneScriptureContext(
+        { ...MANIFEST, scripture: { reference: "Psalm 121", translation: "BSB" } },
+        "s1",
+      )?.language,
+    ).toBe("eng");
+  });
+});
