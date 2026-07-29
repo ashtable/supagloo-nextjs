@@ -15,10 +15,15 @@ export default function OpenRouterConnectBody({
   onConnect,
   pending,
   showPkceCallout = false,
+  error = null,
 }: {
   onConnect: () => void;
   pending: boolean;
   showPkceCallout?: boolean;
+  /** A connect attempt that could not START (today: the browser refused the OAuth
+   *  tab). Rendered as a real, actionable message — the failure used to be silent,
+   *  leaving a spinner as the only feedback for a flow that could never finish. */
+  error?: string | null;
 }) {
   return (
     <div style={{ padding: "24px 34px 30px" }}>
@@ -144,6 +149,24 @@ export default function OpenRouterConnectBody({
       >
         {pending ? "Connecting…" : "Connect with OpenRouter"}
       </button>
+
+      {error && (
+        <div
+          data-testid="connect-openrouter-error"
+          role="alert"
+          style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            border: "1px solid var(--sg-red)",
+            borderRadius: 10,
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: "var(--sg-red)",
+          }}
+        >
+          {error}
+        </div>
+      )}
     </div>
   );
 }

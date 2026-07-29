@@ -61,6 +61,11 @@ import {
   requestDisconnect,
   disconnectErrorMessage,
 } from "@/lib/connections/disconnect";
+import {
+  openBlankTab,
+  navigateTab,
+  POPUP_BLOCKED_MESSAGE,
+} from "@/lib/connections/popup";
 import { generateCodeVerifier, computeCodeChallenge } from "@/lib/connections/pkce";
 import type { ConnectionsSeedName } from "@/lib/session/session-model";
 
@@ -136,6 +141,12 @@ interface SessionContextValue {
   disconnectErrors: Record<Provider, string | null>;
   /** Clear a provider's disconnect error (a fresh disconnect attempt does this). */
   clearDisconnectError: (provider: Provider) => void;
+  /** Per-provider CONNECT error: set when the flow could not even start — today that
+   *  means the browser refused the OAuth tab. Distinct from `pending`: this is a
+   *  terminal state with an action attached, not a wait. Null when there is none. */
+  connectErrors: Record<Provider, string | null>;
+  /** Clear a provider's connect error (a fresh connect attempt does this). */
+  clearConnectError: (provider: Provider) => void;
   /** Marks onboarding complete (dismisses the wizard) and persists it server-side. */
   markOnboarded: () => void;
   signOut: () => void;
@@ -161,6 +172,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [connectionsSeeded, setConnectionsSeeded] = useState(false);
   const [glooError, setGlooError] = useState<string | null>(null);
   const [disconnectErrors, setDisconnectErrors] = useState<
+    Record<Provider, string | null>
+  >({ github: null, openrouter: null, gloo: null });
+  const [connectErrors, setConnectErrors] = useState<
     Record<Provider, string | null>
   >({ github: null, openrouter: null, gloo: null });
   const bootstrappedRef = useRef(false);
@@ -412,6 +426,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const clearDisconnectError = (provider: Provider) =>
     setDisconnectErrors((e) => (e[provider] ? { ...e, [provider]: null } : e));
 
+  const setConnectError = (provider: Provider, message: string) =>
+    setConnectErrors((e) => ({ ...e, [provider]: message }));
+  const clearConnectError = (provider: Provider) =>
+    setConnectErrors((e) => (e[provider] ? { ...e, [provider]: null } : e));
+
   /**
    * The real GitHub connect round-trip (§5.3/§6a): open a tab, then poll the BFF until
    * a callback has stored the connection — `pending` spans that real round-trip.
@@ -424,9 +443,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
    * same poll — and keeping one implementation is what stops the second path from
    * quietly drifting out of step with the first.
    */
-  const startGithubFlow = (openTab: (open: OpenWindow) => void) => {
+  const startGithubFlow = (openTab: (open: OpenWindow) => boolean) => {
+    clearConnectError("github");
+    // Open BEFORE entering `pending`: a refused popup is terminal (the callback can
+    // only fire from that tab), so entering `pending` first would start a poll with
+    // nothing to wait for and strand the user on "Connecting…" until it timed out.
+    const opened = openTab(
+      typeof window !== "undefined" ? window.open.bind(window) : () => null,
+    );
+    if (!opened) {
+      setConnectError("github", POPUP_BLOCKED_MESSAGE);
+      return;
+    }
     setConnections((s) => beginConnect(s, "github"));
-    openTab(typeof window !== "undefined" ? window.open.bind(window) : () => null);
     void (async () => {
       const login = await pollGithubConnected({});
       if (!login) {
@@ -471,6 +500,22 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // stored the connection — `pending` spans that real round-trip. The exchange
     // stays browser-side; the server only ever sees the final key.
     if (provider === "openrouter" && !isMock) {
+      clearConnectError("openrouter");
+      // Open the tab SYNCHRONOUSLY, still inside the click's transient user activation.
+      //
+      // The authorize URL is not known yet — the PKCE `code_challenge` needs
+      // `crypto.subtle.digest`, which is genuinely async. Awaiting it first and opening
+      // afterwards is what broke this: the activation does not survive an await, so
+      // Safari refused the popup (Chrome is laxer, which is why it went unnoticed), and
+      // `window.open` reports refusal by RETURNING NULL rather than throwing — so the
+      // try/catch that wrapped it caught nothing and the flow proceeded to poll for a
+      // callback that no tab would ever produce. Open a blank tab under the activation,
+      // then point it at the URL once the challenge is computed.
+      const tab = openBlankTab();
+      if (!tab) {
+        setConnectError("openrouter", POPUP_BLOCKED_MESSAGE);
+        return;
+      }
       setConnections((s) => beginConnect(s, "openrouter"));
       void (async () => {
         const verifier = generateCodeVerifier();
@@ -482,10 +527,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           callbackUrl,
           codeChallenge: challenge,
         });
-        try {
-          window.open(authorizeUrl, "_blank");
-        } catch {
-          /* popup blocked — the callback page can still complete via the poll */
+        if (!navigateTab(tab, authorizeUrl)) {
+          // The tab was claimed but could not be pointed anywhere. Same terminal
+          // shape as a refused open: nothing will call back, so do not sit in a poll.
+          setConnections((s) => disconnectReducer(s, "openrouter"));
+          setConnectError("openrouter", POPUP_BLOCKED_MESSAGE);
+          return;
         }
         const last4 = await pollOpenRouterConnected({});
         if (!last4) {
@@ -613,6 +660,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     clearGlooError,
     disconnectErrors,
     clearDisconnectError,
+    connectErrors,
+    clearConnectError,
     markOnboarded,
     signOut,
   };

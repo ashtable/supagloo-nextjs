@@ -14,11 +14,15 @@ export default function GithubConnectBody({
   onAuthorize,
   onLinkExisting,
   pending,
+  error = null,
 }: {
   onAuthorize: () => void;
   /** Start the "already installed" recovery path. See the note on the link below. */
   onLinkExisting: () => void;
   pending: boolean;
+  /** A connect attempt that could not START (today: the browser refused the OAuth
+   *  tab). Terminal and actionable — not the same thing as `pending`. */
+  error?: string | null;
 }) {
   return (
     <div style={{ padding: "24px 34px 30px" }}>
@@ -131,6 +135,24 @@ export default function GithubConnectBody({
         {pending ? "Connecting…" : "Authorize with GitHub"}
       </button>
 
+      {error && (
+        <div
+          data-testid="connect-github-error"
+          role="alert"
+          style={{
+            marginTop: 12,
+            padding: "10px 12px",
+            border: "1px solid var(--sg-red)",
+            borderRadius: 10,
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: "var(--sg-red)",
+          }}
+        >
+          {error}
+        </div>
+      )}
+
       <div
         style={{
           textAlign: "center",
@@ -149,6 +171,13 @@ export default function GithubConnectBody({
         shared across environments sends the button above to the installation settings
         page and never back here. Before this existed, that user watched "Connecting…"
         for two minutes and then had no remaining move in the product at all.
+
+        It is deliberately NOT `disabled={pending}`, unlike the button above. `pending`
+        is set by clicking that button, which is precisely how a user reaches the
+        dead end this rescues — gating the escape hatch on it re-created the trap the
+        hatch exists to remove, and a disabled button swallows the click in silence, so
+        it read as a broken link. The only state in which this control MUST work is the
+        one that gating removed it from.
       */}
       <div
         style={{
@@ -163,7 +192,6 @@ export default function GithubConnectBody({
           type="button"
           data-testid="connect-link-existing"
           onClick={onLinkExisting}
-          disabled={pending}
           className="cursor-pointer"
           style={{
             border: "none",

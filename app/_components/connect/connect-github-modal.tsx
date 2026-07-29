@@ -19,7 +19,8 @@ export default function ConnectGithubModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const { connections, connectProvider, linkExistingGithub } = useSession();
+  const { connections, connectProvider, linkExistingGithub, connectErrors } =
+    useSession();
   const github = connections.github;
 
   useEffect(() => {
@@ -39,6 +40,7 @@ export default function ConnectGithubModal({
         onAuthorize={() => connectProvider("github")}
         onLinkExisting={linkExistingGithub}
         pending={github.status === "pending"}
+        error={connectErrors.github}
       />
     </Modal>
   );

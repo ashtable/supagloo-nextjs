@@ -174,16 +174,28 @@ describe("pollGithubConnected", () => {
 
 describe("openGithubInstall", () => {
   it("opens the start route in a new tab", () => {
-    const open = vi.fn();
+    const open = vi.fn(() => ({}));
     openGithubInstall(open);
     expect(open).toHaveBeenCalledWith("/api/connect/github/start", "_blank");
   });
 
-  it("swallows a blocked/throwing window.open (the poll still resolves)", () => {
+  it("reports true when a tab was actually opened", () => {
+    expect(openGithubInstall(() => ({}))).toBe(true);
+  });
+
+  // The two ways a browser refuses. NULL is the one that matters: it is what Safari
+  // and Chrome actually do for a blocked popup, and the pre-fix code only guarded the
+  // throw — so a real refusal was indistinguishable from success and the caller went
+  // on to poll for a callback that could never come.
+  it("reports false when window.open RETURNS NULL (the real blocked-popup signal)", () => {
+    expect(openGithubInstall(() => null)).toBe(false);
+  });
+
+  it("reports false, without throwing, when window.open throws", () => {
     const open = vi.fn(() => {
       throw new Error("popup blocked");
     });
-    expect(() => openGithubInstall(open)).not.toThrow();
+    expect(openGithubInstall(open)).toBe(false);
   });
 });
 
@@ -309,10 +321,19 @@ describe("openGithubLinkExisting", () => {
     expect(calls[0]).not.toBe("/api/connect/github/start");
   });
 
-  it("swallows a blocked popup — the poll is the source of truth", () => {
-    const open = () => {
-      throw new Error("blocked");
-    };
-    expect(() => openGithubLinkExisting(open as never)).not.toThrow();
+  it("reports a refused popup instead of swallowing it", () => {
+    // Both refusal shapes, same answer. The recovery path needs this even more than
+    // the install path does: it is the LAST move offered to an already-installed user,
+    // so a silent failure here leaves them with nothing.
+    expect(openGithubLinkExisting((() => null) as never)).toBe(false);
+    expect(
+      openGithubLinkExisting(((): never => {
+        throw new Error("blocked");
+      }) as never),
+    ).toBe(false);
+  });
+
+  it("reports true when a tab was actually opened", () => {
+    expect(openGithubLinkExisting((() => ({})) as never)).toBe(true);
   });
 });
