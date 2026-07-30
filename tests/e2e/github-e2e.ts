@@ -719,24 +719,72 @@ async function skipWizardScriptureStep(page: StagehandPage): Promise<void> {
  * id here would be asserting a licensing grant rather than the product. The verse range is
  * left at the app's default too: the first `min(5, n)` of the live verses response.
  *
+ * Those two undriven levels need no `waitForTestIdOption` of their own, and that is a
+ * property rather than luck: books are only fetched once `selection.bibleId` is set, which
+ * only happens once the translations response has resolved a default, which only happens
+ * once a language is set. So waiting for the BOOK level to offer `bookUsfm` transitively
+ * proves both levels above it landed. They are asserted non-empty anyway — if the ASV
+ * default resolution ever regresses, that is the sentence this helper should fail with,
+ * rather than "book never offered PSA".
+ *
  * The CTA is asserted enabled before it is clicked. `canScaffold` gates it on a passage the
  * provider has CONFIRMED, so a click on a still-disabled button would be silently dropped
  * and present minutes later as an unexplained wizard timeout.
+ *
+ * WAITING FOR THE PREVIEW IS NOT ENOUGH, and that is not a subtlety — it silently changes
+ * what this helper persists. Selecting a chapter dispatches TWO reads at once:
+ * `GET /api/bible/verses` (which produces the default `min(5, n)` range) and
+ * `GET /api/bible/passage` for the chapter's own id (because no range exists yet). They race.
+ * Measured 2026-07-30: the chapter passage answered in 102 ms and the verses in 336 ms, so a
+ * click as soon as ANY preview rendered scaffolded `{passageId: "PSA.23", reference:
+ * "Psalms 23"}` — the WHOLE CHAPTER — into the fixture repo's `supagloo.project.json`. That
+ * is correct product behaviour (the wizard persists what the provider confirmed at the moment
+ * of the click, and nothing was fabricated), but it is not the app default this docblock
+ * claims to be leaving alone, and it made `E-WSC4`'s range assertion fail against a manifest
+ * that was never given the chance to hold a range. Hence `waitForWizardVerseDefault`.
  */
 async function chooseWizardScripturePassage(
   page: StagehandPage,
   choice: WizardScriptureChoice,
 ): Promise<void> {
   await waitForTestId(page, "wizard-scripture-step", 30_000);
-  await waitForTestId(page, "wizard-picker-book", 30_000);
 
-  await selectTestIdOption(page, "wizard-picker-book", choice.bookUsfm);
-  await waitForTestIdOption(page, "wizard-picker-chapter", choice.chapterId, 60_000);
-  await selectTestIdOption(page, "wizard-picker-chapter", choice.chapterId);
+  // Both levels are set through `selectTestIdOption`, which waits for the option to exist
+  // first. See its docblock for why that wait is not optional at ANY cascade level.
+  await selectTestIdOption(page, "wizard-picker-book", choice.bookUsfm, 60_000);
 
-  // The preview only renders once the provider has answered about this passage, which is
-  // the same condition the CTA gate reads.
-  await waitForTestId(page, "wizard-passage-preview", 60_000);
+  const translation = await page.evaluate(
+    () =>
+      document.querySelector<HTMLSelectElement>('[data-testid="wizard-picker-translation"]')
+        ?.value ?? "",
+  );
+  if (!translation) {
+    throw new Error(
+      `[github-e2e] the wizard's book list loaded but TRANSLATION is still empty — the ASV ` +
+        `default (resolved BY ABBREVIATION from the live collection, USER DECISION D1) did ` +
+        `not settle, so the passage this helper is about to choose would be scaffolded ` +
+        `against no translation.`,
+    );
+  }
+  // LANGUAGE is deliberately NOT asserted here, and the reason is worth writing down because
+  // asserting it cost a real-lane run on 2026-07-30 (`LANGUAGE="" / TRANSLATION="12"`).
+  //
+  // `selection.languageTag` is seeded with `DEFAULT_LANGUAGE_TAG` at mount, so the translation
+  // chain starts immediately and never waits for the language LIST. But the `<select>`'s DOM
+  // value is `selection.languageTag ?? ""` against options rendered from that list — and until
+  // it arrives the only option is the `""` placeholder, so the browser reports `""` for a
+  // select whose React value is `"en"`. The list is by far the slowest read in the cascade
+  // (8583 records, ~780 KB), so books routinely beat it.
+  //
+  // Nothing downstream cares: `onSelect` reports `language` from `selection.languageTag`, not
+  // from the DOM, and the manifests these fixtures commit carry `"language": "en"` either way.
+  // Waiting for the list here would buy a slower helper and no extra truth.
+
+  await selectTestIdOption(page, "wizard-picker-chapter", choice.chapterId, 60_000);
+
+  // …and only then arm the scaffold. See this function's own docblock for why waiting for
+  // the preview alone is not enough.
+  await waitForWizardVerseDefault(page, 90_000);
 
   const ctaDisabled = await page.evaluate(
     () =>
@@ -752,15 +800,36 @@ async function chooseWizardScripturePassage(
   await clickTestId(page, "new-project-cta");
 }
 
-/** Set a `<select>`'s value the way React sees it (native setter + a bubbling `change`),
- *  then let the cascade's effects run. A plain `.click()` on an `<option>` does not fire
- *  React's `onChange` for a select. */
+/**
+ * Choose an `<option>` on a cascade `<select>` the way React sees it: wait for the option to
+ * EXIST, set the value through the native setter, dispatch a bubbling `change`, then confirm
+ * the control actually holds the value.
+ *
+ * The wait is part of this function rather than the caller's business, because leaving it to
+ * the caller is exactly how it goes missing. It did: this helper's first real execution
+ * (2026-07-30) failed at the CHAPTER level after 74 s, and the cause was the BOOK level — the
+ * caller waited for the chapter OPTION but only for the book ELEMENT. `books` arrives from a
+ * live `GET /api/bible/books` (measured 358 ms in the failing run), and until it does the
+ * select holds nothing but its `"select book"` placeholder and is `disabled`. Assigning a
+ * value with no matching option is a SILENT no-op — the DOM sets `selectedIndex = -1` and
+ * `value` becomes `""` — so React's `onChange` ran with `""`, `selection.book` stayed null,
+ * `GET /api/bible/chapters` was never issued at all, and the failure surfaced one level
+ * downstream from its cause.
+ *
+ * Hence also the read-back: a no-op assignment must fail HERE, naming the level that did not
+ * take, instead of being inferred from a 60-second option timeout somewhere below.
+ *
+ * A plain `.click()` on an `<option>` does not fire React's `onChange` for a select, which is
+ * why the native setter is used at all.
+ */
 async function selectTestIdOption(
   page: StagehandPage,
   testId: string,
   value: string,
+  timeoutMs = 60_000,
 ): Promise<void> {
-  await page.evaluate(
+  await waitForTestIdOption(page, testId, value, timeoutMs);
+  const settled = await page.evaluate(
     ({ sel, v }) => {
       const el = document.querySelector<HTMLSelectElement>(`[data-testid="${sel}"]`);
       if (!el) throw new Error(`no [data-testid="${sel}"]`);
@@ -770,13 +839,79 @@ async function selectTestIdOption(
       )?.set;
       setter?.call(el, v);
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { value: el.value, disabled: el.disabled };
     },
     { sel: testId, v: value },
+  );
+  if (settled.value !== value) {
+    throw new Error(
+      `[github-e2e] [data-testid="${testId}"] still reads ${JSON.stringify(settled.value)} ` +
+        `after being set to ${JSON.stringify(value)} (disabled=${settled.disabled}) — the ` +
+        `assignment was a no-op, so React's onChange never saw this value and every cascade ` +
+        `level below it will time out instead.`,
+    );
+  }
+}
+
+/**
+ * Wait for step 2's DEFAULT VERSE SELECTION to settle, and for the passage preview that
+ * describes it.
+ *
+ * The settled state is three DOM facts at once: the tray exists (the provider listed verses
+ * for this chapter), at least one chip is `data-selected="true"` (the `min(5, n)` default has
+ * been applied, so `range` is non-null and the request the step will make is final), and the
+ * preview is present (the provider has CONFIRMED that request — which is the same condition
+ * `canScaffold` reads).
+ *
+ * Observed TWICE, 400 ms apart, and only that part is belt-and-braces. Setting the default
+ * range re-points the passage request, and the step clears the preview synchronously in that
+ * effect's body before re-fetching — so a single observation of "chips selected + preview
+ * present" is already the range's preview unless React had committed the render without yet
+ * flushing its passive effects, which cannot outlive a paint and therefore cannot outlive a
+ * CDP round-trip. The second observation removes the need to rely on that.
+ *
+ * Throws if the tray never appears. A chapter whose verse list is unavailable or empty
+ * legitimately keeps the whole chapter selected — but no spec picks such a chapter, and a
+ * helper that quietly scaffolded a different granularity than its docblock promises is how
+ * this problem arose in the first place. Failing loudly here is the point.
+ */
+async function waitForWizardVerseDefault(
+  page: StagehandPage,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let consecutive = 0;
+  let last = { tray: false, selected: 0, preview: false };
+  while (Date.now() < deadline) {
+    last = await page.evaluate(() => ({
+      tray: document.querySelector('[data-testid="wizard-verse-chips"]') !== null,
+      selected: [
+        ...document.querySelectorAll('[data-testid="wizard-verse-chip"]'),
+      ].filter((c) => c.getAttribute("data-selected") === "true").length,
+      preview: document.querySelector('[data-testid="wizard-passage-preview"]') !== null,
+    }));
+    if (last.tray && last.selected > 0 && last.preview) {
+      if (++consecutive === 2) return;
+    } else {
+      consecutive = 0;
+    }
+    await page.waitForTimeout(400);
+  }
+  throw new Error(
+    `[github-e2e] the wizard's verse default never settled within ${timeoutMs}ms ` +
+      `(tray=${last.tray} selectedChips=${last.selected} preview=${last.preview}). ` +
+      `tray=false ⇒ GET /api/bible/verses did not land (or answered null/[] for this ` +
+      `chapter, in which case the whole chapter is the honest default and this helper is ` +
+      `the wrong tool). selectedChips=0 ⇒ \`defaultVerseRange\` returned null over a ` +
+      `non-empty list. preview=false ⇒ GET /api/bible/passage never confirmed the range, ` +
+      `so \`canScaffold\` would stay closed and the wizard could not scaffold at all.`,
   );
 }
 
 /** Wait until a `<select>` actually OFFERS `value`. The cascade fills each level from a
- *  live fetch, so setting a value before its options exist is a silent no-op. */
+ *  live fetch, so setting a value before its options exist is a silent no-op. Because these
+ *  selects are `disabled={!items || items.length === 0}`, the option existing is also the
+ *  moment the control becomes enabled — one wait covers both gates. */
 async function waitForTestIdOption(
   page: StagehandPage,
   testId: string,
