@@ -6,6 +6,7 @@ import type { StagehandPage } from "./helpers";
 // barrier below can never silently drift from what the app actually writes (a drifted
 // literal would make the barrier a no-op and re-introduce the race it exists to close).
 import { VERIFIER_STORAGE_KEY } from "../../lib/connections/openrouter-connect";
+import { resolveAppUnderTestGlooCreds } from "../../lib/gloo/harness-creds";
 
 const BASE_URL = "http://localhost:3000";
 
@@ -441,3 +442,107 @@ export async function connectOpenRouterViaProfile(
  * consent hop at all. That stays the right default: it is faster and has fewer
  * moving parts. Use the create-new driver only where that path is the thing tested.
  */
+
+/**
+ * Connect Gloo AI for the seeded session, through the shipping profile card.
+ *
+ * WHY A SPEC THAT NEVER MENTIONS GLOO STILL NEEDS THIS
+ * ----------------------------------------------------
+ * `?seed=` mints a user with NO provider connections, and the studio's image default is
+ * now Gloo. So a spec that only connects OpenRouter and then rerolls a scene visual gets
+ * `GlooNotConnectedError` from the worker, surfacing in the browser as a bare
+ * `reroll-error` with nothing to say which provider was missing. That is exactly how
+ * `studio-ai-generation.e2e.ts` failed on 2026-07-29: the spec is about MinIO round-trips
+ * and commit persistence, and it died on a provider it never names.
+ *
+ * Unlike OpenRouter's, this flow has NO human-only hop to shim: `PUT /api/connect/gloo`
+ * is a plain verify-then-store, and the api mints a REAL client-credentials token against
+ * the real Gloo host before writing the row. Everything here is genuine — the form, the
+ * request, the verification and the stored ciphertext.
+ *
+ * Credentials come from `GLOO_CONNECT_CLIENT_ID` / `GLOO_CONNECT_CLIENT_SECRET`, which
+ * are DELIBERATELY not `GLOO_CLIENT_ID`/`GLOO_CLIENT_SECRET`: in this repo those latter
+ * two configure STAGEHAND's own LLM — the harness's brain. Typing the harness's
+ * credentials into the app under test would be a different (and confusing) test.
+ *
+ * Idempotent: returns immediately when `GET /api/connections` already reports a stored
+ * Gloo connection, so a spec may call it unconditionally in `beforeAll`.
+ */
+export async function connectGlooViaProfile(page: StagehandPage): Promise<void> {
+  const { clientId, clientSecret } = resolveAppUnderTestGlooCreds();
+
+  const count = (id: string) => page.locator(`[data-testid="${id}"]`).count();
+  const click = (id: string) => page.locator(`[data-testid="${id}"]`).click();
+  const waitFor = async (id: string, timeoutMs = 30_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if ((await count(id)) > 0) return;
+      await page.waitForTimeout(200);
+    }
+    throw new Error(
+      `[connect-helpers] connectGlooViaProfile: [data-testid="${id}"] never appeared ` +
+        `within ${timeoutMs}ms`,
+    );
+  };
+
+  // SERVER truth, not the card: the DBOS worker reads the stored row, and that row is
+  // the only thing that decides whether a Gloo generation can run.
+  const serverConnected = () =>
+    page.evaluate(async () => {
+      try {
+        const res = await fetch("/api/connections", { cache: "no-store" });
+        if (!res.ok) return false;
+        const body = (await res.json()) as { gloo?: { status?: unknown } | null };
+        return Boolean(body?.gloo);
+      } catch {
+        return false;
+      }
+    });
+
+  // Drop `?seed=` so connections are server-hydrated rather than the mock `wireframe`
+  // seed. The cookie is already set, so this is the SAME user.
+  await page.goto(`${BASE_URL}/`, { waitUntil: "load" });
+  await waitFor("workspace-home");
+
+  if (await serverConnected()) return;
+
+  await waitFor("workspace-profile-pill");
+  await click("workspace-profile-pill");
+  await waitFor("menu-account-settings");
+  await click("menu-account-settings");
+  await waitFor("profile-page");
+  await waitFor("connection-card-gloo");
+
+  await waitFor("card-connect-gloo");
+  await click("card-connect-gloo");
+
+  await waitFor("gloo-client-id");
+  await page.locator('[data-testid="gloo-client-id"]').fill(clientId);
+  await page.locator('[data-testid="gloo-secret"]').fill(clientSecret);
+  await click("gloo-save");
+
+  // The api verifies against the real Gloo host before storing, so allow a real
+  // round-trip. A visible `gloo-error` is reported verbatim: a wrong credential and an
+  // unreachable host are different problems and must not read the same.
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (await serverConnected()) return;
+    if ((await count("gloo-error")) > 0) {
+      const text = await page
+        .locator('[data-testid="gloo-error"]')
+        .textContent()
+        .catch(() => null);
+      throw new Error(
+        `[connect-helpers] Gloo verify-then-store was REJECTED: ${text ?? "(no message)"}. ` +
+          `That is the api's real verification against the Gloo host, so check ` +
+          `GLOO_CONNECT_CLIENT_ID / GLOO_CONNECT_CLIENT_SECRET in .env.local — and note ` +
+          `they are NOT the GLOO_CLIENT_* pair, which configures Stagehand's own LLM.`,
+      );
+    }
+    await page.waitForTimeout(300);
+  }
+  throw new Error(
+    "[connect-helpers] GET /api/connections still reports no stored Gloo connection 60s " +
+      "after gloo-save, and no gloo-error appeared. Check that the api is reachable.",
+  );
+}

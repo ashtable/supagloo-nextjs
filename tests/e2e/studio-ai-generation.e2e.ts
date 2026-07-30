@@ -4,6 +4,7 @@ import { Stagehand } from "@browserbasehq/stagehand";
 import { type StagehandPage } from "./helpers";
 import {
   completeGithubConnectViaCallback,
+  connectGlooViaProfile,
   connectOpenRouterViaProfile,
 } from "./connect-helpers";
 import {
@@ -226,6 +227,13 @@ beforeAll(async () => {
   // The helper connects through the shipping profile card and shims ONLY OpenRouter's
   // human-only consent hop; the key it stores is the real OPENROUTER_E2E_TEST_API_KEY.
   await connectOpenRouterViaProfile(stagehand.context, page);
+  // …and Gloo, WITHOUT WHICH E-AI1 CANNOT PASS EITHER — for a reason this spec never
+  // mentions. The studio's SCENE IMAGE default is Gloo, so "↻ Reroll visual" enqueues a
+  // `kind: image` generation against Gloo, and the seeded user has no Gloo row: the
+  // worker throws `GlooNotConnectedError` and the browser shows a bare `reroll-error`
+  // naming no provider. This spec is about a real MinIO round-trip surviving a commit;
+  // it died on a dependency it does not test. Verify-then-store, no human-only hop.
+  await connectGlooViaProfile(page);
 }, 300_000);
 
 afterAll(async () => {
