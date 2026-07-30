@@ -9,6 +9,7 @@ import {
   selectChapter,
   selectLanguage,
   selectTranslation,
+  sortTranslationsForDisplay,
   type ScriptureSelection as PickerSelection,
 } from "@/lib/studio/scripture-picker";
 import {
@@ -450,7 +451,12 @@ export default function ScriptureStep({
             }}
           >
             <option value="">{"select translation"}</option>
-            {(translations ?? []).map((t) => (
+            {/* Sorted for DISPLAY only — the live collection arrives in the provider's own
+                order (measured: `ASV, CPDV, BSB`), which gives a user scanning 20 English
+                Bibles nothing to scan by. `translations` itself stays in provider order
+                because `defaultTranslation`'s last-resort `[0]` means the provider's first
+                entry; see `sortTranslationsForDisplay`. */}
+            {sortTranslationsForDisplay(translations ?? []).map((t) => (
               <option key={t.id} value={t.id}>
                 {`${t.abbreviation} — ${t.title}`}
               </option>

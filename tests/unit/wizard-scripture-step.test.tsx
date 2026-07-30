@@ -38,9 +38,15 @@ vi.mock("@/lib/studio/scripture-data", () => ({
 import ScriptureStep from "@/app/_components/project-wizard/scripture-step";
 
 const LANGUAGES = [{ tag: "en", name: "English", direction: "ltr" as const }];
+/**
+ * In the order the LIVE collection returns it, which is not alphabetical — BSB comes after
+ * KJV upstream. That matters for `U-W53`: a fixture already in display order could not tell
+ * a sorted dropdown from an unsorted one.
+ */
 const TRANSLATIONS = [
   { id: "12", abbreviation: "ASV", title: "American Standard Version" },
   { id: "1", abbreviation: "KJV", title: "King James Version" },
+  { id: "3034", abbreviation: "BSB", title: "Berean Standard Bible" },
 ];
 const BOOKS = [{ usfm: "PSA", title: "Psalms", canon: "ot" }];
 /**
@@ -190,6 +196,36 @@ describe("the wizard's scripture step", () => {
     // whatever the collection returned. KJV is measurably not licensed to our app key,
     // which is why the preference is ASV.
     const root = await step();
+    expect(
+      (byTestId(root, "wizard-picker-translation") as HTMLSelectElement).value,
+    ).toBe("12");
+  });
+
+  it("U-W53: lists translations in ASCENDING display order, not the provider's order", async () => {
+    // The live collection is not alphabetical (measured: `ASV, CPDV, BSB`) and there are 20
+    // English Bibles / 1,472 across all languages, so an unordered dropdown has to be read
+    // rather than looked up. Asserted on the rendered `<option>`s, not on a helper's return
+    // value: the helper is unit-tested separately (`U-SP5`), and what can silently regress
+    // here is the component forgetting to call it.
+    const root = await step();
+    const labels = [
+      ...byTestId(root, "wizard-picker-translation").querySelectorAll("option"),
+    ]
+      .map((o) => o.textContent ?? "")
+      // Drop the placeholder — it is not a translation and must stay pinned at the top.
+      .filter((text) => text !== "select translation");
+
+    expect(labels).toEqual([
+      "ASV — American Standard Version",
+      "BSB — Berean Standard Bible",
+      "KJV — King James Version",
+    ]);
+    // The placeholder is still first, so sorting did not sweep it into the list.
+    expect(
+      byTestId(root, "wizard-picker-translation").querySelector("option")?.textContent,
+    ).toBe("select translation");
+    // …and the ASV pre-selection is unaffected: it resolves BY ABBREVIATION, so it never
+    // depended on position (U-W33).
     expect(
       (byTestId(root, "wizard-picker-translation") as HTMLSelectElement).value,
     ).toBe("12");
