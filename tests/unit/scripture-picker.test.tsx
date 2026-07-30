@@ -144,6 +144,11 @@ async function open(p: StudioProject = project()) {
 }
 
 describe("ScripturePicker", () => {
+  // U-PK1 pins the NO-ORIGIN-PASSAGE case, and after 2026-07-30 that is what it means:
+  // this fixture's manifest carries no `scripture` block (a project created via the
+  // wizard's SKIP control), so there is nothing to bind the cascade to and the designed
+  // placeholders are the correct render. The reported "select book / select cha / select
+  // ve" symptom was a project that DID have a passage — U-PK8 below.
   it("U-PK1: renders the five cascading selects with the designed placeholders", async () => {
     happyPath();
     const root = await open();
@@ -281,5 +286,190 @@ describe("ScripturePicker", () => {
     expect(queryTestId(root, "scripture-picker")).toBeNull();
     expect(fetchBibleLanguages).not.toHaveBeenCalled();
     expect(fetchBibleTranslations).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The project's ORIGIN passage in the studio (2026-07-30).
+ *
+ * The reported symptom was three placeholder selects — "select book", "select cha",
+ * "select ve" — on a project the user had just created by choosing NIV11 / Psalms / 23 in
+ * the wizard. The picker took no manifest input at all: pure local `useState` seeded with
+ * `EMPTY_SELECTION`, pre-selecting a TRANSLATION only.
+ *
+ * ── Why the picker was BOUND rather than removed ────────────────────────────────────
+ * Wireframe turn 18 moved "the pickers" into the New-project wizard and turn 19a's
+ * exhaustive Inspector spec contains no scripture controls, so removing this surface was
+ * the other defensible reading. It was not chosen, because what turn 18 moved is *choosing
+ * the project's origin passage* — which this run completes — while what this component
+ * DOES is insert one verse's exact provider text into the SELECTED SCENE's script
+ * (`pickScripture` → `PICK_SCRIPTURE`). Nothing in the wizard replaces that, 19a never
+ * names it, and deleting a shipped capability on the strength of an omission is a one-way
+ * door. Binding touches the cascade SEED only; the write path is still per-scene, so the
+ * project passage and per-scene scripture are not conflated.
+ */
+const ORIGIN_MANIFEST: ProjectManifest = {
+  ...MANIFEST,
+  scripture: {
+    reference: "Psalms 23",
+    translation: "BSB",
+    language: "en",
+    passageId: "PSA.23",
+  },
+};
+
+function psalmsPath() {
+  fetchBibleLanguages.mockResolvedValue(LANGUAGES);
+  fetchBibleTranslations.mockResolvedValue(ENGLISH);
+  fetchBibleBooks.mockResolvedValue([
+    { usfm: "GEN", title: "Genesis", canon: "old_testament" },
+    { usfm: "PSA", title: "Psalms", canon: "old_testament" },
+  ]);
+  // The LIVE chapter shape: `id` is the bare number, `passageId` is the USFM. Verified
+  // 2026-07-30 across four bible/book combinations.
+  fetchBibleChapters.mockResolvedValue([
+    { id: "22", passageId: "PSA.22", title: "22" },
+    { id: "23", passageId: "PSA.23", title: "23" },
+  ]);
+  fetchBibleVerses.mockResolvedValue([
+    { id: "1", passageId: "PSA.23.1", title: "1" },
+    { id: "2", passageId: "PSA.23.2", title: "2" },
+  ]);
+  fetchBiblePassage.mockResolvedValue({
+    passageId: "PSA.23.1",
+    text: "The LORD is my shepherd; I shall not want.",
+    reference: "Psalms 23:1",
+  });
+}
+
+describe("ScripturePicker — bound to the project's origin passage", () => {
+  it("U-PK8: opens on the project's language / translation / book / chapter — no empty selects", async () => {
+    psalmsPath();
+    const root = await open(project({ manifest: ORIGIN_MANIFEST }));
+    await flush();
+    const picker = byTestId(root, "scripture-picker");
+
+    expect((byTestId(picker, "picker-language") as HTMLSelectElement).value).toBe("en");
+    expect((byTestId(picker, "picker-translation") as HTMLSelectElement).value).toBe("3034");
+    expect((byTestId(picker, "picker-book") as HTMLSelectElement).value).toBe("PSA");
+    expect((byTestId(picker, "picker-chapter") as HTMLSelectElement).value).toBe("23");
+  });
+
+  it("U-PK9: the manifest's translation is resolved BY ABBREVIATION and outranks the ASV default", async () => {
+    // USER DECISION D1 keeps ASV as the picker's PREFERENCE (KJV is measurably not
+    // licensed to our app key). A project that already has a translation is not a
+    // preference — it is a fact, and it wins. §9-Q10 still holds: the id is looked up in
+    // whatever the live collection returned, never hardcoded.
+    psalmsPath();
+    const root = await open(project({ manifest: ORIGIN_MANIFEST }));
+    await flush();
+    expect((byTestId(root, "picker-translation") as HTMLSelectElement).value).toBe("3034");
+    expect(fetchBibleBooks).toHaveBeenCalledWith("3034");
+  });
+
+  it("U-PK9b: a translation the live collection does NOT have falls back to the ASV preference", async () => {
+    // Licensing can be withdrawn, and the manifest is a historical record. Refusing to
+    // render a picker over it would be worse than opening on the default.
+    psalmsPath();
+    const root = await open(
+      project({
+        manifest: {
+          ...MANIFEST,
+          scripture: { reference: "Psalms 23", translation: "NIV11", passageId: "PSA.23" },
+        },
+      }),
+    );
+    await flush();
+    expect((byTestId(root, "picker-translation") as HTMLSelectElement).value).toBe("12");
+  });
+
+  it("U-PK10: the chapter is matched by its ECHOED passageId, not by parsing a number out of it", async () => {
+    // A chapter's `id` and its `passageId` are two separate provider strings. Deriving one
+    // from the other would be exactly the "construct a usfm" move this codebase closed.
+    psalmsPath();
+    fetchBibleChapters.mockResolvedValue([
+      { id: "ch-a", passageId: "PSA.22", title: "22" },
+      { id: "ch-b", passageId: "PSA.23", title: "23" },
+    ]);
+    const root = await open(project({ manifest: ORIGIN_MANIFEST }));
+    await flush();
+    expect((byTestId(root, "picker-chapter") as HTMLSelectElement).value).toBe("ch-b");
+  });
+
+  it("U-PK11: the read-only project passage line renders the reference and translation", async () => {
+    // The wireframe's ONE in-studio reference display (13b's burned-in caption,
+    // `PSALM 23:1 · KJV`). Read-only: the studio does not edit the project's origin.
+    psalmsPath();
+    const root = await open(project({ manifest: ORIGIN_MANIFEST }));
+    await flush();
+    const line = byTestId(root, "project-passage").textContent ?? "";
+    expect(line).toContain("Psalms 23");
+    expect(line).toContain("BSB");
+  });
+
+  it("U-PK11b: a project with NO origin passage shows no passage line at all", async () => {
+    psalmsPath();
+    const root = await open();
+    await flush();
+    expect(queryTestId(root, "project-passage")).toBeNull();
+  });
+
+  it("U-PK12: binding is ONE-SHOT — a later user choice is not overwritten by the manifest", async () => {
+    // The failure this guards is a re-render (or a late list arrival) snapping the user's
+    // selection back to the project's origin while they are browsing somewhere else.
+    psalmsPath();
+    const root = await open(project({ manifest: ORIGIN_MANIFEST }));
+    await flush();
+    const picker = byTestId(root, "scripture-picker");
+    expect((byTestId(picker, "picker-book") as HTMLSelectElement).value).toBe("PSA");
+
+    fetchBibleChapters.mockResolvedValue([{ id: "1", passageId: "GEN.1", title: "1" }]);
+    await selectOption(byTestId(picker, "picker-book"), "GEN");
+    await flush();
+    await flush();
+
+    expect((byTestId(picker, "picker-book") as HTMLSelectElement).value).toBe("GEN");
+    expect((byTestId(picker, "picker-chapter") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("U-PK13: a VERSE-RANGE passageId still binds book + chapter, and leaves VERSE unset", async () => {
+    // The wizard now persists ranges (`PSA.23.1-5`). A range is not a single verse, so
+    // pre-selecting one would be an invention; the VERSE select stays honestly empty.
+    psalmsPath();
+    const root = await open(
+      project({
+        manifest: {
+          ...MANIFEST,
+          scripture: {
+            reference: "Psalms 23:1-5",
+            translation: "BSB",
+            language: "en",
+            passageId: "PSA.23.1-5",
+          },
+        },
+      }),
+    );
+    await flush();
+    const picker = byTestId(root, "scripture-picker");
+    expect((byTestId(picker, "picker-book") as HTMLSelectElement).value).toBe("PSA");
+    expect((byTestId(picker, "picker-chapter") as HTMLSelectElement).value).toBe("23");
+    expect((byTestId(picker, "picker-verse") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("U-PK14: an origin passage with no passageId binds what it can and invents no book", async () => {
+    psalmsPath();
+    const root = await open(
+      project({
+        manifest: {
+          ...MANIFEST,
+          scripture: { reference: "Psalms 23", translation: "BSB", language: "en" },
+        },
+      }),
+    );
+    await flush();
+    const picker = byTestId(root, "scripture-picker");
+    expect((byTestId(picker, "picker-translation") as HTMLSelectElement).value).toBe("3034");
+    expect((byTestId(picker, "picker-book") as HTMLSelectElement).value).toBe("");
+    expect(byTestId(root, "project-passage").textContent).toContain("Psalms 23");
   });
 });

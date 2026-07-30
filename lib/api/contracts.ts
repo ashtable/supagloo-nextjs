@@ -307,6 +307,47 @@ export const ProjectListResponseSchema = z.object({
 });
 export type ProjectListResponse = z.infer<typeof ProjectListResponseSchema>;
 
+// TranslationSchema + ManifestScriptureSchema are declared HERE, ahead of the project
+// section, rather than down in the manifest section where they used to sit: the create
+// request below references `ManifestScriptureSchema`, and a `const` cannot be read before
+// its initializer runs (a plain TDZ ReferenceError at module load, not a type error). They
+// are leaf schemas with no dependency of their own, so the move costs nothing.
+
+/** A scene's Bible translation abbreviation (mirrors db-lib `TranslationSchema`).
+ *  A free, non-empty string — e.g. "BSB" (the default), "KJV", "NIV", "NLT" — chosen
+ *  from the YouVersion collection licensed for the user's language (§9-Q10). NOT a
+ *  fixed KJV/BSB enum: broadening this is what lets the studio re-read a manifest
+ *  whose translation is anything the generation step legitimately selected. */
+export const TranslationSchema = z.string().min(1);
+export type Translation = z.infer<typeof TranslationSchema>;
+
+/** Feature 2: the passage a project was CREATED from (new-project wizard step 2) —
+ *  mirrors db-lib `ManifestScriptureSchema`. Project scope, not scene scope: it
+ *  survives a re-plan, which replaces `scenes` wholesale.
+ *
+ *  `passageId` is the YouVersion USFM **exactly as the chapters/verses routes handed it
+ *  out**. It is ECHOED, never constructed — see the residual-risk note above.
+ *  `language` is the picker's BCP-47 tag (`"en"`), persisted so a non-English project
+ *  stops being silently re-resolved against English (the generation context used to
+ *  hardcode `"eng"`; `projectScriptureContext` now prefers this tag).
+ *
+ *  It deliberately does NOT carry the passage TEXT: the manifest is committed into the
+ *  user's (possibly public) repo and the verse text is third-party licensed content.
+ *
+ *  **Why this mirror is load-bearing.** nextjs does not import `@supagloo/database-lib`
+ *  at all (the vendored submodule is excluded from `tsconfig.json` and
+ *  `eslint.config.mjs`), so this schema does NOT heal when the db-lib gitlink moves.
+ *  Without it `ManifestResponseSchema.safeParse` in `lib/studio/studio-data.ts` strips
+ *  `scripture` off every manifest the studio reads, and the next Commit writes it back
+ *  absent — erasing data the scaffold already seeded into the user's git repo. */
+export const ManifestScriptureSchema = z.object({
+  reference: z.string().min(1),
+  translation: TranslationSchema,
+  language: z.string().min(1).optional(),
+  passageId: z.string().min(1).optional(),
+});
+export type ManifestScripture = z.infer<typeof ManifestScriptureSchema>;
+
 /** `POST /v1/projects` request (use-existing-empty path — the repo already exists). */
 export const CreateProjectRequestSchema = z.object({
   name: z.string().min(1).optional(),
@@ -314,6 +355,14 @@ export const CreateProjectRequestSchema = z.object({
   repoName: z.string().min(1),
   visibility: RepoVisibilitySchema,
   createdFrom: ProjectCreatedFromSchema,
+  /** Feature 2: the passage the wizard's step 2 collected, seeded into the scaffolded
+   *  manifest. Declared here to close a mirror gap rather than to fix a live bug — the BFF
+   *  route forwards the create body verbatim, so nothing validates against this schema
+   *  today. That is precisely why the omission was worth closing: nextjs does not import
+   *  `@supagloo/database-lib` at all, so this file never self-heals, and the day anything
+   *  does parse a create body here, `scripture` would be silently stripped and the whole
+   *  feature would no-op on both wizard tabs with no error anywhere. */
+  scripture: ManifestScriptureSchema.optional(),
 });
 export type CreateProjectRequest = z.infer<typeof CreateProjectRequestSchema>;
 
@@ -370,40 +419,6 @@ export type ProjectResponse = z.infer<typeof ProjectResponseSchema>;
 // type-level restriction; the read/hydrate boundary must accept any abbreviation the
 // API already committed (mirrors db-lib's broadened `TranslationSchema`).
 
-/** A scene's Bible translation abbreviation (mirrors db-lib `TranslationSchema`).
- *  A free, non-empty string — e.g. "BSB" (the default), "KJV", "NIV", "NLT" — chosen
- *  from the YouVersion collection licensed for the user's language (§9-Q10). NOT a
- *  fixed KJV/BSB enum: broadening this is what lets the studio re-read a manifest
- *  whose translation is anything the generation step legitimately selected. */
-export const TranslationSchema = z.string().min(1);
-export type Translation = z.infer<typeof TranslationSchema>;
-
-/** Feature 2: the passage a project was CREATED from (new-project wizard step 2) —
- *  mirrors db-lib `ManifestScriptureSchema`. Project scope, not scene scope: it
- *  survives a re-plan, which replaces `scenes` wholesale.
- *
- *  `passageId` is the YouVersion USFM **exactly as the chapters/verses routes handed it
- *  out**. It is ECHOED, never constructed — see the residual-risk note above.
- *  `language` is the picker's BCP-47 tag (`"en"`), persisted so a non-English project
- *  stops being silently re-resolved against English (`sceneScriptureContext` used to
- *  hardcode `"eng"`).
- *
- *  It deliberately does NOT carry the passage TEXT: the manifest is committed into the
- *  user's (possibly public) repo and the verse text is third-party licensed content.
- *
- *  **Why this mirror is load-bearing.** nextjs does not import `@supagloo/database-lib`
- *  at all (the vendored submodule is excluded from `tsconfig.json` and
- *  `eslint.config.mjs`), so this schema does NOT heal when the db-lib gitlink moves.
- *  Without it `ManifestResponseSchema.safeParse` in `lib/studio/studio-data.ts` strips
- *  `scripture` off every manifest the studio reads, and the next Commit writes it back
- *  absent — erasing data the scaffold already seeded into the user's git repo. */
-export const ManifestScriptureSchema = z.object({
-  reference: z.string().min(1),
-  translation: TranslationSchema,
-  language: z.string().min(1).optional(),
-  passageId: z.string().min(1).optional(),
-});
-export type ManifestScripture = z.infer<typeof ManifestScriptureSchema>;
 
 /** Composition metadata: pixel size, frame rate, aspect-ratio hint (mirrors db-lib
  *  `CompositionSpecSchema`). `aspectRatio` is a `"W:H"` display hint. */

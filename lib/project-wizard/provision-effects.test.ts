@@ -10,6 +10,7 @@ import {
   scaffoldExistingRepo,
   importRepo,
   fetchJob,
+  fetchProjectSlug,
   pollJobUntilTerminal,
   stashCreateRepoParams,
   readCreateRepoParams,
@@ -334,5 +335,59 @@ describe("create-new-repo JIT cross-tab handoff", () => {
       timeoutMs: 1000,
     });
     expect(result).toBeNull();
+  });
+});
+
+/**
+ * The server-confirmed slug (2026-07-30, plan row 53 item 3).
+ *
+ * Both wizard tabs set the studio slug from the PRE-CREATION typed repo name:
+ * `completeCreateRepo` returns `slug: params.repoName`, and `startRealExisting` uses the
+ * picked repo's short name. The api assigns the real slug with `nextFreeSlug`, which
+ * appends `-2`/`-3` on a same-owner collision, and `/studio/[slug]` resolves owner-scoped
+ * — so the guess can route to a DIFFERENT project or to a 404.
+ *
+ * That was survivable while a human had to click "Open in studio →" and could re-navigate.
+ * Making the redirect automatic converts a latent 404 into an unavoidable one, faster than
+ * a person would hit it, so the wizard now ASKS the server. `GET /api/projects/:id`
+ * already carries `ProjectDto.slug`, which is why this needed no wire-schema change and no
+ * release chain.
+ */
+describe("fetchProjectSlug — the server's own slug for a just-created project", () => {
+  it("U-PE11: reads ProjectDto.slug for the project id the create call returned", async () => {
+    const { fetchImpl, calls } = recordingFetch(() =>
+      json({
+        project: {
+          id: "clx1",
+          // The api DE-DUPLICATED the slug the wizard guessed.
+          slug: "psalm-121-2",
+          name: "psalm-121",
+          repoOwner: "ashsrinivas",
+          repoName: "psalm-121",
+          repoVisibility: "private",
+          createdFrom: "passage",
+          currentBranch: "v0.0.1",
+          thumbnailAssetKey: null,
+          lastRenderJobId: null,
+          lastOpenedAt: "2026-07-30T00:00:00.000Z",
+          createdAt: "2026-07-30T00:00:00.000Z",
+        },
+      }),
+    );
+    expect(await fetchProjectSlug("clx1", { fetchImpl })).toBe("psalm-121-2");
+    expect(calls[0].url).toBe("/api/projects/clx1");
+  });
+
+  it("U-PE12: null on any failure — a non-2xx, a body of the wrong shape, or a throw", async () => {
+    const notFound = recordingFetch(() => new Response("", { status: 404 }));
+    expect(await fetchProjectSlug("clx1", { fetchImpl: notFound.fetchImpl })).toBeNull();
+
+    const garbage = recordingFetch(() => json({ nope: true }));
+    expect(await fetchProjectSlug("clx1", { fetchImpl: garbage.fetchImpl })).toBeNull();
+
+    const boom = (async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    expect(await fetchProjectSlug("clx1", { fetchImpl: boom })).toBeNull();
   });
 });

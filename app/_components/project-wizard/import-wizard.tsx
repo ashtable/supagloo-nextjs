@@ -39,7 +39,11 @@ import {
   type LogRow,
 } from "@/lib/project-wizard/job-log";
 import { fetchWizardRepos } from "@/lib/project-wizard/wizard-repos";
-import { importRepo, pollJobUntilTerminal } from "@/lib/project-wizard/provision-effects";
+import {
+  fetchProjectSlug,
+  importRepo,
+  pollJobUntilTerminal,
+} from "@/lib/project-wizard/provision-effects";
 import { studioUrl } from "@/lib/studio/project";
 
 /**
@@ -155,6 +159,15 @@ export default function ImportWizard({
     });
     if (!aliveRef.current) return;
     if (job && jobSucceeded(job)) {
+      // Same defect, same fix as the New-project wizard (plan row 53 item 3): `importId` is
+      // the repo's short name, while the api assigns the slug with `nextFreeSlug`, which
+      // de-duplicates on a same-owner collision. `/studio/[slug]` resolves owner-scoped, so
+      // the guessed URL can open a DIFFERENT project or 404. This wizard has no auto-redirect
+      // and therefore promises nothing it does not do — but the wrong destination is wrong
+      // either way, and it is the same one-line confirmation.
+      const confirmed = await fetchProjectSlug(ref.projectId);
+      if (!aliveRef.current) return;
+      if (confirmed) setImportId(confirmed);
       setRealDone(true); // reveals the terminal "Open in studio →" CTA
       return;
     }

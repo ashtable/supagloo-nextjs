@@ -17,6 +17,7 @@ import {
   fetchBibleLanguages,
   fetchBiblePassage,
   fetchBibleTranslations,
+  fetchBibleVerses,
 } from "@/lib/studio/scripture-data";
 import type {
   BibleBookRef,
@@ -24,8 +25,17 @@ import type {
   BibleLanguage,
   BiblePassage,
   BibleTranslation,
+  BibleVerseRef,
 } from "@/lib/youversion/contracts";
 import type { ScriptureSelection } from "@/lib/project-wizard/new-project-model";
+import {
+  defaultVerseRange,
+  passageRequestId,
+  previewMeta,
+  toggleVerse,
+  versesInRange,
+  type VerseRange,
+} from "@/lib/project-wizard/verse-range";
 
 /**
  * Figure 18a — the New-project wizard's step 2, "Choose your scripture".
@@ -43,17 +53,36 @@ import type { ScriptureSelection } from "@/lib/project-wizard/new-project-model"
  * in here". This is the wizard-skinned sibling — `--sg-*` colours used LITERALLY, because
  * 18a is measured as site-skin (80 `--sg-*` token usages, against 0 in 19/20).
  *
- * ## What 18a draws that is NOT built, and why
+ * ## The verse tray — built 2026-07-30, after the live host settled the open question
  *
- * **The verse chip tray, the range, and "Whole chapter".** 18a selects verses 1–4 as a
- * contiguous range and heads the preview `"PSALM 121:1–4"`. A range is a CONSTRUCTED usfm
- * (`PSA.121.1-PSA.121.4`), and `contracts.ts` records that constructing one was
- * deliberately closed as residual risk after task 34-E5 priced it: *"`passageId` is
- * ECHOED, never constructed."* Nothing has verified a range form against the live host.
- * Per design-delta §2.7.1 the rule is omit rather than fake, so this ships at CHAPTER
- * granularity, echoing the chapter's own `passageId` exactly as the chapters route handed
- * it out. 18a's `"each verse becomes a scene"` info line goes with it — under the settled
- * scope generation stays in the studio, so the claim would be false here.
+ * This step originally shipped at CHAPTER granularity, and 18a's verse chips / range /
+ * `Whole chapter` were deliberately omitted: a range looked like a CONSTRUCTED usfm
+ * (`PSA.121.1-PSA.121.4`), which `contracts.ts` closed as residual risk after task 34-E5
+ * priced it (*"`passageId` is ECHOED, never constructed"*), and nothing had verified any
+ * range form against the live host.
+ *
+ * Verifying it split the question in two, and the omission survives in one half:
+ *
+ *   - `PSA.121.1-PSA.121.4` — the both-sides form that caution was about — is a **404**.
+ *   - `PSA.121.1+PSA.121.2` — a `+`-joined list of ids the **verses route itself issued** —
+ *     is a **200**, and the host answers `{id:"PSA.121.1-2", reference:"Psalms 121:1-2"}`,
+ *     normalising a contiguous list into a canonical range and handing it back.
+ *
+ * So the request is assembled only from provider-issued ids and what gets PERSISTED is the
+ * id and reference the provider echoed for it — the same standing the chapter's own
+ * `passageId` already had. See `lib/project-wizard/verse-range.ts`.
+ *
+ * The DEFAULT is the first `min(5, n)` of the live verses response (the user's requirement:
+ * *"optionally verses, default to first 5 verses"*). `min(5, n)`, never 5: verse counts are
+ * a property of the translation, and `PSA.117.1-5` does not fail upstream — it answers 200
+ * for a two-verse chapter with the reference `"Psalms 117:1-5"`, i.e. it would commit a
+ * FABRICATED reference into the user's repo.
+ *
+ * 18a's `"each verse becomes a scene in the generated storyboard"` is still REFUSED. How
+ * many scenes a passage becomes is the model's call, and shipping that sentence would repeat
+ * exactly the mistake the ready card's "Redirecting automatically…" caption was.
+ *
+ * ## What 18a draws that is still NOT built, and why
  *
  * **18b's four searchable popovers.** Searchable filtering, canon grouping, chapter counts,
  * abbreviation badges and a 6-column chapter grid are all new controls, and none of them
@@ -132,6 +161,18 @@ export default function ScriptureStep({
   const [books, setBooks] = useState<BibleBookRef[] | null | undefined>();
   const [chapters, setChapters] = useState<BibleChapterRef[] | null | undefined>();
   const [passage, setPassage] = useState<BiblePassage | null | undefined>();
+  // The chapter's verses, KEYED by the chapter that produced them. The same technique the
+  // studio picker uses for its dependent lists: a key mismatch invalidates the list without
+  // a synchronous `setState(null)` in an effect body (which React's `set-state-in-effect`
+  // rule flags, correctly) and without a frame in which the previous chapter's verses are on
+  // screen as if they were this one's.
+  const [verses, setVerses] = useState<{
+    key: string;
+    items: BibleVerseRef[] | null;
+  } | null>(null);
+  // `null` = the WHOLE CHAPTER (18a's `Whole chapter` button, and the honest state whenever
+  // there is no verse list to select from). A range is only ever endpoints of the live list.
+  const [range, setRange] = useState<VerseRange | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -200,13 +241,38 @@ export default function ScriptureStep({
     return () => void (active = false);
   }, [bibleId, book]);
 
-  // The live passage preview. Keyed on the CHAPTER's echoed `passageId`.
   const chapterId = selection.chapter;
   const chapterRef = chapters?.find((c) => c.id === chapterId) ?? null;
   const chapterPassageId = chapterRef?.passageId ?? null;
   const translationAbbrev = selection.translationAbbreviation;
+
+  // The chapter's verses. Fetched for the DEFAULT selection as much as for the tray: "the
+  // first 5 verses" is only answerable from this response.
+  const versesKey = bibleId && chapterId ? `${bibleId}|${selection.book}|${chapterId}` : "";
   useEffect(() => {
-    if (!bibleId || !chapterPassageId) {
+    if (!versesKey) return;
+    const [id, book, chapter] = versesKey.split("|");
+    let active = true;
+    void fetchBibleVerses(id, book, chapter).then((v) => {
+      if (!active) return;
+      setVerses({ key: versesKey, items: v });
+      // The default range is derived from the response, so it can only ever name verses the
+      // provider listed. A failed or empty read yields `null` — the whole chapter — which is
+      // a complete answer rather than an error.
+      setRange(defaultVerseRange(v));
+    });
+    return () => void (active = false);
+  }, [versesKey]);
+
+  const verseOptions = verses?.key === versesKey ? verses.items : undefined;
+  // Every request is echoed values only: the chapter's own `passageId`, or the selected
+  // verses' own `passageId`s joined.
+  const requestPassageId = passageRequestId(verseOptions, range, chapterPassageId);
+
+  // The live passage preview + the reported selection, keyed on the ECHOED usfm being asked
+  // for — so changing the verse range re-asks, exactly as changing the chapter does.
+  useEffect(() => {
+    if (!bibleId || !requestPassageId) {
       // Same synchronization: no chapter ⇒ no passage, and no selection to report. The CTA
       // gate reads that null, so leaving a stale passage here would arm the scaffold
       // against a chapter the user has navigated away from.
@@ -217,11 +283,14 @@ export default function ScriptureStep({
     }
     let active = true;
     setPassage(undefined);
-    void fetchBiblePassage(bibleId, chapterPassageId).then((p) => {
+    void fetchBiblePassage(bibleId, requestPassageId).then((p) => {
       if (!active) return;
       setPassage(p);
       // The selection is reported as soon as the passage RESOLVES, so the CTA cannot be
-      // enabled against a reference the provider has not confirmed.
+      // enabled against a reference the provider has not confirmed — and both values
+      // reported are the provider's OWN answer about the request, not the request itself.
+      // For a contiguous verse range the host normalises the join into `PSA.121.1-5` and
+      // `"Psalms 121:1-5"`; those are what get persisted.
       onSelect(
         p && translationAbbrev
           ? {
@@ -236,7 +305,7 @@ export default function ScriptureStep({
     });
     return () => void (active = false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bibleId, chapterPassageId, translationAbbrev, languageTag]);
+  }, [bibleId, requestPassageId, translationAbbrev, languageTag]);
 
   const failed = (v: unknown[] | null | undefined) => v === null;
   const anyFailure =
@@ -249,6 +318,10 @@ export default function ScriptureStep({
   const skipPassage = () => {
     setPassage(undefined);
     setSelection((s) => selectChapter(s, null));
+    // The verse selection has to go with the chapter, or a re-entry into step 2 would show
+    // a range over a chapter that is no longer selected.
+    setVerses(null);
+    setRange(null);
     onSelect(null);
     onSkip();
   };
@@ -408,6 +481,85 @@ export default function ScriptureStep({
         </div>
       </div>
 
+      {/* 18a's verse tray. Rendered only once the provider has LISTED verses for this
+          chapter — a `null` (failed) or `[]` (none) read leaves the whole chapter selected,
+          which is a complete answer, so there is nothing to draw. */}
+      {verseOptions && verseOptions.length > 0 ? (
+        <div style={{ marginTop: 16 }}>
+          <div
+            style={{
+              ...LABEL,
+              display: "flex",
+              alignItems: "baseline",
+              gap: 6,
+              marginBottom: 7,
+            }}
+          >
+            {"VERSES"}
+            <span
+              style={{ fontWeight: 500, textTransform: "none", letterSpacing: 0 }}
+            >
+              {"— tap to select a range, or use the whole chapter"}
+            </span>
+            <span style={{ flex: 1 }} />
+            <button
+              type="button"
+              data-testid="wizard-whole-chapter"
+              onClick={() => setRange(null)}
+              style={{
+                fontWeight: 700,
+                fontSize: 11,
+                letterSpacing: ".04em",
+                color: range === null ? "var(--sg-gold)" : "var(--sg-dim)",
+                background: "transparent",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                textTransform: "none",
+              }}
+            >
+              {"Whole chapter"}
+            </button>
+          </div>
+          <div
+            data-testid="wizard-verse-chips"
+            style={{ display: "flex", flexWrap: "wrap", gap: 6 }}
+          >
+            {verseOptions.map((v) => {
+              const selected = versesInRange(verseOptions, range).some(
+                (s) => s.id === v.id,
+              );
+              return (
+                <button
+                  key={v.id}
+                  type="button"
+                  data-testid="wizard-verse-chip"
+                  data-verse-id={v.id}
+                  data-selected={selected ? "true" : "false"}
+                  aria-pressed={selected}
+                  onClick={() => setRange((r) => toggleVerse(r, v.id, verseOptions))}
+                  style={{
+                    minWidth: 32,
+                    height: 32,
+                    padding: "0 7px",
+                    borderRadius: 8,
+                    border: `1px solid ${selected ? "var(--sg-gold)" : "var(--sg-line2)"}`,
+                    background: selected ? "rgba(201,154,63,.16)" : "var(--sg-panel)",
+                    color: selected ? "var(--sg-fg)" : "var(--sg-dim)",
+                    fontSize: 12.5,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  {/* The provider's own verse label — never a re-derived number. */}
+                  {v.title}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       {/* 18a's live passage preview. Header values are INTERPOLATED from the response —
           never the figure's "66" / "1,900+" / a hardcoded range (flag F5). */}
       {passage ? (
@@ -437,6 +589,16 @@ export default function ScriptureStep({
           >
             <span data-testid="wizard-passage-reference">
               {`${passage.reference} · ${selection.translationAbbreviation ?? ""} · FROM YOUVERSION`}
+            </span>
+            <span style={{ flex: 1 }} />
+            {/* 18a's `4 verses · 71 words`. Both counts come from the live response — the
+                verse count from the verses route, the word count from the passage text.
+                Neither of the figure's own numbers appears in the source (flag F5). */}
+            <span
+              data-testid="wizard-passage-meta"
+              style={{ letterSpacing: ".08em", fontWeight: 600 }}
+            >
+              {previewMeta({ verses: verseOptions, range, text: passage.text })}
             </span>
           </div>
           <div
@@ -479,8 +641,13 @@ export default function ScriptureStep({
         }}
       >
         <span style={{ color: "var(--sg-gold)" }}>{"ⓘ"}</span>
+        {/* 18a reads "These verses seed the script — each one becomes a scene in the
+            generated storyboard." The first clause is true and kept verbatim. The second is
+            a promise the contract cannot keep: how many scenes a passage becomes is the
+            model's decision, and this run exists partly because a caption promised
+            behaviour the code did not perform. */}
         {
-          "The passage is saved with the project. You'll generate the storyboard from it in the studio."
+          "These verses seed the script — you'll generate the storyboard from them in the studio."
         }
       </div>
 

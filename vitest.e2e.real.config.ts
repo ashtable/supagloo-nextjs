@@ -75,6 +75,12 @@ export default defineConfig({
       "tests/e2e/studio-publish-real.e2e.ts",
       "tests/e2e/studio-replan-scripture.e2e.ts",
       "tests/e2e/studio-translation-widen.e2e.ts",
+      // 2026-07-30 — the seeded-PASSAGE creation path, which had no e2e coverage at all
+      // because both shared acquisition helpers deliberately skip the wizard's scripture
+      // step. It drives the picker itself, then asserts the generated storyboard is about
+      // THAT passage. Needs real GitHub + real OpenRouter + the root `.env` YouVersion app
+      // key, and it also carries the ready card's auto-redirect assertion.
+      "tests/e2e/studio-wizard-scripture-carry.e2e.ts",
     ],
     testTimeout: 300_000,
     hookTimeout: 900_000,

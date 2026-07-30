@@ -108,8 +108,18 @@ export async function presignStoryboardAssets(
   return sb;
 }
 
-/** `GET /api/projects` → the `ProjectDto` whose slug matches. Null on miss / any
- *  failure (never throws). This is the slug→cuid resolution. */
+/**
+ * `GET /api/projects` → the `ProjectDto` whose slug matches, falling back to one whose
+ * cuid `id` matches. Null on miss / any failure (never throws). This is the slug→cuid
+ * resolution.
+ *
+ * The id fallback exists so the New-project wizard's automatic redirect always has a
+ * server-issued target: when the post-scaffold `GET /api/projects/:id` slug confirmation
+ * fails, the wizard navigates to `/studio/<projectId>` rather than to the slug it guessed
+ * before the project existed (see `readyRedirectTarget`). Slug is tried FIRST and
+ * exhaustively, so a project whose slug happens to equal another project's id cannot be
+ * shadowed by this.
+ */
 export async function resolveProjectBySlug(
   slug: string,
   deps: FetchDep = {},
@@ -120,7 +130,10 @@ export async function resolveProjectBySlug(
     if (!res.ok) return null;
     const parsed = ProjectListResponseSchema.safeParse(await res.json());
     if (!parsed.success) return null;
-    return parsed.data.projects.find((p) => p.slug === slug) ?? null;
+    const projects = parsed.data.projects;
+    return (
+      projects.find((p) => p.slug === slug) ?? projects.find((p) => p.id === slug) ?? null
+    );
   } catch {
     return null;
   }

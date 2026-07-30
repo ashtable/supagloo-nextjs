@@ -22,6 +22,8 @@ import {
   defaultProjectName,
   deriveProjectId,
   progressFill,
+  READY_REDIRECT_MS,
+  readyRedirectTarget,
   stepEyebrow,
   type NewProjectStep,
   type RepoTab,
@@ -45,6 +47,7 @@ import {
 import { fetchWizardRepos } from "@/lib/project-wizard/wizard-repos";
 import {
   scaffoldExistingRepo,
+  fetchProjectSlug,
   pollJobUntilTerminal,
   stashCreateRepoParams,
   pollCreateRepoResult,
@@ -85,6 +88,10 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
   const [repoName, setRepoName] = useState(isMock ? "psalm-121" : "");
   const [selectedRepo, setSelectedRepo] = useState<MockRepo | null>(null);
   const [scaffoldId, setScaffoldId] = useState("");
+  // Where the ready card navigates, kept SEPARATE from `scaffoldId` (which is display copy —
+  // the "SCAFFOLDING <ID>…" heading and the terminal card's URL chip). A guess is fine to
+  // print while provisioning; it is not fine to navigate to. Empty until the project exists.
+  const [readyTarget, setReadyTarget] = useState("");
   const [log, setLog] = useState<LogSequence>(() => initLog([]));
   const [realRepos, setRealRepos] = useState<MockRepo[]>([]);
   const [realRows, setRealRows] = useState<LogRow[]>([]);
@@ -154,6 +161,11 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
     if (isMock) {
       const id = deriveProjectId(input);
       setScaffoldId(id);
+      // The demo path has no server to confirm anything against, and its ids ARE the studio
+      // catalogue's ids (`findStudioProject`), so the derived id is authoritative here rather
+      // than a guess. Set so the demo redirects too — the caption is on screen in `?mock=`
+      // mode as well, and a promise the demo breaks is still a broken promise.
+      setReadyTarget(id);
       setLog(
         initLog(
           newProjectLogRows(tab, {
@@ -246,12 +258,36 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
     });
     if (!aliveRef.current) return;
     if (job && jobSucceeded(job)) {
-      setScaffoldId(slug);
+      // ASK the server which slug it assigned. `slug` here is the pre-creation typed value,
+      // and `nextFreeSlug` de-duplicates on a same-owner collision — so the guess can point
+      // at a different project or at nothing. That was survivable while a human had to click
+      // through; an automatic redirect makes it certain (plan row 53 item 3).
+      const confirmed = await fetchProjectSlug(projectId);
+      if (!aliveRef.current) return;
+      setScaffoldId(confirmed ?? slug);
+      setReadyTarget(readyRedirectTarget({ confirmedSlug: confirmed, projectId }) ?? "");
       setStep("ready");
     } else {
       setErrorMsg("Scaffolding failed. Close and try again.");
     }
   };
+
+  /**
+   * The redirect the terminal card has always claimed.
+   *
+   * `aliveRef` is checked at fire time as well as in the cleanup because `next dev`'s
+   * StrictMode mounts → runs effects → runs cleanups → runs effects again; the timer from the
+   * discarded first pass is cleared here, and the guard covers an unmount that races the
+   * push. The user's own click on `Open in studio →` unmounts this, which clears the timer,
+   * so the two paths cannot both navigate.
+   */
+  useEffect(() => {
+    if (step !== "ready" || !readyTarget) return;
+    const t = setTimeout(() => {
+      if (aliveRef.current) router.push(studioUrl(readyTarget));
+    }, READY_REDIRECT_MS);
+    return () => clearTimeout(t);
+  }, [step, readyTarget, router]);
 
   const logRows: LogRow[] = isMock ? logSequenceToRows(log) : realRows;
 
@@ -270,7 +306,9 @@ export default function NewProjectWizard({ onClose }: { onClose: () => void }) {
         <TerminalReadyCard
           projectId={scaffoldId}
           branch={NEW_BRANCH}
-          onOpen={() => router.push(studioUrl(scaffoldId))}
+          // The SAME target the auto-redirect uses, so the button and the timer can never
+          // disagree about where "Open in studio" goes.
+          onOpen={() => router.push(studioUrl(readyTarget || scaffoldId))}
         />
       </WizardShell>
     );

@@ -126,6 +126,50 @@ export function canScaffold(input: ScaffoldInput): boolean {
   return Boolean(s && s.reference.length > 0 && s.translation.length > 0);
 }
 
+/**
+ * How long the terminal "PROJECT READY." card stays on screen before it takes the user to
+ * the studio by itself.
+ *
+ * The card has always carried the caption `"Redirecting automatically…"` and has never
+ * redirected — the copy was knowingly retained for design fidelity while the CTA was the
+ * only way through. Every design artefact says the redirect is the intent (the wireframe
+ * section is `<!-- STEP 3 — READY / REDIRECT -->`, the provisioning log's final pending row
+ * is `○ Opening studio`, the sibling Import wizard lands straight in the studio, and the
+ * structurally identical setup-wizard terminal card carries no such caption at all), so the
+ * behaviour is being built rather than the copy deleted.
+ *
+ * NO countdown number is drawn anywhere, so none is invented on screen. The delay exists
+ * because the card has real content the design means to be read — a ✓ roundel, the branch
+ * name and the project's URL chip.
+ */
+export const READY_REDIRECT_MS = 2500;
+
+/**
+ * Where the ready card navigates. **Only ever an identifier the SERVER issued.**
+ *
+ * Both wizard tabs set their display slug from the PRE-CREATION typed value
+ * (`completeCreateRepo` returns `slug: params.repoName`; the existing-empty tab uses the
+ * picked repo's short name). The api assigns the real slug with `nextFreeSlug`, which
+ * appends `-2`/`-3` when the same owner already has that slug, and `/studio/[slug]` resolves
+ * owner-scoped — so the guess can route to a DIFFERENT project or to a 404.
+ *
+ * A human clicking a button could recover from that. An automatic redirect cannot, and it
+ * gets there faster than a person would, which is why fixing it is part of building the
+ * redirect rather than a follow-up. Preference order:
+ *
+ *  1. the slug read back from `GET /api/projects/:id` — the api's own answer;
+ *  2. the project id, which came back from the create call and is therefore server-issued
+ *     too (`resolveProjectBySlug` matches it, so `/studio/<id>` resolves);
+ *  3. nothing. No target is better than a guessed one: the card stays put and its button
+ *     is still there.
+ */
+export function readyRedirectTarget(input: {
+  confirmedSlug: string | null;
+  projectId: string;
+}): string | null {
+  return input.confirmedSlug || input.projectId || null;
+}
+
 /** The `/studio/[id]` id the wizard opens into. create-new derives it from the
  *  typed repo name; existing-empty reads the selected repo's short name. */
 export function deriveProjectId({

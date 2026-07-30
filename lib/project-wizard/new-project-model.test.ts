@@ -10,6 +10,8 @@ import {
   defaultProjectName,
   deriveProjectId,
   progressFill,
+  READY_REDIRECT_MS,
+  readyRedirectTarget,
   stepEyebrow,
 } from "./new-project-model";
 // Type-only — stripped at transpile, so this suite goes RED purely on the
@@ -219,5 +221,50 @@ describe("deriveProjectId", () => {
         selectedRepo: EMPTY_REPO,
       }),
     ).toBe("psalm-121");
+  });
+});
+
+/**
+ * Where the "PROJECT READY." card navigates (2026-07-30).
+ *
+ * The caption "Redirecting automatically…" has been on that card since turn 12 describing
+ * behaviour that was never built — there is no `setTimeout`, no effect and no `router.push`
+ * outside the button's own handler. The design authority is unanimous that the redirect is
+ * the intent (the wireframe section is literally `<!-- STEP 3 — READY / REDIRECT -->`, the
+ * provisioning log's final row is `○ Opening studio`, and the structurally identical setup
+ * wizard's terminal card carries no such caption), so the redirect is being made real
+ * rather than the copy deleted.
+ *
+ * That makes WHERE it goes safety-critical, which is what this function is for. Both wizard
+ * tabs set the slug from the pre-creation typed value; the api assigns it with
+ * `nextFreeSlug`, which de-duplicates on a same-owner collision. A human clicking a button
+ * can recover from landing on a 404. An automatic redirect cannot, and it gets there faster
+ * than a person would. So the target is only ever an identifier the SERVER issued.
+ */
+describe("readyRedirectTarget", () => {
+  it("U-NP9: prefers the slug the server confirmed", () => {
+    expect(readyRedirectTarget({ confirmedSlug: "psalm-121-2", projectId: "clx1" })).toBe(
+      "psalm-121-2",
+    );
+  });
+
+  it("U-NP10: falls back to the PROJECT ID — never to the client's guess", () => {
+    // `GET /api/projects/:id` can fail transiently. The project id came back from the
+    // create call, so it is server-issued too, and `/studio/<id>` resolves it.
+    expect(readyRedirectTarget({ confirmedSlug: null, projectId: "clx1" })).toBe("clx1");
+    expect(readyRedirectTarget({ confirmedSlug: "", projectId: "clx1" })).toBe("clx1");
+  });
+
+  it("U-NP11: with neither, there is NO target — the card stays put rather than guessing", () => {
+    // The mock/demo path has no server at all; it passes its own derived id explicitly.
+    expect(readyRedirectTarget({ confirmedSlug: null, projectId: "" })).toBeNull();
+  });
+
+  it("U-NP12: the delay is a real, non-instant pause the user can read the card in", () => {
+    // No countdown number is drawn anywhere in the wireframes, so none is invented on
+    // screen — but the card has a ✓, a branch name and a URL chip to take in, so an
+    // instant redirect would flash content the design intends to be read.
+    expect(READY_REDIRECT_MS).toBeGreaterThanOrEqual(1500);
+    expect(READY_REDIRECT_MS).toBeLessThanOrEqual(6000);
   });
 });

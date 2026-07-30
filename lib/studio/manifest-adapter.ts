@@ -44,8 +44,20 @@ export function hydrateStoryboard(manifest: ProjectManifest): Storyboard {
     narrationDurationSeconds: s.narrationDurationSeconds,
   }));
 
+  // The passage this storyboard is ABOUT, for display and for the generation brief.
+  //
+  // The `scripture` term is what was missing, and it is the second half of the reported
+  // "generated Genesis 1" bug: a freshly-scaffolded project has `scenes: []` and no
+  // `endCard`, so this resolved to `""` and the storyboard generation's brief degraded from
+  // "…a storyboard for Psalm 23" to "…a storyboard for test-1". Ordering is deliberate —
+  // an `endCard.headline` is a title the author wrote, the project passage is what they
+  // chose in the wizard, and a scene reference is the last resort because it may have been
+  // authored by a model.
   const reference =
-    manifest.endCard?.headline ?? manifest.scenes[0]?.reference ?? "";
+    manifest.endCard?.headline ??
+    manifest.scripture?.reference ??
+    manifest.scenes[0]?.reference ??
+    "";
 
   return {
     title: manifest.endCard?.headline ?? "",
@@ -228,27 +240,55 @@ export function commitMessage(
   return "Update storyboard";
 }
 
+/** The `scripture` block a `script`/`storyboard` generation POSTs. Matches db-lib's
+ *  `ScripturePassageRequestSchema` — and `reference` there is a USFM id, see below. */
+export interface ScriptureGenerationContext {
+  /**
+   * A **provider-issued USFM passage id** (`"PSA.23"`, `"PSA.121.1-5"`), never a human
+   * reference. This field reaches dbos's `fetchPassage`, whose only accepted form is USFM:
+   * measured live 2026-07-30, `GET /v1/bibles/111/passages/Psalm%2023` → 404
+   * `{"message":"Bible passage Psalm23 for version 111 not found"}`.
+   */
+  reference: string;
+  translation: string;
+  language: string;
+}
+
 /**
- * Task #57: the scripture context a `script`/`storyboard` generation sends for a
- * scene — read from the CURRENT manifest. `rewriteScript` calls this against the
- * post-commit-REFRESHED `project.manifest` (see `projectWithManifest`), so after a
- * re-plan + commit it sends the freshly-committed scripture, not the stale
- * pre-commit prop it used to read. Undefined when the scene is not in the manifest
- * (e.g. a re-planned scene that has not been committed yet). Pure.
+ * The scripture context a generation sends — read from the project's ORIGIN passage in the
+ * CURRENT manifest.
+ *
+ * ── Why this replaced the scene-keyed `sceneScriptureContext` (2026-07-30) ───────────
+ * That function returned `ManifestScene.reference`, a HUMAN string, and its value was fed
+ * straight into a passage endpoint that requires USFM. A human reference 404s, dbos raises
+ * a permanent uncaught `YouVersionPassageNotFoundError`, and the whole generation fails —
+ * so every "rewrite this line" against a real project was already broken in production, on
+ * a path with no test that had ever sent a non-USFM reference.
+ *
+ * The USFM is necessarily project-scoped: `ManifestScene` has no `passageId`, only the
+ * project's `scripture` block does. That is also the right scope on its own terms — a
+ * storyboard re-plan replaces `scenes` wholesale, so anything stored there is destroyed by
+ * the very action that most needs the origin passage.
+ *
+ * **Undefined when there is no `passageId`.** §9-Q10 forbids silent substitution, and the
+ * only alternatives would be sending a human reference (a guaranteed permanent failure) or
+ * constructing a USFM (closed as residual risk). Callers name the reference in the brief
+ * instead, where a human string belongs. Pure.
  */
-export function sceneScriptureContext(
+export function projectScriptureContext(
   manifest: ProjectManifest,
-  sceneId: string,
-): { reference: string; translation: string; language: string } | undefined {
-  const s = manifest.scenes.find((x) => x.id === sceneId);
-  return s
-    ? {
-        reference: s.reference,
-        translation: s.translation,
-        // The project's stored BCP-47 tag when the wizard captured one; `"eng"` otherwise.
-        // The hardcoded `"eng"` silently re-resolved a non-English project against
-        // English. Byte-identical behaviour for every manifest with no `scripture` block.
-        language: manifest.scripture?.language ?? "eng",
-      }
-    : undefined;
+): ScriptureGenerationContext | undefined {
+  const s = manifest.scripture;
+  if (!s?.passageId) return undefined;
+  return {
+    // ECHOED from the provider by the wizard — a chapter id or a range id the host itself
+    // produced. Carried through verbatim; nothing here parses or rebuilds it.
+    reference: s.passageId,
+    translation: s.translation,
+    // The project's stored BCP-47 tag when the wizard captured one; `"eng"` otherwise
+    // (which the live collection route accepts identically — verified 2026-07-30). The
+    // point of storing it is that a non-English project stops being re-resolved against
+    // English, which a hardcoded `"eng"` used to do silently.
+    language: s.language ?? "eng",
+  };
 }

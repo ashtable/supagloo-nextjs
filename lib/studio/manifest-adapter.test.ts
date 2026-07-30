@@ -4,7 +4,7 @@ import {
   hydrateStoryboard,
   serializeManifest,
   commitMessage,
-  sceneScriptureContext,
+  projectScriptureContext,
 } from "./manifest-adapter";
 import { ProjectManifestSchema, type ProjectManifest } from "../api/contracts";
 import {
@@ -237,8 +237,13 @@ describe("task 57 — per-scene scripture carry-through + post-commit refresh", 
     expect(ProjectManifestSchema.safeParse(back).success).toBe(true);
   });
 
-  it("U-A16: sceneScriptureContext + projectWithManifest — rewriteScript reads the post-commit-refreshed manifest, not the stale pre-commit one", () => {
-    // The stale (pre-replan) project manifest: s1 = JOHN 1:23 / KJV.
+  it("U-A16: projectWithManifest — the post-commit refresh becomes the next merge base and the next brief's scene source", () => {
+    // Rewritten 2026-07-30. This used to assert that a re-plan + commit changed what
+    // `sceneScriptureContext` fed the passage FETCH; that read is gone (a scene has no
+    // provider-issued USFM, so it could never produce a fetchable reference — see
+    // U-A33/U-A34). What the refresh is genuinely load-bearing for survives: the
+    // committed scenes become the next commit's merge base AND the source of the scene
+    // references a rewrite brief names.
     const staleProject = {
       id: "p1",
       projectName: "p1",
@@ -247,34 +252,40 @@ describe("task 57 — per-scene scripture carry-through + post-commit refresh", 
       storyboard: hydrateStoryboard(MANIFEST),
       manifest: MANIFEST,
     };
-    expect(sceneScriptureContext(staleProject.manifest, "s1")).toEqual({
-      reference: "JOHN 1:23",
-      translation: "KJV",
-      language: "eng",
-    });
+    expect(staleProject.manifest.scenes[0].reference).toBe("JOHN 1:23");
 
-    // A commit of a re-planned manifest (s1 now PSALM 23:2 / BSB) refreshes the project.
     const committed = serializeManifest(
       storyboardFromGenerated(REPLAN, hydrateStoryboard(MANIFEST)),
       MANIFEST,
     );
     const refreshed = projectWithManifest(staleProject, committed);
 
-    // rewriteScript now sends the NEW scripture (from the refreshed manifest), not the
-    // stale JOHN 1:23 the un-refreshed prop still holds.
-    expect(sceneScriptureContext(refreshed.manifest!, "s1")).toEqual({
-      reference: "PSALM 23:2",
-      translation: "BSB",
-      language: "eng",
-    });
+    expect(refreshed.manifest!.scenes[0].reference).toBe("PSALM 23:2");
+    expect(refreshed.manifest!.scenes[0].translation).toBe("BSB");
     // the original stale project is untouched (immutability)
-    expect(sceneScriptureContext(staleProject.manifest, "s1")?.reference).toBe(
-      "JOHN 1:23",
-    );
+    expect(staleProject.manifest.scenes[0].reference).toBe("JOHN 1:23");
   });
 
-  it("U-A17: sceneScriptureContext returns undefined for an unknown scene id", () => {
-    expect(sceneScriptureContext(MANIFEST, "nope")).toBeUndefined();
+  it("U-A17: the project passage is INVARIANT across a re-plan — which is why it lives at project scope", () => {
+    // The reason `passageId` is not a per-scene field: a storyboard re-plan replaces
+    // `scenes` wholesale, so anything stored there is destroyed by the very action that
+    // most needs the origin passage. The project block survives it untouched.
+    const withPassage: ProjectManifest = {
+      ...MANIFEST,
+      scripture: {
+        reference: "Psalm 121",
+        translation: "BSB",
+        language: "en",
+        passageId: "PSA.121",
+      },
+    };
+    const before = projectScriptureContext(withPassage);
+    const committed = serializeManifest(
+      storyboardFromGenerated(REPLAN, hydrateStoryboard(withPassage)),
+      withPassage,
+    );
+    expect(committed.scenes[0].reference).toBe("PSALM 23:2"); // the scenes DID change
+    expect(projectScriptureContext(committed)).toEqual(before); // the passage did not
   });
 });
 
@@ -542,23 +553,90 @@ describe("manifest-adapter — the project's origin passage (feature 2)", () => 
 
   it("U-A29: hydrate does not surface it on the Storyboard — it is project scope, not UI scope", () => {
     // Deliberate: adding it to `Storyboard` would make it look editable in the studio,
-    // which is scope this feature does not have.
+    // which is scope this feature does not have. STILL TRUE after the 2026-07-30
+    // carry-through fix: the generation inputs read `project.manifest` at the call site
+    // (see `generation-input.ts`) rather than routing the passage through the UI
+    // storyboard, so this mirror deliberately did not have to move.
     expect("scripture" in hydrateStoryboard(withScripture)).toBe(false);
   });
 
   // B5 / plan §D-1's promised bonus fix: the picker's tags are BCP-47, and this read
   // used to hardcode "eng", silently re-resolving a non-English project against English.
-  it("U-A30: sceneScriptureContext prefers the stored language tag", () => {
-    expect(sceneScriptureContext(withScripture, "s1")?.language).toBe("en");
+  // Re-pointed 2026-07-30 from the scene-keyed `sceneScriptureContext` to
+  // `projectScriptureContext`: the USFM the passage endpoint requires is PROJECT-scoped
+  // (`ManifestScene` has no `passageId`), so a scene-keyed lookup could never produce one.
+  it("U-A30: projectScriptureContext prefers the stored language tag", () => {
+    expect(projectScriptureContext(withScripture)?.language).toBe("en");
   });
 
-  it("U-A31: sceneScriptureContext still falls back to 'eng' when no passage is stored", () => {
-    expect(sceneScriptureContext(MANIFEST, "s1")?.language).toBe("eng");
+  it("U-A31: projectScriptureContext still falls back to 'eng' when no tag is stored", () => {
     expect(
-      sceneScriptureContext(
-        { ...MANIFEST, scripture: { reference: "Psalm 121", translation: "BSB" } },
-        "s1",
-      )?.language,
+      projectScriptureContext({
+        ...MANIFEST,
+        scripture: { reference: "Psalm 121", translation: "BSB", passageId: "PSA.121" },
+      })?.language,
     ).toBe("eng");
+  });
+
+  it("U-A32: a FRESH SCAFFOLD's storyboard reference comes from the project passage", () => {
+    // The second half of the reported bug. A scaffolded project has `scenes: []` and no
+    // `endCard`, so `storyboard.reference` was `""` — which is why the generation brief
+    // degraded to "…storyboard for test-1" and the model was left to invent a passage.
+    // `buildBlankManifest()` (db-lib) emits `scenes: []` and NO endCard, which is exactly
+    // the state this reproduces — the MANIFEST fixture's own endCard has to go, or the
+    // fixture is not a scaffold.
+    const fresh: ProjectManifest = { ...MANIFEST, scenes: [], scripture: { ...SCRIPTURE } };
+    delete fresh.endCard;
+    expect(hydrateStoryboard(fresh).reference).toBe("Psalm 121");
+  });
+
+  it("U-A32b: an endCard headline still wins, and a scene reference is still the last resort", () => {
+    // Ordering, stated as behaviour: endCard (the author's own title) > the project's
+    // origin passage > a scene reference (which may be LLM-authored).
+    expect(
+      hydrateStoryboard({
+        ...MANIFEST,
+        scenes: [],
+        endCard: { headline: "A title the user wrote" },
+        scripture: { ...SCRIPTURE },
+      }).reference,
+    ).toBe("A title the user wrote");
+    // MANIFEST has an endCard of its own, so strip it to see the fallback chain.
+    const noEndCard = { ...MANIFEST };
+    delete noEndCard.endCard;
+    expect(hydrateStoryboard(noEndCard).reference).toBe("JOHN 1:23");
+  });
+
+  it("U-A33: projectScriptureContext sends the USFM passageId as `reference`", () => {
+    // `ScripturePassageRequestSchema.reference` reaches dbos's `fetchPassage`, whose only
+    // accepted form is a provider-issued USFM id. Measured live 2026-07-30: a human
+    // reference is a 404, which dbos raises as a PERMANENT uncaught error.
+    expect(projectScriptureContext(withScripture)).toEqual({
+      reference: "PSA.121",
+      translation: "BSB",
+      language: "en",
+    });
+  });
+
+  it("U-A34: NO passageId means NO context — never a human reference that would 404", () => {
+    expect(projectScriptureContext(MANIFEST)).toBeUndefined();
+    expect(
+      projectScriptureContext({
+        ...MANIFEST,
+        scripture: { reference: "Psalm 121", translation: "BSB" },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("U-A35: a VERSE-RANGE passageId travels verbatim — it is echoed, not parsed", () => {
+    // The wizard now persists whatever id the provider echoes for a verse selection
+    // (measured live: `PSA.121.1+PSA.121.2` → `"PSA.121.1-2"`). Nothing downstream may
+    // reinterpret it; it round-trips through the passage endpoint as-is.
+    expect(
+      projectScriptureContext({
+        ...MANIFEST,
+        scripture: { ...SCRIPTURE, passageId: "PSA.121.1-5", reference: "Psalms 121:1-5" },
+      })?.reference,
+    ).toBe("PSA.121.1-5");
   });
 });

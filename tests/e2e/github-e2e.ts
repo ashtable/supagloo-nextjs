@@ -602,6 +602,25 @@ export async function assertFixtureRepoListedEmpty(
 
 // ── the ONE shared project-acquisition helper ───────────────────────────────
 
+/**
+ * A passage to CHOOSE in the wizard's step 2 instead of skipping it.
+ *
+ * Absent by default, and that asymmetry is load-bearing — see
+ * `skipWizardScriptureStep`'s docblock. Every other spec's fixture is a
+ * `createdFrom: "blank"` project, and quietly turning them into `"passage"` projects
+ * carrying a seeded manifest would change eight specs' subject under test.
+ *
+ * `bookUsfm` and `chapterId` are the values the picker's own `<option>`s carry, which come
+ * from the live YouVersion response — so a spec names the book it wants and the chapter id
+ * that response reports, never a fabricated USFM.
+ */
+export interface WizardScriptureChoice {
+  /** e.g. `"PSA"` — the `value` of a `wizard-picker-book` option. */
+  bookUsfm: string;
+  /** The `value` of a `wizard-picker-chapter` option (the provider's chapter `id`). */
+  chapterId: string;
+}
+
 export interface ExistingEmptyRepoProjectOptions {
   /** Spec-scoped slug fragment; the run id is appended by the shared namer. */
   slug: string;
@@ -616,6 +635,18 @@ export interface ExistingEmptyRepoProjectOptions {
    * need that observation do not have to keep a private copy of this whole flow.
    */
   onScaffoldStarted?: () => Promise<void>;
+  /**
+   * Invoked as soon as `project-ready-card` is on screen and BEFORE anything clicks
+   * `open-in-studio`.
+   *
+   * That ordering is the whole point: the ready card now redirects to the studio on its own
+   * (the "Redirecting automatically…" caption finally describes what happens), so this is
+   * the only window in which a spec can observe the redirect happening rather than its own
+   * click.
+   */
+  onProjectReady?: () => Promise<void>;
+  /** Choose a passage in step 2 rather than skipping it. See {@link WizardScriptureChoice}. */
+  scripture?: WizardScriptureChoice;
 }
 
 export interface AcquiredProject {
@@ -671,6 +702,136 @@ async function skipWizardScriptureStep(page: StagehandPage): Promise<void> {
   await waitForTestId(page, "wizard-scripture-step", 30_000);
   await waitForTestId(page, "wizard-skip-scripture", 30_000);
   await clickTestId(page, "wizard-skip-scripture");
+}
+
+/**
+ * Drive the wizard's SCRIPTURE step (18a) to a resolved passage, then scaffold.
+ *
+ * The counterpart to `skipWizardScriptureStep`, and the seam its docblock demands: *"A spec
+ * that WANTS a seeded passage must drive the picker itself."* Before this existed, both
+ * acquisition helpers skipped, so the seeded-passage path — the product's headline creation
+ * flow — had **zero** end-to-end coverage structurally, which is how a passage could be
+ * collected, persisted into git, and then dropped on the read side without a single test
+ * noticing.
+ *
+ * Language and translation are left at the app's own defaults (English, and ASV resolved BY
+ * ABBREVIATION from the live collection per USER DECISION D1) — a spec that pinned a bible
+ * id here would be asserting a licensing grant rather than the product. The verse range is
+ * left at the app's default too: the first `min(5, n)` of the live verses response.
+ *
+ * The CTA is asserted enabled before it is clicked. `canScaffold` gates it on a passage the
+ * provider has CONFIRMED, so a click on a still-disabled button would be silently dropped
+ * and present minutes later as an unexplained wizard timeout.
+ */
+async function chooseWizardScripturePassage(
+  page: StagehandPage,
+  choice: WizardScriptureChoice,
+): Promise<void> {
+  await waitForTestId(page, "wizard-scripture-step", 30_000);
+  await waitForTestId(page, "wizard-picker-book", 30_000);
+
+  await selectTestIdOption(page, "wizard-picker-book", choice.bookUsfm);
+  await waitForTestIdOption(page, "wizard-picker-chapter", choice.chapterId, 60_000);
+  await selectTestIdOption(page, "wizard-picker-chapter", choice.chapterId);
+
+  // The preview only renders once the provider has answered about this passage, which is
+  // the same condition the CTA gate reads.
+  await waitForTestId(page, "wizard-passage-preview", 60_000);
+
+  const ctaDisabled = await page.evaluate(
+    () =>
+      document.querySelector<HTMLButtonElement>('[data-testid="new-project-cta"]')
+        ?.disabled ?? true,
+  );
+  if (ctaDisabled) {
+    throw new Error(
+      "[github-e2e] new-project-cta is still disabled after the passage preview rendered — " +
+        "`canScaffold` did not see a resolved passage, so the wizard would never scaffold.",
+    );
+  }
+  await clickTestId(page, "new-project-cta");
+}
+
+/** Set a `<select>`'s value the way React sees it (native setter + a bubbling `change`),
+ *  then let the cascade's effects run. A plain `.click()` on an `<option>` does not fire
+ *  React's `onChange` for a select. */
+async function selectTestIdOption(
+  page: StagehandPage,
+  testId: string,
+  value: string,
+): Promise<void> {
+  await page.evaluate(
+    ({ sel, v }) => {
+      const el = document.querySelector<HTMLSelectElement>(`[data-testid="${sel}"]`);
+      if (!el) throw new Error(`no [data-testid="${sel}"]`);
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(el, v);
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    { sel: testId, v: value },
+  );
+}
+
+/** Wait until a `<select>` actually OFFERS `value`. The cascade fills each level from a
+ *  live fetch, so setting a value before its options exist is a silent no-op. */
+async function waitForTestIdOption(
+  page: StagehandPage,
+  testId: string,
+  value: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const present = await page.evaluate(
+      ({ sel, v }) =>
+        [
+          ...(document
+            .querySelector<HTMLSelectElement>(`[data-testid="${sel}"]`)
+            ?.querySelectorAll("option") ?? []),
+        ].some((o) => o.value === v),
+      { sel: testId, v: value },
+    );
+    if (present) return;
+    await page.waitForTimeout(300);
+  }
+  throw new Error(
+    `[github-e2e] [data-testid="${testId}"] never offered the option ${JSON.stringify(value)} ` +
+      `within ${timeoutMs}ms — the live YouVersion read for that level did not land, or the ` +
+      `value is not one this translation reports.`,
+  );
+}
+
+/**
+ * Leave the ready card for the studio.
+ *
+ * The card redirects itself now, so this WAITS first and only clicks as a fallback. Clicking
+ * unconditionally would race the redirect: `router.push` fires, the wizard unmounts, and a
+ * click dispatched at a node that no longer exists fails for a reason that has nothing to do
+ * with the spec.
+ */
+async function leaveReadyCardForStudio(page: StagehandPage): Promise<string> {
+  const redirectDeadline = Date.now() + 15_000;
+  while (Date.now() < redirectDeadline) {
+    if (page.url().includes("/studio/")) return page.url();
+    await page.waitForTimeout(200);
+  }
+
+  await waitForTestId(page, "open-in-studio");
+  await clickTestId(page, "open-in-studio");
+
+  const deadline = Date.now() + 45_000;
+  let url = page.url();
+  while (Date.now() < deadline && !url.includes("/studio/")) {
+    await page.waitForTimeout(200);
+    url = page.url();
+  }
+  if (!url.includes("/studio/")) {
+    throw new Error(`URL never included "/studio/" (last: ${url})`);
+  }
+  return url;
 }
 
 export async function createProjectViaExistingEmptyRepo(
@@ -740,25 +901,21 @@ export async function createProjectViaExistingEmptyRepo(
 
   // Step 1's CTA now ADVANCES rather than scaffolds — clear step 2 before waiting for
   // any scaffold signal. `onScaffoldStarted` stays after this on purpose: its contract
-  // is "scaffolding has begun", and until the skip lands nothing has been POSTed.
-  await skipWizardScriptureStep(page);
+  // is "scaffolding has begun", and until the skip (or the passage choice) lands nothing
+  // has been POSTed.
+  if (opts.scripture) {
+    await chooseWizardScripturePassage(page, opts.scripture);
+  } else {
+    await skipWizardScriptureStep(page);
+  }
 
   if (opts.onScaffoldStarted) await opts.onScaffoldStarted();
 
   await waitForProjectReady(page, repo, opts.projectReadyTimeoutMs ?? 240_000);
 
-  await waitForTestId(page, "open-in-studio");
-  await clickTestId(page, "open-in-studio");
+  if (opts.onProjectReady) await opts.onProjectReady();
 
-  const deadline = Date.now() + 45_000;
-  let url = page.url();
-  while (Date.now() < deadline && !url.includes("/studio/")) {
-    await page.waitForTimeout(200);
-    url = page.url();
-  }
-  if (!url.includes("/studio/")) {
-    throw new Error(`URL never included "/studio/" (last: ${url})`);
-  }
+  const url = await leaveReadyCardForStudio(page);
   return {
     projectId: url.split("/studio/")[1]?.split(/[?#]/)[0] ?? "",
     repoFullName: repo.fullName,
@@ -782,6 +939,12 @@ export interface CreateNewRepoProjectOptions {
   /** Same contract as the existing-empty helper: invoked after the CTA click and
    *  before the wait for `project-ready-card`, while step 2's log is still on screen. */
   onScaffoldStarted?: () => Promise<void>;
+  /** Same contract as the existing-empty helper: invoked once `project-ready-card` is on
+   *  screen and BEFORE anything clicks `open-in-studio`, so the card's own redirect can be
+   *  observed rather than the spec's click. */
+  onProjectReady?: () => Promise<void>;
+  /** Choose a passage in step 2 rather than skipping it. */
+  scripture?: WizardScriptureChoice;
 }
 
 /**
@@ -862,7 +1025,11 @@ export async function createProjectViaCreateNewRepo(
   // Same step-2 gate as the existing-empty helper, and it bites HARDER here: the stash
   // + popup happen inside `startScaffold`, which now sits behind the scripture step, so
   // without this the nonce below is waited for forever and hop 4 never runs at all.
-  await skipWizardScriptureStep(page);
+  if (opts.scripture) {
+    await chooseWizardScripturePassage(page, opts.scripture);
+  } else {
+    await skipWizardScriptureStep(page);
+  }
 
   // The wizard stashes its form params under a random `state` nonce and opens the
   // authorize popup. The nonce is generated in the browser, so the ONLY way to learn
@@ -891,18 +1058,9 @@ export async function createProjectViaCreateNewRepo(
     opts.projectReadyTimeoutMs ?? 300_000,
   );
 
-  await waitForTestId(page, "open-in-studio");
-  await clickTestId(page, "open-in-studio");
+  if (opts.onProjectReady) await opts.onProjectReady();
 
-  const deadline = Date.now() + 45_000;
-  let url = page.url();
-  while (Date.now() < deadline && !url.includes("/studio/")) {
-    await page.waitForTimeout(200);
-    url = page.url();
-  }
-  if (!url.includes("/studio/")) {
-    throw new Error(`URL never included "/studio/" (last: ${url})`);
-  }
+  const url = await leaveReadyCardForStudio(page);
   return {
     projectId: url.split("/studio/")[1]?.split(/[?#]/)[0] ?? "",
     repoFullName,

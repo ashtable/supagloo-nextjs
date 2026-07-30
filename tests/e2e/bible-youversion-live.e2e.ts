@@ -174,3 +174,94 @@ describe("YouVersion live contract — the picker's walk", () => {
     expect((err as YouVersionHttpError).status).toBe(404);
   });
 });
+
+/**
+ * The VERSE-RANGE contract (2026-07-30) — the one the wizard's new verse selector rests on.
+ *
+ * Turn 18a draws a verse-chip tray with a range and a "Whole chapter" escape, and it was
+ * deliberately NOT built: `contracts.ts` had closed constructing a USFM as residual risk
+ * ("`passageId` is ECHOED, never constructed") and no range form had ever been verified.
+ *
+ * Probing the live host settled it, and it settled it in two directions at once — which is
+ * why these three assertions live together. The form the earlier decision assumed is a
+ * genuine 404; a different form, built entirely out of ids the provider itself handed out,
+ * is a 200 that the provider then NORMALISES and echoes back. So the range can be expressed
+ * without this codebase inventing a single character, which is the standing the chapter's
+ * own `passageId` already had.
+ */
+describe("YouVersion live contract — verse ranges", () => {
+  it("E-BY7: a `+`-join of ECHOED verse ids is accepted, and the host echoes a canonical range", async () => {
+    const english = await fetchTranslations(DEFAULT_LANGUAGE_TAG, deps);
+    const asv = english.find((t) => t.abbreviation === ASV)!;
+    const chapters = await fetchChapters(asv.id, "PSA", deps);
+    // Psalm 121. Located by its own echoed passageId, never by indexing or by assuming
+    // the chapter id is the number.
+    const chapter = chapters.find((c) => c.passageId === "PSA.121")!;
+    expect(chapter).toBeDefined();
+
+    const verses = await fetchVerses(asv.id, "PSA", chapter.id, deps);
+    expect(verses.length).toBeGreaterThan(0);
+
+    // The wizard's default: the first min(5, n) of whatever the LIVE response listed.
+    const selected = verses.slice(0, Math.min(5, verses.length));
+    const request = selected.map((v) => v.passageId).join("+");
+    // Every component came out of the response above — nothing was assembled.
+    for (const part of request.split("+")) {
+      expect(verses.map((v) => v.passageId)).toContain(part);
+    }
+
+    const passage = await fetchPassage(asv.id, request, deps);
+    expect(passage.text.length).toBeGreaterThan(0);
+    // The host collapses a contiguous list into a canonical range id + reference, and THAT
+    // is what the manifest persists. Derived from the live endpoints, not written down.
+    const first = selected[0].passageId;
+    const lastVerse = selected[selected.length - 1].passageId.split(".").pop()!;
+    expect(passage.passageId).toBe(`${first}-${lastVerse}`);
+    expect(passage.reference).toContain(":");
+
+    // …and the echoed id round-trips: it is what dbos re-fetches at generation time.
+    const again = await fetchPassage(asv.id, passage.passageId, deps);
+    expect(again.text).toBe(passage.text);
+  });
+
+  it("E-BY8: the BOTH-SIDES hyphen form is a 404 — which is why the join form is used", async () => {
+    // `PSA.121.1-PSA.121.4` is the shape a naive "start-end" construction produces, and it
+    // is precisely what the original decision treated as unverified. It is unverifiable
+    // because it does not work.
+    const english = await fetchTranslations(DEFAULT_LANGUAGE_TAG, deps);
+    const asv = english.find((t) => t.abbreviation === ASV)!;
+    const err = await fetchPassage(asv.id, "PSA.121.1-PSA.121.4", deps).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(YouVersionHttpError);
+    expect((err as YouVersionHttpError).status).toBe(404);
+  });
+
+  it("E-BY9: over-requesting a SHORT chapter succeeds with a fabricated reference — the live case for min(5, n)", async () => {
+    // This is the whole reason "the first 5 verses" may never mean the literal number 5.
+    // Psalm 117 is the shortest chapter in most translations. Asking for five verses of it
+    // does NOT fail — the host answers 200 with the real (short) text under a reference
+    // that names verses the chapter does not contain. A hardcoded 5 would therefore commit
+    // a reference the translation does not support into the user's git repo, silently, with
+    // no error anywhere to notice. The count has to come from the verses response.
+    const english = await fetchTranslations(DEFAULT_LANGUAGE_TAG, deps);
+    const asv = english.find((t) => t.abbreviation === ASV)!;
+    const chapters = await fetchChapters(asv.id, "PSA", deps);
+    const short = chapters.find((c) => c.passageId === "PSA.117")!;
+    const verses = await fetchVerses(asv.id, "PSA", short.id, deps);
+
+    // The live authority on how many verses this chapter has.
+    expect(verses.length).toBeLessThan(5);
+
+    const overRequested = await fetchPassage(asv.id, "PSA.117.1-5", deps);
+    expect(overRequested.reference).toContain("1-5"); // a reference for verses 3..5, which do not exist
+    // The honest request, built from the live list, names only verses that exist.
+    const honest = await fetchPassage(
+      asv.id,
+      verses.map((v) => v.passageId).join("+"),
+      deps,
+    );
+    expect(honest.reference).not.toContain("-5");
+    expect(honest.text).toBe(overRequested.text); // same text; only the CLAIM differed
+  });
+});
