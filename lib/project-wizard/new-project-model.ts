@@ -24,10 +24,25 @@ export type RepoTab = "create-new" | "existing-empty";
 /**
  * The passage picked in step 2, exactly as it will be persisted.
  *
- * `passageId` is the YouVersion USFM **echoed** from the chapters route — never
- * constructed. `contracts.ts` closed constructing one as residual risk ("`passageId` is
- * ECHOED, never constructed"), which is also why the verse-RANGE selection 18a draws is
- * not built: a range is a constructed usfm, and no live verification of that form exists.
+ * `passageId` is a YouVersion USFM **echoed** by the provider — never constructed.
+ * `contracts.ts` closed constructing one as residual risk ("`passageId` is ECHOED, never
+ * constructed") and that still holds; what changed on 2026-07-30 is what "echoed" reaches.
+ * For a whole chapter it is the chapters route's own `passage_id`. For 18a's verse RANGE it
+ * is the id the PASSAGE route hands back for a `+`-joined list of ids the VERSES route
+ * issued — every character sent came from the provider and every character stored came from
+ * the provider, so the range is echoed rather than constructed. See
+ * `lib/project-wizard/verse-range.ts`, whose docblock records the live probes: the
+ * both-sides `PSA.121.1-PSA.121.4` form a naive construction produces is a 404, while
+ * `PSA.121.1+PSA.121.2` is a 200 the host normalises to `{id: "PSA.121.1-2"}`.
+ *
+ * This docblock previously said the range selection was NOT built, because a range was a
+ * constructed usfm with no live verification of that form. Both halves are now false: the
+ * tray ships, and the verification exists.
+ *
+ * A `null` in place of this value means "no passage is currently confirmed", and it is a
+ * state the step reports on every input change until the provider answers about the new
+ * input — see the re-run rule in `scripture-step.tsx`'s passage effect. `canScaffold` below
+ * is the only reader, and that null is what stops Create arming on a stale passage.
  */
 export interface ScriptureSelection {
   reference: string;

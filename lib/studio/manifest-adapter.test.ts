@@ -607,6 +607,29 @@ describe("manifest-adapter — the project's origin passage (feature 2)", () => 
     expect(hydrateStoryboard(noEndCard).reference).toBe("JOHN 1:23");
   });
 
+  it("U-A32c: the PROJECT PASSAGE outranks a scene reference — the middle rung nothing pinned", () => {
+    // U-A32b looks like it covers the whole chain and does not. It pins endCard > scripture
+    // and "no endCard, no scripture ⇒ scene", but never scripture > SCENE: its first fixture
+    // has `scenes: []` and its second has no `scripture`, so the two candidates are never
+    // both present at once. Nothing else in the lane put them together either — swapping the
+    // `scripture` and `scenes[0]` rungs in `manifest-adapter.ts` left all 1328 tests green,
+    // and this is a precedence THIS RUN introduced.
+    //
+    // It is not a cosmetic ordering. A scene reference may have been authored by the model,
+    // which is the whole point of `manifest-adapter.ts`'s own comment ("a scene reference is
+    // the last resort"), and this value feeds the generation brief. So inverting it hands the
+    // model back its own previous guess instead of the passage the user chose in the wizard —
+    // i.e. it re-creates the reported bug's exact symptom, which the fixture's scene
+    // reference is named after.
+    const bothPresent: ProjectManifest = {
+      ...MANIFEST,
+      scenes: [{ ...MANIFEST.scenes[0], reference: "Genesis 1:1", translation: "ASV" }],
+      scripture: { ...SCRIPTURE },
+    };
+    delete bothPresent.endCard;
+    expect(hydrateStoryboard(bothPresent).reference).toBe("Psalm 121");
+  });
+
   it("U-A33: projectScriptureContext sends the USFM passageId as `reference`", () => {
     // `ScripturePassageRequestSchema.reference` reaches dbos's `fetchPassage`, whose only
     // accepted form is a provider-issued USFM id. Measured live 2026-07-30: a human

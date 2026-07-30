@@ -136,10 +136,54 @@ describe("storyboardGenerationInput — the first-time 'generate storyboard' req
   it("U-GI4b: with no project passage, an existing storyboard reference is preferred to the name", () => {
     // A project scaffolded before the wizard collected passages still has scene references;
     // they are the best thing available for the brief, and they never reach the fetch.
-    const manifest = scened({ endCard: { headline: "Psalm 23" } });
+    //
+    // The headline here shares no substring with the scene reference, and that is the whole
+    // repair. It used to be `"Psalm 23"` against a scene reference of `"Psalm 23:1"`, and
+    // `"Psalm 23:1"` CONTAINS `"Psalm 23"` — so the only positive assertion was satisfied by
+    // either branch of `hydrateStoryboard`'s fallback chain, and moving `scenes[0].reference`
+    // ahead of `endCard.headline` left this case green. The case was never vacuous for its
+    // STATED purpose (`not.toContain("test-1")` does pin storyboard-reference-over-name); it
+    // simply could not see which storyboard reference it got. Two disjoint literals plus the
+    // negative make the branch observable, and the endCard's own precedence is a real claim:
+    // it is a title the author wrote, so it outranks a line a model may have authored.
+    //
+    // The endCard is NOT dropped to fix this. `U-GI4c` already drives `scened()` with no
+    // endCard and asserts the scene reference beats the project name, so dropping it here
+    // would make the two cases duplicates and delete the endCard rung's only coverage at
+    // this layer.
+    const manifest = scened({ endCard: { headline: "The Good Shepherd" } });
     const input = storyboardGenerationInput(manifest, hydrateStoryboard(manifest), "test-1");
-    expect(input.brief).toContain("Psalm 23");
+    expect(input.brief).toContain("The Good Shepherd");
+    expect(input.brief).not.toContain("Psalm 23:1");
     expect(input.brief).not.toContain("test-1");
+  });
+
+  it("U-GI2b: the PROJECT passage outranks the storyboard's own reference in the brief", () => {
+    // `generation-input.ts`'s `manifest.scripture?.reference || storyboard.reference` rung,
+    // which nothing pinned: swapping the two operands left all 1328 tests green.
+    //
+    // The two CAN diverge, and by a path the studio reaches normally: `hydrateStoryboard`
+    // puts `endCard.headline` first, so any project that has both a wizard-chosen passage and
+    // an end card produces a storyboard reference that is not the passage. The brief must
+    // still name the passage — it is the user's own choice and the thing `scripture.reference`
+    // will make the worker fetch, so naming anything else in the prose points the model at a
+    // different passage from the one it is handed.
+    //
+    // All three candidate strings are disjoint on purpose: the passage, the end card headline
+    // (what `storyboard.reference` resolves to here) and the scene reference. Every other case
+    // in this file lets `hydrateStoryboard` agree with `manifest.scripture`, which is why the
+    // operand order was invisible.
+    const manifest = scened({
+      scripture: { ...PASSAGE },
+      endCard: { headline: "The Good Shepherd" },
+    });
+    const storyboard = hydrateStoryboard(manifest);
+    expect(storyboard.reference).toBe("The Good Shepherd");
+
+    const input = storyboardGenerationInput(manifest, storyboard, "test-1");
+    expect(input.brief).toContain("Psalms 23");
+    expect(input.brief).not.toContain("The Good Shepherd");
+    expect(input.brief).not.toContain("Psalm 23:1");
   });
 
   it("U-GI7: the stored BCP-47 tag is preferred over the schema's 'eng' default", () => {

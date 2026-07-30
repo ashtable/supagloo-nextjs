@@ -272,13 +272,27 @@ export default function ScriptureStep({
   // The live passage preview + the reported selection, keyed on the ECHOED usfm being asked
   // for — so changing the verse range re-asks, exactly as changing the chapter does.
   useEffect(() => {
+    // THE RE-RUN RULE, and it belongs here rather than in any one handler. This effect's
+    // inputs are the whole of what the reported selection is a statement ABOUT, so the
+    // moment any of them changes the previous report is stale — it names a passage the
+    // user has navigated away from. The wizard's only forward gate (`canScaffold` →
+    // `new-project-model.ts`) reads that reported value, so a stale report is a Create
+    // button armed against the wrong scripture, and there is nothing else to guard it
+    // with: the parent holds no pending flag and the chip tray has no `disabled`.
+    //
+    // Clearing UNCONDITIONALLY, before the branch below, is what makes book, chapter and
+    // verse changes covered by CONSTRUCTION rather than by enumeration. The clear used to
+    // sit inside the early return, which only fires when `requestPassageId` becomes
+    // falsy — true of a BOOK change (`setChapters(undefined)` drives `chapterPassageId`
+    // to null) and false of a chapter or verse change, where one non-null echoed id is
+    // replaced by another and the guarded branch is never entered.
+    onSelect(null);
     if (!bibleId || !requestPassageId) {
-      // Same synchronization: no chapter ⇒ no passage, and no selection to report. The CTA
-      // gate reads that null, so leaving a stale passage here would arm the scaffold
-      // against a chapter the user has navigated away from.
+      // Same synchronization: no chapter ⇒ no passage. The CTA gate reads the null
+      // reported above, so leaving a stale passage here would arm the scaffold against a
+      // chapter the user has navigated away from.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPassage(undefined);
-      onSelect(null);
       return;
     }
     let active = true;
@@ -286,11 +300,15 @@ export default function ScriptureStep({
     void fetchBiblePassage(bibleId, requestPassageId).then((p) => {
       if (!active) return;
       setPassage(p);
-      // The selection is reported as soon as the passage RESOLVES, so the CTA cannot be
-      // enabled against a reference the provider has not confirmed — and both values
-      // reported are the provider's OWN answer about the request, not the request itself.
-      // For a contiguous verse range the host normalises the join into `PSA.121.1-5` and
-      // `"Psalms 121:1-5"`; those are what get persisted.
+      // The selection is reported only once the passage RESOLVES. Paired with the
+      // unconditional clear at the top of this effect, that makes the invariant hold on
+      // EVERY run and not merely the first: between any input change and the provider's
+      // answer about the new input, the reported selection is `null`. On its own this
+      // resolve-then-report was true of the first resolve only — the CTA stayed armed on
+      // the previously confirmed reference while the new one was in flight.
+      // Both values reported are the provider's OWN answer about the request, not the
+      // request itself: for a contiguous verse range the host normalises the join into
+      // `PSA.121.1-5` and `"Psalms 121:1-5"`, and those are what get persisted.
       onSelect(
         p && translationAbbrev
           ? {
