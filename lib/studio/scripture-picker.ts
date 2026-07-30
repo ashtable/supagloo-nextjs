@@ -125,6 +125,48 @@ export function defaultTranslation(
 }
 
 /**
+ * The collection in the order a TRANSLATION DROPDOWN should list it: ascending by the name
+ * the user sees.
+ *
+ * The live collection does not arrive alphabetically — the measured English response leads
+ * `ASV, CPDV, BSB` — so a dropdown rendering it verbatim gave the user no ordering to scan.
+ * With 20 English Bibles today and 1,472 across all languages, that is the difference between
+ * looking a translation up and reading the whole list.
+ *
+ * **The key is the abbreviation then the title, and that is deliberate rather than
+ * incidental.** Both dropdowns render `<abbreviation><separator><title>` — the wizard with an
+ * em dash, the studio with a middot — so the abbreviation is the first thing the eye lands on
+ * and this tuple is exactly the ordering either rendered label induces. Sorting by `title`
+ * would produce a list that looks shuffled, because the column the user reads first would be
+ * unordered; sorting by the composed label would put this module in the business of knowing a
+ * separator it does not render.
+ *
+ * **Non-mutating, and that is load-bearing.** `defaultTranslation`'s last resort is "that
+ * collection's FIRST entry" — the PROVIDER's first, i.e. its own view of which Bible to lead
+ * with. Sorting a caller's array in place would silently redefine that as "alphabetically
+ * first" for every collection with no ASV, which is most languages. So this returns a copy
+ * and callers keep the provider's order for anything that is not display.
+ *
+ * Collated with the runtime's own locale rather than a pinned one: these are provider strings
+ * in the language the user just chose, and "alphabetical" for Arabic or Greek titles is the
+ * viewer's question, not ours. `numeric` so `NIV2` precedes `NIV11`. The sort is stable, so
+ * two entries the collator cannot separate stay in the order the provider listed them.
+ */
+export function sortTranslationsForDisplay(
+  translations: readonly BibleTranslation[],
+): BibleTranslation[] {
+  const collator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  return [...translations].sort(
+    (a, b) =>
+      collator.compare(a.abbreviation, b.abbreviation) ||
+      collator.compare(a.title, b.title),
+  );
+}
+
+/**
  * The book and chapter a manifest's stored `passageId` refers to.
  *
  * `passageId` is a provider-issued USFM: `"PSA.23"` for a chapter, `"PSA.23.1"` for a verse,

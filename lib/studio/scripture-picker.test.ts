@@ -21,6 +21,7 @@ import {
   PREFERRED_TRANSLATION_ABBREVIATION,
   defaultTranslation,
   scripturePick,
+  sortTranslationsForDisplay,
   selectBook,
   selectChapter,
   selectLanguage,
@@ -70,6 +71,55 @@ describe("defaults", () => {
     // Same abbreviation, a different id than the one measured today.
     const shuffled = [t("999", "BSB"), t("777", "ASV")];
     expect(defaultTranslation(shuffled)?.id).toBe("777");
+  });
+});
+
+describe("sortTranslationsForDisplay", () => {
+  it("U-SP5: orders the collection by the name shown, which the provider's order is not", () => {
+    // `ENGLISH` is the order the live API actually returns — ASV, CPDV, BSB — so the
+    // provider's own ordering is demonstrably not alphabetical, and a user scanning the
+    // dropdown for a translation had no ordering to scan by.
+    expect(ENGLISH.map((x) => x.abbreviation)).toEqual(["ASV", "CPDV", "BSB"]);
+    expect(sortTranslationsForDisplay(ENGLISH).map((x) => x.abbreviation)).toEqual([
+      "ASV",
+      "BSB",
+      "CPDV",
+    ]);
+  });
+
+  it("U-SP5b: it does NOT reorder the caller's array — the default's [0] fallback still reads the provider's order", () => {
+    // Load-bearing, not hygiene. `defaultTranslation` documents its last resort as "that
+    // collection's FIRST entry", meaning the provider's first — its notion of which Bible
+    // to lead with. Sorting in place would silently redefine that as "alphabetically
+    // first" for every language whose collection has no ASV, which is most of them.
+    const input = [...ENGLISH];
+    const sorted = sortTranslationsForDisplay(input);
+    expect(input).toEqual(ENGLISH);
+    expect(sorted).not.toBe(input);
+    expect(defaultTranslation(input)).toEqual(ENGLISH[0]);
+  });
+
+  it("U-SP5c: equal abbreviations fall back to the title, and equal labels keep the provider's order", () => {
+    // Both components render `<abbreviation><separator><title>`, so the abbreviation is the
+    // primary key and the title is the tiebreak — that is what makes this function's
+    // ordering the same one the rendered label induces, without this module having to know
+    // either component's separator (the wizard uses an em dash, the studio a middot).
+    const dupes = [
+      t("2", "NIV", "New International Version (Anglicised)"),
+      t("1", "NIV", "New International Version"),
+      t("3", "ESV", "English Standard Version"),
+    ];
+    expect(sortTranslationsForDisplay(dupes).map((x) => x.id)).toEqual(["3", "1", "2"]);
+
+    // A stable sort, so two entries the comparator cannot separate stay as the provider
+    // listed them rather than swapping on an engine's whim.
+    const identical = [t("9", "KJV", "King James Version"), t("8", "KJV", "King James Version")];
+    expect(sortTranslationsForDisplay(identical).map((x) => x.id)).toEqual(["9", "8"]);
+  });
+
+  it("U-SP5d: an empty or single-entry collection is returned as a copy, not an error", () => {
+    expect(sortTranslationsForDisplay([])).toEqual([]);
+    expect(sortTranslationsForDisplay([ENGLISH[1]])).toEqual([ENGLISH[1]]);
   });
 });
 
