@@ -4,13 +4,16 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * task-62 D21 — the three-lane e2e split's COVERAGE GUARD.
+ * The e2e split's COVERAGE GUARD (task-62 D21, narrowed to two lanes 2026-07-29).
  *
- * nextjs now has three e2e lanes, each a separate vitest config:
+ * Every e2e lane in this repo is a REAL lane. The Docker-free `mock` lane and its eight
+ * `?mock=`-driven specs were deleted: they drove a fabricated session against a fixture
+ * storyboard, so they could not fail for any reason a user could encounter, which is the
+ * definition of a test that is not end-to-end. Their subject matter keeps its coverage in
+ * the jsdom unit lane, which is faster and honest about what it is.
  *
  *   | lane        | config                      | needs                                  |
  *   |-------------|-----------------------------|----------------------------------------|
- *   | mock        | vitest.e2e.config.ts        | `next dev` only — no Docker, no secrets |
  *   | real        | vitest.e2e.real.config.ts   | Compose + DBOS worker + real GitHub     |
  *   | heavy render| vitest.e2e.render.config.ts | ditto, alone, minutes-long             |
  *
@@ -22,8 +25,8 @@ import { describe, expect, it } from "vitest";
  * config's `include` matches (or that every config's `exclude` drops) belongs to NO
  * lane, is never executed by any script, and reports nothing at all. So this test
  * asserts the three configs PARTITION `tests/e2e/*.e2e.ts` — every spec claimed by
- * exactly one lane, never zero and never two (two lanes would double-run the heavy
- * render spec, or run a real-stack spec inside the Docker-free mock lane).
+ * exactly one lane, never zero and never two (two lanes would double-run the heavy,
+ * minutes-long render spec against real providers).
  *
  * Zero-network, zero-Docker: it reads the configs as data.
  */
@@ -32,30 +35,12 @@ const REPO_ROOT = process.cwd();
 const E2E_DIR = resolve(REPO_ROOT, "tests/e2e");
 
 const LANES = [
-  { lane: "mock", config: "vitest.e2e.config.ts" },
   { lane: "real", config: "vitest.e2e.real.config.ts" },
   { lane: "render", config: "vitest.e2e.render.config.ts" },
 ] as const;
 
 /** The render lane must contain exactly this spec — row 62's acceptance target. */
 const RENDER_LANE_SPEC = "tests/e2e/studio-render-real.e2e.ts";
-
-/**
- * The mock lane's membership is a HARD requirement of the combined task, not an
- * incidental list: half (A) replaces the GitHub stub with real egress everywhere, and
- * these are the specs that keep "unit/mock coverage survives" true. They must run with
- * no Compose stack, no root `.env` and no network egress.
- */
-const MOCK_LANE_SPECS = [
-  "tests/e2e/landing.e2e.ts",
-  "tests/e2e/landing-start-cards.e2e.ts",
-  "tests/e2e/onboarding-wizard.e2e.ts",
-  "tests/e2e/project-wizards.e2e.ts",
-  "tests/e2e/studio.e2e.ts",
-  "tests/e2e/studio-project.e2e.ts",
-  "tests/e2e/studio-publish.e2e.ts",
-  "tests/e2e/workspace-profile.e2e.ts",
-] as const;
 
 /**
  * Minimal glob → RegExp for the only shapes a vitest `include`/`exclude` uses here:
@@ -164,7 +149,7 @@ describe("D21: the three lanes PARTITION tests/e2e/*.e2e.ts (exactly once each)"
       .map(([spec, lanes]) => `${spec} → ${lanes.join("+")}`);
     expect(
       doubles,
-      "these specs belong to MORE THAN ONE lane — they would run twice (and a real-stack spec inside the Docker-free mock lane fails for the wrong reason)",
+      "these specs belong to MORE THAN ONE lane — they would run twice, against real providers and real GitHub",
     ).toEqual([]);
   });
 
@@ -177,24 +162,9 @@ describe("D21: the three lanes PARTITION tests/e2e/*.e2e.ts (exactly once each)"
     expect(claimed).toEqual([RENDER_LANE_SPEC]);
   });
 
-  it("the mock lane holds exactly the Docker-free specs that must stay green", async () => {
-    expect(existsSync(resolve(REPO_ROOT, "vitest.e2e.config.ts"))).toBe(true);
-    const cfg = await readLaneConfig("vitest.e2e.config.ts");
-    const claimed = specFiles.filter(
-      (s) => matchesAny(s, cfg.include) && !matchesAny(s, cfg.exclude),
-    );
-    expect(claimed.sort()).toEqual([...MOCK_LANE_SPECS].sort());
-  });
 });
 
 describe("D21/D24: only the real + render lanes load the root .env", () => {
-  it("the mock lane does NOT list load-root-env (it must not require root creds)", async () => {
-    const cfg = (await import(
-      pathToFileURL(resolve(REPO_ROOT, "vitest.e2e.config.ts")).href
-    )) as { default?: { test?: { setupFiles?: string[] } } };
-    const setupFiles = cfg.default?.test?.setupFiles ?? [];
-    expect(setupFiles.join(",")).not.toContain("load-root-env");
-  });
 
   for (const config of ["vitest.e2e.real.config.ts", "vitest.e2e.render.config.ts"]) {
     it(`${config} loads the root .env into its workers`, async () => {

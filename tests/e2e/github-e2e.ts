@@ -647,6 +647,32 @@ export interface AcquiredProject {
  * against real GitHub. Use THIS helper unless the create-new path is the thing under
  * test; it is faster and has fewer moving parts.
  */
+/**
+ * Clear the wizard's SCRIPTURE step (Turn 18a, "STEP 2 OF 4") and let scaffolding start.
+ *
+ * This step landed between the repo choice and the provisioning log, so the step-1 CTA
+ * no longer scaffolds — it advances. Both acquisition helpers below used to click that
+ * CTA and immediately wait for a scaffold signal, which now never arrives: the wizard
+ * simply sits on the picker. That is not a hypothetical; it hung the whole real lane,
+ * with the dialog parked on "CHOOSE YOUR SCRIPTURE" and BOOK unset.
+ *
+ * SKIP is the behaviour-PRESERVING choice, not a shortcut. Every fixture these helpers
+ * build has always been a project with no passage, and skip clears the selection and
+ * scaffolds with `createdFrom: "blank"` — byte-identical to what they produced before
+ * the step existed. Picking a passage here would silently change eight specs' fixtures
+ * into `createdFrom: "passage"` projects carrying a seeded manifest, which is a
+ * different subject under test.
+ *
+ * A spec that WANTS a seeded passage must drive the picker itself rather than reach for
+ * this; that is a deliberate asymmetry, so the seeded-scripture path can never be
+ * acquired by accident.
+ */
+async function skipWizardScriptureStep(page: StagehandPage): Promise<void> {
+  await waitForTestId(page, "wizard-scripture-step", 30_000);
+  await waitForTestId(page, "wizard-skip-scripture", 30_000);
+  await clickTestId(page, "wizard-skip-scripture");
+}
+
 export async function createProjectViaExistingEmptyRepo(
   page: StagehandPage,
   opts: ExistingEmptyRepoProjectOptions,
@@ -711,6 +737,11 @@ export async function createProjectViaExistingEmptyRepo(
     );
   }
   await clickTestId(page, "new-project-cta");
+
+  // Step 1's CTA now ADVANCES rather than scaffolds — clear step 2 before waiting for
+  // any scaffold signal. `onScaffoldStarted` stays after this on purpose: its contract
+  // is "scaffolding has begun", and until the skip lands nothing has been POSTed.
+  await skipWizardScriptureStep(page);
 
   if (opts.onScaffoldStarted) await opts.onScaffoldStarted();
 
@@ -827,6 +858,11 @@ export async function createProjectViaCreateNewRepo(
     );
   }
   await clickTestId(page, "new-project-cta");
+
+  // Same step-2 gate as the existing-empty helper, and it bites HARDER here: the stash
+  // + popup happen inside `startScaffold`, which now sits behind the scripture step, so
+  // without this the nonce below is waited for forever and hop 4 never runs at all.
+  await skipWizardScriptureStep(page);
 
   // The wizard stashes its form params under a random `state` nonce and opens the
   // authorize popup. The nonce is generated in the browser, so the ONLY way to learn

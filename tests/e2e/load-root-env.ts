@@ -19,10 +19,13 @@ import { resolve } from "node:path";
  * no container; `GITHUB_E2E_EXCHANGE_TOKEN` enters exactly one container and is never
  * needed here. Do not "tidy" them into one variable or one path.
  *
- * Listed ONLY by `vitest.e2e.real.config.ts` and `vitest.e2e.render.config.ts`.
- * The mock lane (`vitest.e2e.config.ts`) deliberately omits it so that lane keeps
- * running with no root checkout, no root `.env` and no credentials at all —
- * asserted by `tests/unit/e2e-lane-coverage.test.ts`.
+ * Listed by BOTH surviving lanes — `vitest.e2e.real.config.ts` and
+ * `vitest.e2e.render.config.ts` — and asserted by `tests/unit/e2e-lane-coverage.test.ts`.
+ * It used to be listed by only two of three, because the Docker-free mock lane had to
+ * keep running with no root checkout and no credentials at all. That lane is gone
+ * (2026-07-29): every e2e lane here now reaches real systems, so every lane needs the
+ * root `.env`, and "runs anywhere with nothing configured" is no longer a property any
+ * e2e in this repo claims.
  *
  * `process.loadEnvFile` does NOT override an already-set variable, so an explicit
  * `GITHUB_APP_ID=… npm run test:e2e:render` still wins, and a value already
