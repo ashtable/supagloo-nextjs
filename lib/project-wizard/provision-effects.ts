@@ -17,6 +17,7 @@
 import {
   CreateProjectResponseSchema,
   ProjectJobResponseSchema,
+  ProjectResponseSchema,
   type ProjectJobDto,
   type RepoVisibility,
   type ProjectCreatedFrom,
@@ -151,6 +152,39 @@ export async function fetchJob(
     if (!res.ok) return null;
     const parsed = ProjectJobResponseSchema.safeParse(await res.json());
     return parsed.success ? parsed.data.job : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The slug the API actually ASSIGNED to a just-created project (plan row 53 item 3).
+ *
+ * `CreateProjectResponseSchema` is `{projectId, jobId}` — it does not carry the slug — so
+ * both wizard tabs have always used the pre-creation typed repo name as the studio URL
+ * segment. `nextFreeSlug` de-duplicates on a same-owner collision and `/studio/[slug]`
+ * resolves owner-scoped, so that guess can land on a different project or a 404. Row 53
+ * notes the bug was "masked because `/studio/[id]` still resolves against a hardcoded mock
+ * project list"; that mask went away when task 27's real hydration shipped, and making the
+ * redirect automatic removes the last thing that made it survivable.
+ *
+ * This asks instead. `ProjectDto.slug` is already on the wire and already parsed, which is
+ * why the fix needs no schema change in db-lib, no api change and no release chain — only a
+ * caller that stops guessing.
+ *
+ * Null on any failure (never throws), like every other reader here. The caller falls back to
+ * the project id, which is server-issued too.
+ */
+export async function fetchProjectSlug(
+  projectId: string,
+  deps: FetchDep = {},
+): Promise<string | null> {
+  const doFetch = doFetchOf(deps);
+  try {
+    const res = await doFetch(`/api/projects/${projectId}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const parsed = ProjectResponseSchema.safeParse(await res.json());
+    return parsed.success ? parsed.data.project.slug : null;
   } catch {
     return null;
   }

@@ -23,6 +23,7 @@ const fetchBibleTranslations = vi.fn();
 const fetchBibleBooks = vi.fn();
 const fetchBibleChapters = vi.fn();
 const fetchBiblePassage = vi.fn();
+const fetchBibleVerses = vi.fn();
 
 vi.mock("@/lib/studio/scripture-data", () => ({
   fetchBibleLanguages: (...a: unknown[]) => fetchBibleLanguages(...a),
@@ -30,7 +31,7 @@ vi.mock("@/lib/studio/scripture-data", () => ({
   fetchBibleBooks: (...a: unknown[]) => fetchBibleBooks(...a),
   fetchBibleChapters: (...a: unknown[]) => fetchBibleChapters(...a),
   fetchBiblePassage: (...a: unknown[]) => fetchBiblePassage(...a),
-  fetchBibleVerses: vi.fn(),
+  fetchBibleVerses: (...a: unknown[]) => fetchBibleVerses(...a),
 }));
 
 import ScriptureStep from "@/app/_components/project-wizard/scripture-step";
@@ -50,6 +51,20 @@ const PASSAGE = {
   reference: "Psalm 121",
   text: "I will lift up mine eyes unto the hills, from whence cometh my help.",
 };
+/** Psalm 121 has EIGHT verses. Shaped exactly as `app/api/bible/verses/route.ts` serves
+ *  them, `passageId` provider-issued. */
+const VERSES = Array.from({ length: 8 }, (_, i) => ({
+  id: String(i + 1),
+  passageId: `PSA.121.${i + 1}`,
+  title: String(i + 1),
+}));
+/** The default range's echoed answer: joining verses 1..5 and letting the host normalise.
+ *  Measured live 2026-07-30 — `PSA.121.1+…+PSA.121.5` → `{id:"PSA.121.1-5"}`. */
+const RANGE_PASSAGE = {
+  passageId: "PSA.121.1-5",
+  reference: "Psalms 121:1-5",
+  text: "one two three four five six seven",
+};
 
 let mounted: { container: HTMLElement; unmount: () => void } | null = null;
 type Reported = { reference: string; translation: string; passageId?: string } | null;
@@ -64,8 +79,19 @@ beforeEach(() => {
   fetchBibleTranslations.mockResolvedValue(TRANSLATIONS);
   fetchBibleBooks.mockResolvedValue(BOOKS);
   fetchBibleChapters.mockResolvedValue(CHAPTERS);
-  fetchBiblePassage.mockResolvedValue(PASSAGE);
+  fetchBibleVerses.mockResolvedValue(VERSES);
+  // The host answers about whatever id it was asked for. Keyed rather than fixed because
+  // the step now has two granularities — the chapter's own echoed id, and the `+`-join of
+  // echoed per-verse ids that the host normalises into a range.
+  fetchBiblePassage.mockImplementation(async (_bibleId: string, usfm: string) =>
+    usfm === "PSA.121" ? PASSAGE : RANGE_PASSAGE,
+  );
 });
+
+/** The `+`-join the default range produces: verses 1..5 of the live list, echoed. */
+const DEFAULT_RANGE_REQUEST = VERSES.slice(0, 5)
+  .map((v) => v.passageId)
+  .join("+");
 
 afterEach(() => {
   mounted?.unmount();
@@ -127,22 +153,32 @@ describe("the wizard's scripture step", () => {
       expect.objectContaining({ reference: expect.anything() }),
     );
     await pickPsalm121(root);
+    // The DEFAULT is now the first min(5, n) verses (user clarification 2026-07-30), so
+    // both values reported are the host's own answer about that range.
     expect(onSelect).toHaveBeenLastCalledWith({
-      reference: "Psalm 121",
+      reference: "Psalms 121:1-5",
       translation: "ASV",
       language: "en",
-      passageId: "PSA.121",
+      passageId: "PSA.121.1-5",
     });
   });
 
   it("U-W35: the passageId is ECHOED from the provider, never assembled here", async () => {
-    // `contracts.ts` closed constructing a usfm as residual risk. Everything this step
-    // reports has to be a value the provider handed out.
+    // `contracts.ts` closed CONSTRUCTING a usfm as residual risk, and that is respected:
+    // the request is a join of ids the verses route handed out, and the id that gets
+    // PERSISTED is the one the host echoed back for it. Measured live 2026-07-30 —
+    // `PSA.121.1+…+PSA.121.5` → `{id:"PSA.121.1-5"}`; the hyphenated both-sides form
+    // `PSA.121.1-PSA.121.5` is a 404, which is why nothing here builds one.
     const root = await step();
     await pickPsalm121(root);
     const reported = onSelect.mock.calls.at(-1)![0]!;
-    expect(reported.passageId).toBe(PASSAGE.passageId);
-    expect(fetchBiblePassage).toHaveBeenCalledWith("12", "PSA.121");
+    expect(reported.passageId).toBe(RANGE_PASSAGE.passageId);
+    expect(fetchBiblePassage).toHaveBeenCalledWith("12", DEFAULT_RANGE_REQUEST);
+    // every component of the request came out of the verses response
+    const echoed = new Set(VERSES.map((v) => v.passageId));
+    for (const part of DEFAULT_RANGE_REQUEST.split("+")) {
+      expect(echoed, `"${part}" was never handed out by the provider`).toContain(part);
+    }
   });
 
   it("U-W36: renders the live passage preview with the REAL reference", async () => {
@@ -151,11 +187,9 @@ describe("the wizard's scripture step", () => {
     const root = await step();
     await pickPsalm121(root);
     const header = byTestId(root, "wizard-passage-reference").textContent ?? "";
-    expect(header).toContain("Psalm 121");
+    expect(header).toContain("Psalms 121:1-5");
     expect(header).toContain("ASV");
-    expect(byTestId(root, "wizard-passage-preview").textContent).toContain(
-      "I will lift up mine eyes",
-    );
+    expect(byTestId(root, "wizard-passage-preview").textContent).toContain("one two three");
   });
 
   it("U-W37: a FAILED fetch disables the cascade and advises — not 'there are none'", async () => {
@@ -189,16 +223,139 @@ describe("the wizard's scripture step", () => {
     expect(queryTestId(root, "wizard-scripture-error")).toBeNull();
   });
 
-  it("U-W40: the VERSE RANGE the figure draws is genuinely absent, not half-built", async () => {
-    // 18a selects verses 1–4 and offers "Whole chapter". A range is a CONSTRUCTED usfm,
-    // which `contracts.ts` deliberately closed. Omit rather than fake — and a negative test
-    // so a later pass cannot transcribe it back in from the drawing without reopening the
-    // decision.
+  // U-W40 was INVERTED on 2026-07-30. It used to pin the verse range as deliberately
+  // absent, on the grounds that a range is a constructed usfm and `contracts.ts` closed
+  // constructing one. That reasoning was tested against the live host before this change
+  // and only HALF of it held:
+  //   - `PSA.121.1-PSA.121.4` (the both-sides form the decision assumed) → 404. Correct.
+  //   - `PSA.121.1+PSA.121.2` (a join of ids the verses route ISSUED) → 200, and the host
+  //     echoes back `{id:"PSA.121.1-2", reference:"Psalms 121:1-2"}`.
+  // So a range can be expressed without constructing anything: every character sent came
+  // from the provider, and every character stored came from the provider. That is the same
+  // standing the chapter's own `passageId` already has, which is what re-opened this.
+  //
+  // The "each verse becomes a scene" clause of 18a's footnote stays REFUSED: how many
+  // scenes a passage becomes is the model's call, and shipping that promise would repeat
+  // the exact mistake the redirect caption is being fixed for.
+  it("U-W40: the verse tray IS built — a range of echoed ids, and the whole-chapter escape", async () => {
     const root = await step();
     await pickPsalm121(root);
-    expect(root.textContent).not.toContain("Whole chapter");
+
+    expect(queryTestId(root, "wizard-verse-chips")).not.toBeNull();
+    expect(root.textContent).toContain("Whole chapter");
     expect(root.textContent).not.toContain("each verse becomes a scene");
-    expect(onSelect.mock.calls.at(-1)![0]!.passageId).not.toContain("-");
+    expect(onSelect.mock.calls.at(-1)![0]!.passageId).toBe("PSA.121.1-5");
+  });
+
+  it("U-W44: the chapter's verses default to the first min(5, n), selected on arrival", async () => {
+    const root = await step();
+    await pickPsalm121(root);
+
+    expect(fetchBibleVerses).toHaveBeenCalledWith("12", "PSA", "PSA.121");
+    const chips = root.querySelectorAll('[data-testid="wizard-verse-chip"]');
+    expect(chips).toHaveLength(VERSES.length);
+    const selected = [...chips]
+      .filter((c) => c.getAttribute("data-selected") === "true")
+      .map((c) => c.getAttribute("data-verse-id"));
+    expect(selected).toEqual(["1", "2", "3", "4", "5"]);
+  });
+
+  it("U-W45: a TWO-verse chapter defaults to two — the live response is the authority", async () => {
+    // Psalm 117 has two verses. `PSA.117.1-5` does not 404 upstream (measured: 200, with
+    // `reference:"Psalms 117:1-5"` over the real two-verse text), so a hardcoded 5 would
+    // persist a FABRICATED reference into the user's repo with nothing to notice.
+    const short = [
+      { id: "1", passageId: "PSA.117.1", title: "1" },
+      { id: "2", passageId: "PSA.117.2", title: "2" },
+    ];
+    fetchBibleVerses.mockResolvedValue(short);
+    const root = await step();
+    await pickPsalm121(root);
+
+    // Both of the chapter's verses are selected — min(5, 2) — so every chip is on…
+    const chips = [...root.querySelectorAll('[data-testid="wizard-verse-chip"]')];
+    expect(chips).toHaveLength(2);
+    expect(chips.every((c) => c.getAttribute("data-selected") === "true")).toBe(true);
+    expect(byTestId(root, "wizard-passage-meta").textContent).toContain("2 verses");
+
+    // …and because the selection covers the whole live list, the request is the chapter's
+    // OWN echoed passageId rather than a join. What matters is the negative: no request
+    // anywhere names a verse the provider did not list. A hardcoded 5 would have asked for
+    // `PSA.117.1-5` — which upstream answers 200 with the reference "Psalms 117:1-5",
+    // silently persisting a claim about verses this chapter does not have.
+    const issued = new Set(short.map((v) => v.passageId));
+    for (const [, usfm] of fetchBiblePassage.mock.calls as [string, string][]) {
+      for (const part of usfm.split("+")) {
+        if (part === "PSA.121") continue; // the chapter's own id
+        expect(issued, `"${part}" was never handed out by the provider`).toContain(part);
+      }
+    }
+    expect(root.textContent).not.toContain("117:1-5");
+    expect(root.textContent).not.toContain("1-5");
+  });
+
+  it("U-W46: 'Whole chapter' reverts to the chapter's OWN echoed passageId", async () => {
+    const root = await step();
+    await pickPsalm121(root);
+    await click(byTestId(root, "wizard-whole-chapter"));
+    await flush();
+
+    expect(fetchBiblePassage).toHaveBeenLastCalledWith("12", "PSA.121");
+    expect(onSelect).toHaveBeenLastCalledWith(
+      expect.objectContaining({ passageId: "PSA.121", reference: "Psalm 121" }),
+    );
+    const chips = root.querySelectorAll('[data-testid="wizard-verse-chip"]');
+    expect([...chips].every((c) => c.getAttribute("data-selected") !== "true")).toBe(true);
+  });
+
+  it("U-W47: tapping selects a RANGE, and the request is still only echoed ids", async () => {
+    const root = await step();
+    await pickPsalm121(root);
+    const chip = (id: string) =>
+      byTestId(root, "wizard-verse-chips").querySelector<HTMLElement>(
+        `[data-verse-id="${id}"]`,
+      )!;
+
+    await click(chip("3"));
+    await flush();
+    await click(chip("6"));
+    await flush();
+
+    expect(fetchBiblePassage).toHaveBeenLastCalledWith(
+      "12",
+      "PSA.121.3+PSA.121.4+PSA.121.5+PSA.121.6",
+    );
+  });
+
+  it("U-W48: the preview meta interpolates BOTH counts from the live response", async () => {
+    const root = await step();
+    await pickPsalm121(root);
+    // RANGE_PASSAGE.text is seven words; the default range is five verses. Neither number
+    // is 18a's drawn "4 verses · 71 words".
+    expect(byTestId(root, "wizard-passage-meta").textContent).toBe("5 verses · 7 words");
+  });
+
+  it("U-W49: an unavailable verse list degrades to the whole chapter, never blocking the CTA", async () => {
+    // The tri-state contract again: `null` is "we could not ask". The chapter's own
+    // passageId is a complete answer, so a failed verses read must not stop the user
+    // creating a project.
+    fetchBibleVerses.mockResolvedValue(null);
+    const root = await step();
+    await pickPsalm121(root);
+
+    expect(fetchBiblePassage).toHaveBeenLastCalledWith("12", "PSA.121");
+    expect(onSelect).toHaveBeenLastCalledWith(
+      expect.objectContaining({ passageId: "PSA.121" }),
+    );
+    expect(queryTestId(root, "wizard-verse-chips")).toBeNull();
+  });
+
+  it("U-W50: an EMPTY verse list is not an error, and is not a failed one either", async () => {
+    fetchBibleVerses.mockResolvedValue([]);
+    const root = await step();
+    await pickPsalm121(root);
+    expect(queryTestId(root, "wizard-scripture-error")).toBeNull();
+    expect(fetchBiblePassage).toHaveBeenLastCalledWith("12", "PSA.121");
   });
 });
 
@@ -240,7 +397,7 @@ describe("the wizard's scripture step — skipping the passage", () => {
     const root = await step();
     await pickPsalm121(root);
     expect(onSelect).toHaveBeenLastCalledWith(
-      expect.objectContaining({ reference: "Psalm 121" }),
+      expect.objectContaining({ reference: "Psalms 121:1-5" }),
     );
     await click(byTestId(root, "wizard-skip-scripture"));
     expect(onSelect).toHaveBeenLastCalledWith(null);

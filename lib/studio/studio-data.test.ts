@@ -74,6 +74,23 @@ describe("resolveProjectBySlug", () => {
     expect(dto?.id).toBe("clabc123");
   });
 
+  it("U-D1b: also resolves a project by its cuid ID — the redirect's server-issued fallback", async () => {
+    // The wizard's auto-redirect (2026-07-30) targets the slug the SERVER confirmed via
+    // `GET /api/projects/:id`. When that read fails it falls back to the project id, which
+    // is server-issued too — and that fallback is only real if `/studio/<id>` resolves.
+    // The slug is still tried FIRST, so a project whose slug happens to look like another
+    // project's id cannot be shadowed.
+    const fetchImpl = fakeFetch(() =>
+      jsonResponse(200, { projects: [DTO, { ...DTO, id: "other", slug: "clabc123" }] }),
+    );
+    const byId = await resolveProjectBySlug("clabc123", { fetchImpl });
+    expect(byId?.id).toBe("other"); // the SLUG match wins
+    const onlyById = await resolveProjectBySlug("other", {
+      fetchImpl: fakeFetch(() => jsonResponse(200, { projects: [{ ...DTO, id: "other" }] })),
+    });
+    expect(onlyById?.id).toBe("other");
+  });
+
   it("U-D2: returns null when no project has that slug (or the list fails)", async () => {
     const hit = fakeFetch(() => jsonResponse(200, { projects: [DTO] }));
     expect(await resolveProjectBySlug("nope", { fetchImpl: hit })).toBeNull();

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useStudio } from "./studio-context";
 import {
@@ -14,6 +14,7 @@ import {
 import {
   DEFAULT_LANGUAGE_TAG,
   EMPTY_SELECTION,
+  bookAndChapterOf,
   defaultTranslation,
   scripturePick,
   selectBook,
@@ -129,15 +130,49 @@ function Field({
  * One `PICK_SCRIPTURE` action writes the script, the reference and the translation onto
  * the selected scene together. The caption needs no separate wiring at all —
  * `visibleCaption(scene) === scene.script`, which is also what makes item 2 work.
+ *
+ * ── Bound to the project's ORIGIN passage (2026-07-30) ───────────────────────────────
+ * A user created a project by choosing NIV11 / Psalms / 23 in the New-project wizard, opened
+ * the studio, and found this picker showing three placeholders: "select book", "select cha",
+ * "select ve". It took no manifest input at all — pure local `useState` over
+ * `EMPTY_SELECTION`, pre-selecting a TRANSLATION only.
+ *
+ * The cascade now SEEDS from `project.manifest.scripture`. Only the seed: the write path
+ * (`onVerse` → `pickScripture` → `PICK_SCRIPTURE`) is untouched and still per-SCENE, which is
+ * the point — the project's origin passage and a scene's scripture are different facts, and
+ * binding the seed does not conflate them. It just starts you where you almost certainly want
+ * to be, and it makes the empty state mean what it says (no origin passage) instead of
+ * meaning "we never asked".
+ *
+ * Wireframe turn 18 moved "the pickers" into the wizard and turn 19a's exhaustive Inspector
+ * spec has no scripture controls, so DELETING this surface was the other defensible reading.
+ * It was not taken: what turn 18 moved is *choosing the project's origin passage* — which
+ * that change completes — while what this component DOES is insert one verse's exact
+ * provider text into the selected scene. Nothing in the wizard replaces that, 19a never names
+ * it, and removing a shipped, user-requested capability on the strength of an omission is a
+ * one-way door. The wireframe's one in-studio reference display (13b's `PSALM 23:1 · KJV`)
+ * is added here read-only instead.
  */
 export default function ScripturePicker() {
-  const { state, pickScripture } = useStudio();
+  const { state, pickScripture, project } = useStudio();
   const { selectedSceneId } = state;
+
+  // The project's origin passage: what the wizard collected, committed to the user's repo by
+  // the scaffold, and re-read from git by the studio loader.
+  const origin = project.manifest?.scripture;
+  const originBookChapter = bookAndChapterOf(origin?.passageId);
 
   const [selection, setSelection] = useState<ScriptureSelection>({
     ...EMPTY_SELECTION,
-    languageTag: DEFAULT_LANGUAGE_TAG,
+    // The project's own BCP-47 tag when it has one, so a non-English project does not open
+    // on English and silently re-resolve there.
+    languageTag: origin?.language ?? DEFAULT_LANGUAGE_TAG,
   });
+  // The binding is ONE-SHOT per level. Without these, a late list arrival (or any re-render
+  // that re-runs an effect) would snap the user's selection back to the project's origin
+  // while they were browsing somewhere else.
+  const boundTranslation = useRef(false);
+  const boundChapter = useRef(false);
   const [languages, setLanguages] = useState<BibleLanguage[] | null>(null);
   const [translations, setTranslations] = useState<Keyed<BibleTranslation> | null>(null);
   // LAST-WRITE-WINS, not a latch. Every one of the three writers below sets it from the
@@ -188,18 +223,33 @@ export default function ScripturePicker() {
       setTranslations({ key: languageTag, items });
       setFailed(!items);
       if (!items) return;
-      const preferred = defaultTranslation(items);
+      // The project's own translation outranks the ASV preference — once. After that this is
+      // the ordinary default, so switching language behaves exactly as before.
+      const bindNow = !boundTranslation.current;
+      const preferred = defaultTranslation(items, bindNow ? origin?.translation : null);
+      boundTranslation.current = true;
       // Guard again inside the updater: the user may have moved on between the await
       // resolving and React applying this.
       if (preferred) {
         setSelection((s) =>
-          s.languageTag === languageTag ? selectTranslation(s, preferred) : s,
+          s.languageTag === languageTag
+            ? // `selectTranslation` clears every level below it (the cascade reset), so the
+              // project's book has to be re-applied in the SAME update or it would be wiped
+              // by the very call that binds the translation.
+              bindNow && originBookChapter
+              ? selectBook(selectTranslation(s, preferred), originBookChapter.book)
+              : selectTranslation(s, preferred)
+            : s,
         );
       }
     })();
     return () => {
       alive = false;
     };
+    // `origin?.translation` / `originBookChapter` are read only on the one-shot bind, which
+    // `boundTranslation` already gates; adding them here would re-run this on every render
+    // that produces a new object identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [languageTag]);
 
   // Books follow the chosen translation; chapters follow the book; verses follow the
@@ -231,11 +281,24 @@ export default function ScripturePicker() {
     let alive = true;
     void (async () => {
       const items = await fetchBibleChapters(id, usfm);
-      if (alive) setChapters({ key: chaptersKey, items });
+      if (!alive) return;
+      setChapters({ key: chaptersKey, items });
+      // Bind the project's chapter, ONCE, by matching the chapter's OWN echoed `passageId` —
+      // never by reading the number out of it. A chapter's `id` and its `passage_id` are two
+      // independent provider strings.
+      if (boundChapter.current || !items || !originBookChapter) return;
+      if (originBookChapter.book !== usfm) return;
+      const match = items.find((c) => c.passageId === originBookChapter.chapterPassageId);
+      boundChapter.current = true;
+      if (match) {
+        setSelection((s) => (s.book === usfm ? selectChapter(s, match.id) : s));
+      }
     })();
     return () => {
       alive = false;
     };
+    // Same reason as the translation effect: the origin is read only on the one-shot bind.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chaptersKey]);
 
   useEffect(() => {
@@ -272,6 +335,31 @@ export default function ScripturePicker() {
 
   return (
     <div data-testid="scripture-picker" data-scene={selectedSceneId}>
+      {/* The project's ORIGIN passage — the wireframe's one in-studio reference display
+          (13b's burned-in caption, shape `PSALM 23:1 · KJV`). READ-ONLY: the studio does not
+          edit what a project was created from, and rendering it as a control would suggest it
+          does. Absent for a project created with the wizard's SKIP control, where there
+          genuinely is no origin passage to show. */}
+      {origin ? (
+        <div
+          data-testid="project-passage"
+          style={{
+            fontFamily: SEMI,
+            fontWeight: 700,
+            fontSize: 10.5,
+            letterSpacing: ".14em",
+            textTransform: "uppercase",
+            color: "var(--sg-gold, #c99a3f)",
+            marginBottom: 10,
+          }}
+          // The reference is the provider's own string and may carry embedded bidi control
+          // marks (U+200E on Arabic references) — the same first-strong algorithm the editor,
+          // the preview caption and the generated Remotion source use.
+          dir="auto"
+        >
+          {`${origin.reference} · ${origin.translation}`}
+        </div>
+      ) : null}
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         <Field
           testid="picker-language"

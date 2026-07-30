@@ -93,19 +93,58 @@ export function selectVerse(
   return { ...selection, versePassageId };
 }
 
-/** The translation to pre-select from a LIVE collection: ASV when the collection has it,
- *  otherwise the collection's own first entry. Null for an empty collection (a language
- *  with no Bibles answers 204 upstream, which surfaces here as `[]`). */
+/**
+ * The translation to pre-select from a LIVE collection.
+ *
+ * `preferred` (when given) wins, then ASV, then the collection's own first entry. Null for
+ * an empty collection (a language with no Bibles answers 204 upstream, which surfaces here
+ * as `[]`).
+ *
+ * `preferred` exists so a project that ALREADY HAS a translation opens on it. USER DECISION
+ * D1 makes ASV the picker's *preference*; a project's own stored abbreviation is not a
+ * preference, it is a fact about that project, and it outranks one. §9-Q10 still holds
+ * throughout: the match is by ABBREVIATION against whatever the live collection returned, so
+ * no bible id is ever hardcoded or assumed to exist. A translation the collection no longer
+ * carries (licensing can be withdrawn, and a manifest is a historical record) falls through
+ * to the preference rather than leaving the picker unusable.
+ */
 export function defaultTranslation(
   translations: readonly BibleTranslation[],
+  preferred?: string | null,
 ): BibleTranslation | null {
   return (
+    (preferred
+      ? translations.find((t) => t.abbreviation === preferred)
+      : undefined) ??
     translations.find(
       (t) => t.abbreviation === PREFERRED_TRANSLATION_ABBREVIATION,
     ) ??
     translations[0] ??
     null
   );
+}
+
+/**
+ * The book and chapter a manifest's stored `passageId` refers to.
+ *
+ * `passageId` is a provider-issued USFM: `"PSA.23"` for a chapter, `"PSA.23.1"` for a verse,
+ * `"PSA.23.1-5"` for a range the host normalised. The first segment is the book code and the
+ * second locates the chapter — but the value returned for the chapter is a **`chapterPassageId`
+ * to MATCH against the live chapters list**, never a chapter `id` to use directly: `id` and
+ * `passage_id` are two independent provider strings, and deriving one from the other is
+ * exactly the "construct a usfm" move this codebase closed. The caller finds the chapter whose
+ * own echoed `passageId` equals this.
+ *
+ * Null when there is nothing to read (no id, or an id with no chapter segment — a
+ * book-level reference has no chapter to select).
+ */
+export function bookAndChapterOf(
+  passageId: string | null | undefined,
+): { book: string; chapterPassageId: string } | null {
+  if (!passageId) return null;
+  const [book, chapter] = passageId.split(".");
+  if (!book || !chapter) return null;
+  return { book, chapterPassageId: `${book}.${chapter}` };
 }
 
 /** The three manifest fields a picked verse produces. Every value is echoed from the

@@ -353,6 +353,29 @@ describe("create/import/create-repo request+response DTOs", () => {
     ).toBe(false);
   });
 
+  it("CreateProjectRequestSchema carries the wizard's passage (mirror 5)", () => {
+    // The BFF forwards the create body verbatim today, so this schema has no runtime
+    // consumer — which is exactly why the omission was easy to leave in and dangerous to
+    // leave in. nextjs does not import `@supagloo/database-lib` (the submodule is excluded
+    // from tsconfig AND eslint), so this file NEVER self-heals when the db-lib gitlink
+    // moves: the day anything validates a create body with this schema, `scripture` would
+    // be stripped and the whole feature would silently no-op on both wizard tabs.
+    const parsed = CreateProjectRequestSchema.safeParse({
+      repoOwner: "acme",
+      repoName: "psalm-121",
+      visibility: "private",
+      createdFrom: "passage",
+      scripture: {
+        reference: "Psalms 121:1-5",
+        translation: "ASV",
+        language: "en",
+        passageId: "PSA.121.1-5",
+      },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.scripture?.passageId).toBe("PSA.121.1-5");
+  });
+
   it("CreateProjectResponseSchema requires { projectId, jobId }", () => {
     expect(
       CreateProjectResponseSchema.parse({ projectId: "p", jobId: "j" }).jobId,

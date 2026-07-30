@@ -61,11 +61,11 @@ import {
   fetchRenderDownloadUrl,
   pollRenderUntilTerminal,
 } from "@/lib/studio/render-data";
+import { serializeManifest, commitMessage } from "@/lib/studio/manifest-adapter";
 import {
-  serializeManifest,
-  commitMessage,
-  sceneScriptureContext,
-} from "@/lib/studio/manifest-adapter";
+  scriptGenerationInput,
+  storyboardGenerationInput,
+} from "@/lib/studio/generation-input";
 import {
   commitVersion,
   publishVersion,
@@ -814,13 +814,13 @@ export function StudioProvider({
     const id = sceneId ?? state.selectedSceneId;
     const scene = state.storyboard.scenes.find((s) => s.id === id);
     if (!scene) return;
-    // Task #57: read the scene's scripture from the CURRENT (post-commit-refreshed)
-    // manifest, not the never-refreshed prop that used to reattach a stale reference.
-    const scripture = sceneScriptureContext(project.manifest, id);
-    const input: { brief: string; scripture?: { reference: string; translation: string; language: string } } = {
-      brief: `Rewrite the narration line for this scene, staying faithful to the scripture. Current line: "${scene.script}".`,
-    };
-    if (scripture) input.scripture = scripture;
+    // Which values travel is a pure question, and it is where this used to be wrong: it sent
+    // the scene's HUMAN reference into a field the provider parses as a USFM id, which is a
+    // permanent 404 — so every rewrite against a real project failed. See
+    // `lib/studio/generation-input.ts`. The manifest read is still the post-commit-REFRESHED
+    // one (task #57's `projectWithManifest`), so a rewrite after a re-plan+commit sees the
+    // committed scenes rather than the stale prop.
+    const input = scriptGenerationInput(project.manifest, scene);
     runGeneration(
       scriptSlot(id),
       { kind: "script", projectId: project.id, sceneId: id, input },
@@ -831,17 +831,17 @@ export function StudioProvider({
 
   const generateStoryboard = () => {
     if (!project.manifest) return;
-    const firstScene = project.manifest.scenes[0];
-    const input: { brief: string; scripture?: { reference: string; translation: string; language: string } } = {
-      brief: state.storyboard.reference
-        ? `Plan a short scripture-video storyboard for ${state.storyboard.reference}.`
-        : `Plan a short scripture-video storyboard for ${project.projectName}.`,
-    };
-    // Task #57: seed from the current manifest's first scene (refreshed post-commit).
-    const scripture = firstScene
-      ? sceneScriptureContext(project.manifest, firstScene.id)
-      : undefined;
-    if (scripture) input.scripture = scripture;
+    // THE reported bug lived here: this read `manifest.scenes[0]`, which is `undefined` on a
+    // freshly-scaffolded project, so it POSTed a brief with no `scripture` at all — the
+    // workflow skipped its presence-gated passage fetch, and a schema that REQUIRES a
+    // per-scene reference left the model to supply one (Genesis 1 / ASV). It now reads the
+    // project's ORIGIN passage, which is the thing the wizard actually collected. See
+    // `lib/studio/generation-input.ts`.
+    const input = storyboardGenerationInput(
+      project.manifest,
+      state.storyboard,
+      project.projectName,
+    );
     runGeneration(
       STORYBOARD_SLOT,
       { kind: "storyboard", projectId: project.id, input },
