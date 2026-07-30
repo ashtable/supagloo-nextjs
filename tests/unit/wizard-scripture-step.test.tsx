@@ -42,14 +42,40 @@ const TRANSLATIONS = [
   { id: "1", abbreviation: "KJV", title: "King James Version" },
 ];
 const BOOKS = [{ usfm: "PSA", title: "Psalms", canon: "ot" }];
+/**
+ * The chapters shape the LIVE host reports, and the reason it is spelled out here.
+ *
+ * `GET /v1/bibles/12/books/PSA/chapters` answers `{id: "23", passage_id: "PSA.23",
+ * title: "23"}` — the `id` is the BARE NUMBER and the `passage_id` is the USFM. They are two
+ * independent provider strings, and the verses route takes the `id` (`/chapters/23/verses`;
+ * `/chapters/PSA.23/verses` is a 404).
+ *
+ * This fixture used to set `id` to the USFM as well, so the whole suite ran against a shape
+ * the provider never returns. It hid nothing today — the production code is id-agnostic, it
+ * matches `chapters.find(c => c.id === chapterId)` and reads `chapterRef.passageId` — but the
+ * confusion it would let through later is exactly the one this run exists to fix, one level
+ * up (a human reference travelling where a USFM was required). The sibling fixture in
+ * `tests/unit/scripture-picker.test.tsx` already had it right.
+ *
+ * Psalm 117 is here because `U-W45` drives it: it is the two-verse chapter whose live
+ * behaviour is the whole argument for `min(5, n)`.
+ */
 const CHAPTERS = [
-  { id: "PSA.121", passageId: "PSA.121", title: "121" },
-  { id: "PSA.122", passageId: "PSA.122", title: "122" },
+  { id: "117", passageId: "PSA.117", title: "117" },
+  { id: "121", passageId: "PSA.121", title: "121" },
+  { id: "122", passageId: "PSA.122", title: "122" },
 ];
 const PASSAGE = {
   passageId: "PSA.121",
   reference: "Psalm 121",
   text: "I will lift up mine eyes unto the hills, from whence cometh my help.",
+};
+/** The two-verse chapter U-W45 drives, answered at CHAPTER granularity — which is what the
+ *  step asks for once the default range covers the whole live list. */
+const PSALM_117 = {
+  passageId: "PSA.117",
+  reference: "Psalms 117",
+  text: "O praise Jehovah, all ye nations; Laud him, all ye peoples.",
 };
 /** Psalm 121 has EIGHT verses. Shaped exactly as `app/api/bible/verses/route.ts` serves
  *  them, `passageId` provider-issued. */
@@ -64,6 +90,13 @@ const RANGE_PASSAGE = {
   passageId: "PSA.121.1-5",
   reference: "Psalms 121:1-5",
   text: "one two three four five six seven",
+};
+/** The chapter-granularity answers, keyed by the request. A chapter's `passage_id` is what
+ *  the step asks for whenever the selection covers the whole live verse list (or there is no
+ *  list), so every chapter this suite drives needs one. */
+const CHAPTER_PASSAGES: Record<string, typeof PASSAGE> = {
+  [PASSAGE.passageId]: PASSAGE,
+  [PSALM_117.passageId]: PSALM_117,
 };
 
 let mounted: { container: HTMLElement; unmount: () => void } | null = null;
@@ -81,10 +114,14 @@ beforeEach(() => {
   fetchBibleChapters.mockResolvedValue(CHAPTERS);
   fetchBibleVerses.mockResolvedValue(VERSES);
   // The host answers about whatever id it was asked for. Keyed rather than fixed because
-  // the step now has two granularities — the chapter's own echoed id, and the `+`-join of
-  // echoed per-verse ids that the host normalises into a range.
-  fetchBiblePassage.mockImplementation(async (_bibleId: string, usfm: string) =>
-    usfm === "PSA.121" ? PASSAGE : RANGE_PASSAGE,
+  // the step has two granularities — a chapter's own echoed id, and the `+`-join of echoed
+  // per-verse ids that the host normalises into a range. The chapter answers are looked up;
+  // anything else is a join, and `RANGE_PASSAGE` is the measured answer for the join the
+  // DEFAULT produces. (Tests that drive a non-default range assert the REQUEST, never this
+  // fallback's values — normalising an arbitrary join here would mean re-implementing
+  // YouVersion's own canonicalisation in a fixture, i.e. inventing provider behaviour.)
+  fetchBiblePassage.mockImplementation(
+    async (_bibleId: string, usfm: string) => CHAPTER_PASSAGES[usfm] ?? RANGE_PASSAGE,
   );
 });
 
@@ -112,13 +149,23 @@ async function step() {
   return mounted.container;
 }
 
-/** Walk the cascade to a resolved chapter. */
-async function pickPsalm121(root: HTMLElement) {
+/**
+ * Walk the cascade to a resolved chapter.
+ *
+ * `chapterId` is the chapter's `id` — the BARE NUMBER the live host reports — because that is
+ * what the `<option value>`s carry and what `selection.chapter` holds. It is deliberately NOT
+ * the `passageId`; see `CHAPTERS`.
+ */
+async function pickChapter(root: HTMLElement, chapterId: string) {
   await selectOption(byTestId(root, "wizard-picker-book"), "PSA");
   await flush();
-  await selectOption(byTestId(root, "wizard-picker-chapter"), "PSA.121");
+  await selectOption(byTestId(root, "wizard-picker-chapter"), chapterId);
   await flush();
 }
+
+/** The eight-verse chapter most of this suite drives, so the `min(5, n)` default is a real
+ *  subset of the live list rather than the whole of it. */
+const pickPsalm121 = (root: HTMLElement) => pickChapter(root, "121");
 
 describe("the wizard's scripture step", () => {
   it("U-W32: renders the four cascading pickers and the repo recap", async () => {
@@ -174,10 +221,20 @@ describe("the wizard's scripture step", () => {
     const reported = onSelect.mock.calls.at(-1)![0]!;
     expect(reported.passageId).toBe(RANGE_PASSAGE.passageId);
     expect(fetchBiblePassage).toHaveBeenCalledWith("12", DEFAULT_RANGE_REQUEST);
-    // every component of the request came out of the verses response
-    const echoed = new Set(VERSES.map((v) => v.passageId));
-    for (const part of DEFAULT_RANGE_REQUEST.split("+")) {
-      expect(echoed, `"${part}" was never handed out by the provider`).toContain(part);
+
+    // Every component of every request came out of the provider. Iterated over what the STEP
+    // ASKED FOR — not over `DEFAULT_RANGE_REQUEST`, which this file builds by mapping over
+    // `VERSES`, so checking its parts against `VERSES` was a statement about the test's own
+    // arithmetic and could not fail whatever the component did. The chapter's own `passageId`
+    // is in the allow-list because the step legitimately asks for it first, before the verses
+    // response has arrived to default a range from.
+    const echoed = new Set([PASSAGE.passageId, ...VERSES.map((v) => v.passageId)]);
+    const requested = fetchBiblePassage.mock.calls.map(([, usfm]) => usfm as string);
+    expect(requested.length, "the step asked the provider for nothing").toBeGreaterThan(0);
+    for (const usfm of requested) {
+      for (const part of usfm.split("+")) {
+        expect(echoed, `"${part}" was never handed out by the provider`).toContain(part);
+      }
     }
   });
 
@@ -251,7 +308,9 @@ describe("the wizard's scripture step", () => {
     const root = await step();
     await pickPsalm121(root);
 
-    expect(fetchBibleVerses).toHaveBeenCalledWith("12", "PSA", "PSA.121");
+    // The chapter's `id`, not its `passageId`: the live verses route is
+    // `/chapters/{id}/verses` and `/chapters/PSA.121/verses` is a 404.
+    expect(fetchBibleVerses).toHaveBeenCalledWith("12", "PSA", "121");
     const chips = root.querySelectorAll('[data-testid="wizard-verse-chip"]');
     expect(chips).toHaveLength(VERSES.length);
     const selected = [...chips]
@@ -260,6 +319,18 @@ describe("the wizard's scripture step", () => {
     expect(selected).toEqual(["1", "2", "3", "4", "5"]);
   });
 
+  // U-W45's echoed-id claim was REWRITTEN on 2026-07-30, because the loop it used to make
+  // executed zero assertions. It drove chapter 121 while feeding it `PSA.117.*` verses, so
+  // `chapterPassageId` was `"PSA.121"`, the whole-list selection made that the only request
+  // there was, and the loop's `continue` skipped it. Proved by substituting an impossible
+  // expectation into the body: the test still passed.
+  //
+  // Two things had to change. The fixture now drives the chapter the verses belong to, so it
+  // states one coherent situation. And the claim is asserted as an EQUALITY over every request
+  // the step made rather than as a filtered loop — because with the whole live list selected
+  // the request is, correctly, the chapter's own echoed id and nothing else, so any assertion
+  // shaped as "every join component was issued" has nothing to iterate over by construction.
+  // U-W35 carries the join-components form, where a join actually exists.
   it("U-W45: a TWO-verse chapter defaults to two — the live response is the authority", async () => {
     // Psalm 117 has two verses. `PSA.117.1-5` does not 404 upstream (measured: 200, with
     // `reference:"Psalms 117:1-5"` over the real two-verse text), so a hardcoded 5 would
@@ -270,7 +341,9 @@ describe("the wizard's scripture step", () => {
     ];
     fetchBibleVerses.mockResolvedValue(short);
     const root = await step();
-    await pickPsalm121(root);
+    await pickChapter(root, "117");
+
+    expect(fetchBibleVerses).toHaveBeenCalledWith("12", "PSA", "117");
 
     // Both of the chapter's verses are selected — min(5, 2) — so every chip is on…
     const chips = [...root.querySelectorAll('[data-testid="wizard-verse-chip"]')];
@@ -278,20 +351,21 @@ describe("the wizard's scripture step", () => {
     expect(chips.every((c) => c.getAttribute("data-selected") === "true")).toBe(true);
     expect(byTestId(root, "wizard-passage-meta").textContent).toContain("2 verses");
 
-    // …and because the selection covers the whole live list, the request is the chapter's
-    // OWN echoed passageId rather than a join. What matters is the negative: no request
-    // anywhere names a verse the provider did not list. A hardcoded 5 would have asked for
-    // `PSA.117.1-5` — which upstream answers 200 with the reference "Psalms 117:1-5",
-    // silently persisting a claim about verses this chapter does not have.
-    const issued = new Set(short.map((v) => v.passageId));
-    for (const [, usfm] of fetchBiblePassage.mock.calls as [string, string][]) {
-      for (const part of usfm.split("+")) {
-        if (part === "PSA.121") continue; // the chapter's own id
-        expect(issued, `"${part}" was never handed out by the provider`).toContain(part);
-      }
-    }
-    expect(root.textContent).not.toContain("117:1-5");
-    expect(root.textContent).not.toContain("1-5");
+    // …and the whole of what the step asked the provider for, exhaustively. A hardcoded 5
+    // would have asked for five verses of a two-verse chapter — which upstream answers 200
+    // with the reference "Psalms 117:1-5", silently persisting a claim about verses this
+    // chapter does not have. Because the default here covers the whole live list, the one
+    // legitimate request is the chapter's own echoed `passageId`; asserting the exact set is
+    // what makes "nothing was asked for that the provider did not issue" a claim that can
+    // fail, rather than a loop with no iterations.
+    expect(fetchBiblePassage.mock.calls.map(([, usfm]) => usfm)).toEqual([
+      PSALM_117.passageId,
+    ]);
+    // The reported selection is the provider's answer about that request, so nothing about
+    // verse five reaches the manifest either.
+    expect(onSelect).toHaveBeenLastCalledWith(
+      expect.objectContaining({ passageId: "PSA.117", reference: "Psalms 117" }),
+    );
   });
 
   it("U-W46: 'Whole chapter' reverts to the chapter's OWN echoed passageId", async () => {

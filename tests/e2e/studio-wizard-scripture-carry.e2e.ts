@@ -40,12 +40,34 @@ import { createProjectViaExistingEmptyRepo, resolveInstallationId } from "./gith
  * general claim — Psalms is picked here precisely so it can never be a false positive.
  *
  * ── EXECUTION NOTE ──────────────────────────────────────────────────────────────────
- * Same posture as every other spec in this lane (D21, and see the lane config's own
- * "EXECUTION HONESTY" header): authored + typechecked here, execution deferred to the
- * release step. It needs `next dev`, the containerised api + a DBOS ai-generation worker,
- * real GitHub, real OpenRouter and the root `.env` YouVersion app key. The behaviour is
- * proven meanwhile by `lib/studio/generation-input.test.ts` (which values travel),
- * `lib/project-wizard/verse-range.test.ts` (what the range resolves to),
+ * EXECUTED GREEN 2026-07-30 (54.7 s) against `next dev`, the containerised api, a DBOS
+ * ai-generation worker, real github.com, real OpenRouter and the live YouVersion host. It is
+ * no longer one of the lane's authored-but-deferred specs, and that matters: the first four
+ * attempts to run it all failed, three of them for reasons nothing else in any repo could
+ * see.
+ *
+ *   1. The shared helper set the BOOK `<select>` before `GET /api/bible/books` had rendered
+ *      an option for it. Assigning a `<select>` a value it does not offer is a silent no-op,
+ *      so no chapter fetch was ever issued and the failure surfaced one cascade level below
+ *      its cause. Fixed in `github-e2e.ts`'s `selectTestIdOption`, which now waits and then
+ *      reads the value back.
+ *   2. The helper armed the scaffold as soon as ANY passage preview rendered, which races the
+ *      verses read the default `min(5, n)` range comes from — so the fixture persisted the
+ *      WHOLE CHAPTER and E-WSC4's range assertion had nothing to find. Fixed by
+ *      `waitForWizardVerseDefault`.
+ *   3. THE REAL DEFECT, and the one this spec exists for: the DBOS worker had no
+ *      `YOUVERSION_APP_KEY` at all. Root `docker-compose.yml` passed that key to the `nextjs`
+ *      service and to nothing else, while the worker reads it and sends it as `x-yvp-app-key`
+ *      — so every scripture read answered 401, non-retryably, and the user saw "Generation
+ *      failed — try again" with the cause three services away. It had been unreachable rather
+ *      than absent: `generateScript` only fetches a passage when the manifest HAS a
+ *      `scripture` block, and every fixture in every repo was a `createdFrom: "blank"` project
+ *      without one. This spec is the first to create a project WITH a chosen passage, and it
+ *      found the gap on its first honest run. Root's `tests/unit/dbos-compose.test.ts` now
+ *      holds the wiring.
+ *
+ * Unit cover remains the fast signal: `lib/studio/generation-input.test.ts` (which values
+ * travel), `lib/project-wizard/verse-range.test.ts` (what the range resolves to),
  * `tests/unit/wizard-scripture-step.test.tsx` + `tests/unit/scripture-picker.test.tsx` (both
  * component boundaries) and `tests/e2e/bible-youversion-live.e2e.ts` E-BY7..E-BY9 (the live
  * provider contract the whole thing rests on).
@@ -234,9 +256,28 @@ describe("the wizard's passage survives into the studio's generate", () => {
 
     await waitForTestId("studio-frame", 60_000);
 
+    // ── E-WSC3, part 1: generate ──────────────────────────────────────────────────
+    // This has to happen BEFORE E-WSC2/E-WSC4 can be observed at all, and the ordering is
+    // structural rather than a convenience. `studio-app.tsx` renders `StudioEmpty` while
+    // `storyboard.scenes.length === 0` and mounts `SceneInspector` only in the other branch —
+    // so on a freshly scaffolded project (`scenes: []`) the Inspector, its `scripture-picker`
+    // and the read-only `project-passage` line genuinely do not exist yet. An earlier draft of
+    // this spec read `project-passage` here and got `""`, which is not the studio dropping the
+    // passage; it is the studio not having drawn an Inspector.
+    //
+    // It is also the faithful reproduction: the reported bug was seen in the Inspector AFTER
+    // generating, which is the only place 13b's reference line is drawn.
+    await waitForTestId("generate-storyboard");
+    await clickTestId("generate-storyboard");
+    await waitForTestId("script-input", 300_000);
+    expect(await countTestId("generate-storyboard-error")).toBe(0);
+
     // ── E-WSC4: what the wizard PERSISTED ─────────────────────────────────────────
     // The read-only project-passage line renders `manifest.scripture`, i.e. the block the
-    // scaffold committed into the real GitHub repo and the studio re-read from it.
+    // scaffold committed into the real GitHub repo and the studio re-read from it. Generating
+    // does not touch it — the storyboard lives in client state until a commit, and
+    // `origin` is read from `project.manifest`.
+    await waitForTestId("project-passage", 60_000);
     const passageLine = await textOfTestId("project-passage");
     expect(passageLine.length).toBeGreaterThan(0);
     // The default verse selection is the first min(5, n) verses of the live response, so
@@ -262,12 +303,7 @@ describe("the wizard's passage survives into the studio's generate", () => {
     expect(await valueOfTestId("picker-book")).toBe(BOOK_USFM);
     expect(await valueOfTestId("picker-chapter")).toBe(CHAPTER_ID);
 
-    // ── E-WSC3: the headline property ─────────────────────────────────────────────
-    await waitForTestId("generate-storyboard");
-    await clickTestId("generate-storyboard");
-    await waitForTestId("script-input", 300_000);
-    expect(await countTestId("generate-storyboard-error")).toBe(0);
-
+    // ── E-WSC3, part 2: the headline property ─────────────────────────────────────
     const scenes = await everySceneScripture();
     expect(scenes.length).toBeGreaterThan(0);
     for (const scene of scenes) {
