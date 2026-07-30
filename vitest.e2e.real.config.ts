@@ -1,7 +1,15 @@
 import { defineConfig } from "vitest/config";
 
 /**
- * E2E lane 2 of 3 — the REAL-STACK lane (task-62 D21).
+ * E2E lane 1 of 2 — the REAL-STACK lane, and the DEFAULT one (`npm run test:e2e`).
+ *
+ * There is no mock lane any more. It was deleted on 2026-07-29 along with its eight
+ * `?mock=`-driven specs: they drove a fabricated session against a fixture storyboard,
+ * so nothing they asserted could fail for a reason a user could hit. An e2e test that
+ * cannot see a real system is not an e2e test, and it is worse than no test because it
+ * reports green. What those specs covered — copy, gating, routing — is unit-testable and
+ * lives in the jsdom lane, where it runs in seconds on every push instead of costing a
+ * browser and a Compose stack.
  *
  * The ten specs that drive the browser through the BFF into the CONTAINERISED
  * supagloo-nodejs-api, Postgres, MinIO, a DBOS worker and — as of task 62 half
@@ -9,8 +17,10 @@ import { defineConfig } from "vitest/config";
  *
  * Requires, all of which `tests/e2e/global-setup.render.ts` brings up or gates:
  *   1. the Compose stack (`postgres minio minio-init migrate api dbos`) from the
- *      ROOT repo, with the gitignored `docker-compose.override.yml` present so
- *      in-flight api/dbos code is what gets built;
+ *      ROOT repo, built from that repo's SUBMODULES. The sibling-checkout
+ *      `docker-compose.override.yml` is retired (root's `docs/release-gate.md` §1),
+ *      so what this lane exercises is the pinned configuration rather than whatever
+ *      happens to be in a checkout next door;
  *   2. `next dev` on :3000 (reused or spawned);
  *   3. the root `.env` GitHub App credentials + `GITHUB_E2E_PAT_TOKEN`, loaded
  *      into every worker by `./tests/e2e/load-root-env.ts` (D24 — globalSetup
