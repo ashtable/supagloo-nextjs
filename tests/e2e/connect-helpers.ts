@@ -513,9 +513,13 @@ export async function connectGlooViaProfile(page: StagehandPage): Promise<void> 
   await waitFor("profile-page");
   await waitFor("connection-card-gloo");
 
-  await waitFor("card-connect-gloo");
-  await click("card-connect-gloo");
-
+  // NO `card-connect-gloo` click here, and that is not an oversight. `connection-card`
+  // renders a `card-connect-<provider>` button only when `model.body === "connect"`,
+  // whose handler is typed `(provider as "github" | "openrouter")` — Gloo instead takes
+  // the `model.body === "gloo-form"` branch and renders `GlooCredentialsForm` INLINE.
+  // Waiting for a button that never renders is a 30s timeout inside beforeAll, which
+  // fails the whole spec file before it acquires a project; that is exactly how this
+  // helper failed on its first run.
   await waitFor("gloo-client-id");
   await page.locator('[data-testid="gloo-client-id"]').fill(clientId);
   await page.locator('[data-testid="gloo-secret"]').fill(clientSecret);
