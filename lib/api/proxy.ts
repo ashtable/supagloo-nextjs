@@ -37,6 +37,33 @@ export interface ForwardResult {
  */
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
 
+/**
+ * The backstop for the ONE forward that legitimately blocks on GitHub for a minute:
+ * `POST /api/projects/create-repo`.
+ *
+ * The api's `createRepoAndProject` creates a real repository and then waits up to **60 s**
+ * (`VISIBILITY_DEFAULTS.timeoutMs`) for the installation to list it, because enqueueing
+ * the scaffold before that lands makes it fail PERMANENTLY rather than slowly. The
+ * default 30 s backstop above is therefore shorter than the operation it guards, and
+ * `E-RNP1b` failed on it at exactly 30.0 s on two consecutive runs.
+ *
+ * Two things go wrong when the backstop is the shorter of the two, and the second is the
+ * serious one:
+ *
+ *  1. the api's typed `RepoNotVisibleError` — which names the repo, the installation and
+ *     the remedy — can never reach the browser here; the user gets a bare
+ *     `upstream_timeout` instead, and every investigation starts from the wrong place;
+ *  2. when the wait settles between 30 s and 60 s the api goes on to **succeed**, so the
+ *     user is told their project failed while it is in fact being created. On a
+ *     non-idempotent hop that creates a real GitHub repository, inviting a retry is the
+ *     expensive direction to be wrong in.
+ *
+ * It stays a per-call exception rather than a new default (`U-PX2`): the patience is
+ * justified by this hop's specific blocking behaviour, and granting it to every page-load
+ * forward would reintroduce exactly the hang DR3 exists to prevent.
+ */
+export const PROVISIONING_UPSTREAM_TIMEOUT_MS = 90_000;
+
 export interface ForwardOptions {
   /** API path WITHOUT the `/v1` prefix, e.g. `"me"` or `"me/onboarding"`. */
   path: string;

@@ -63,7 +63,7 @@ const CATALOGUE: AiModelInfo[] = [
     provider: "openrouter",
     label: "Vendor Image",
     kinds: ["image"],
-    pricing: { perImage: 0.03 },
+    pricing: { perOutputImageToken: 0.00006 },
     voices: null,
   },
   {

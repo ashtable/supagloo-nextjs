@@ -584,10 +584,16 @@ export type ProjectManifest = z.infer<typeof ProjectManifestSchema>;
 
 /** Per-model pricing, normalized across providers (mirrors the api's
  *  `AiModelPricingSchema`). Gloo publishes per-1k-token decimal strings and OpenRouter
- *  publishes per-token numbers plus a per-IMAGE price; the api reconciles them to these
- *  three fields so the two are never silently 1000x apart. */
+ *  publishes per-token numbers; the api reconciles them to these three fields so the two
+ *  are never silently 1000x apart.
+ *
+ *  There is deliberately NO per-image total. `perOutputImageToken` (OpenRouter
+ *  `image_output`) is a per-TOKEN rate, and an image's token count is not knowable before
+ *  the run — see the api's `AiModelPricing.perOutputImageToken` for the field this
+ *  replaced (`perImage`, sourced from `pricing.image`, which is the image-INPUT rate) and
+ *  the five-orders-of-magnitude error it put on screen. */
 export const AiModelPricingSchema = z.object({
-  perImage: z.number().optional(),
+  perOutputImageToken: z.number().optional(),
   perInputToken: z.number().optional(),
   perOutputToken: z.number().optional(),
 });

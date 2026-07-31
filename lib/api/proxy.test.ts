@@ -7,7 +7,11 @@ import { describe, expect, it } from "vitest";
 // upstream. The Next.js runtime glue (cookie read / NextResponse) lives in the thin
 // route adapters and is exercised by the e2e — here we test the pure core with an
 // injected fetch.
-import { forwardToApi, DEFAULT_UPSTREAM_TIMEOUT_MS } from "./proxy";
+import {
+  forwardToApi,
+  DEFAULT_UPSTREAM_TIMEOUT_MS,
+  PROVISIONING_UPSTREAM_TIMEOUT_MS,
+} from "./proxy";
 
 /** A fetch stand-in that records the single call it receives and returns `res`. */
 function stubFetch(res: {
@@ -172,5 +176,47 @@ describe("forwardToApi — hung-upstream timeout", () => {
     // Long enough to outlast the API's own bounded GitHub backoff, short enough that a
     // wedged upstream surfaces as an error inside a page load rather than a hang.
     expect(DEFAULT_UPSTREAM_TIMEOUT_MS).toBeLessThanOrEqual(60_000);
+  });
+});
+
+// ===========================================================================
+// The backstop must not be SHORTER than the operation it is backstopping.
+//
+// Found 2026-07-31 by `E-RNP1b`, which failed with `POST /api/projects/create-repo
+// 504 in 30.0s` on two consecutive full-lane runs — the same duration to the
+// tenth of a second, which is the signature of a ceiling rather than of latency.
+//
+// The api's `createRepoAndProject` creates the repo and then runs
+// `awaitInstallationVisibility`, whose OWN budget is 60 s and which is documented
+// as mandatory (losing the race makes the scaffold fail permanently rather than
+// slowly). The BFF was cutting that operation off at 30 s, which has two costs and
+// the second is worse than the first:
+//
+//   1. the api's carefully typed `RepoNotVisibleError` (502, naming the repo, the
+//      installation and the remedy) could NEVER reach the browser on this path —
+//      the user always got a bare `upstream_timeout`;
+//   2. when the visibility wait settles between 30 s and 60 s the api goes on to
+//      SUCCEED, so the user is told their project failed while it is in fact being
+//      created. A 504 the caller is invited to retry, on a non-idempotent
+//      create-a-real-GitHub-repo hop, is the expensive direction to be wrong in.
+// ===========================================================================
+
+describe("PROVISIONING_UPSTREAM_TIMEOUT_MS", () => {
+  /** The api's own gate: `VISIBILITY_DEFAULTS.timeoutMs` in
+   *  `supagloo-nodejs-api/src/projects/repo-provisioning-service.ts`. Written down here
+   *  because the two repos cannot import each other, and this test is the only thing
+   *  that keeps the pair ordered. If the api's budget moves, this number moves with it. */
+  const API_VISIBILITY_BUDGET_MS = 60_000;
+
+  it("U-PX1: outlasts the api's installation-visibility gate, so the api's own error wins the race", () => {
+    expect(PROVISIONING_UPSTREAM_TIMEOUT_MS).toBeGreaterThan(API_VISIBILITY_BUDGET_MS);
+  });
+
+  it("U-PX2: it is an EXCEPTION, not a new default — every other route keeps the 30 s backstop", () => {
+    // The generous budget is justified only by a hop that legitimately blocks on GitHub
+    // for a minute. Raising the global default instead would hand the same patience to
+    // every page-load forward, which is the hang DR3 exists to prevent.
+    expect(DEFAULT_UPSTREAM_TIMEOUT_MS).toBe(30_000);
+    expect(PROVISIONING_UPSTREAM_TIMEOUT_MS).toBeGreaterThan(DEFAULT_UPSTREAM_TIMEOUT_MS);
   });
 });

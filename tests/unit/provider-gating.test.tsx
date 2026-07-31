@@ -120,7 +120,7 @@ const OPENROUTER_MODELS: AiModelInfo[] = [
     provider: "openrouter",
     label: "Nano Banana 2",
     kinds: ["image"],
-    pricing: { perImage: 0.03 },
+    pricing: { perOutputImageToken: 0.00006 },
     voices: null,
   },
   {
@@ -158,7 +158,7 @@ const GLOO_MODELS: AiModelInfo[] = [
     provider: "gloo",
     label: "Gemini 2.5 Flash Image",
     kinds: ["image"],
-    pricing: { perImage: 0.03 },
+    pricing: { perOutputImageToken: 0.00006 },
     voices: null,
   },
 ];

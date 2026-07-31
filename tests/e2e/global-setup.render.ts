@@ -158,6 +158,9 @@ async function waitFor(
 interface ContainerState {
   running: boolean;
   restartCount: number;
+  /** `.State.StartedAt` — the CURRENT process's start, which is what bounds a
+   *  log read to this boot rather than to every boot this container has had. */
+  startedAt?: string;
 }
 
 /**
@@ -173,18 +176,56 @@ function dbosContainerState(): ContainerState | null {
   try {
     raw = execFileSync(
       "docker",
-      ["inspect", "--format", "{{.State.Running}} {{.RestartCount}}", id],
+      [
+        "inspect",
+        "--format",
+        "{{.State.Running}} {{.RestartCount}} {{.State.StartedAt}}",
+        id,
+      ],
       { cwd: ROOT_DIR, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     ).trim();
   } catch {
     return null;
   }
-  const [running, restarts] = raw.split(/\s+/);
-  return { running: running === "true", restartCount: Number(restarts ?? "0") };
+  const [running, restarts, startedAt] = raw.split(/\s+/);
+  return {
+    running: running === "true",
+    restartCount: Number(restarts ?? "0"),
+    ...(startedAt ? { startedAt } : {}),
+  };
 }
 
 function dbosLogTail(lines = 400): string {
   return composeQuiet(["logs", "--no-color", `--tail=${lines}`, "dbos"]);
+}
+
+/**
+ * The worker's log since ITS CURRENT PROCESS STARTED — never the whole buffer.
+ *
+ * `docker compose up -d` leaves an already-running, config-unchanged container alone. So
+ * a `dbos` container that has been up since a previous session still holds that session's
+ * `worker launched` line, and a `--tail`-only read finds it and passes the gate no matter
+ * what the worker has been doing since. That is a guard satisfied by its own residue: it
+ * answers "was this worker ever ready" when the only useful question is "is it ready
+ * now".
+ *
+ * `State.StartedAt` is the container's CURRENT process start, so `--since` that instant
+ * bounds the read to this boot. One second is shaved off because Docker's `--since` is
+ * exclusive at second granularity while `StartedAt` carries nanoseconds — without it the
+ * very line we are looking for can fall outside the window and the gate flips from
+ * too-permissive to spuriously fatal.
+ */
+function dbosLogSinceBoot(lines = 400): string {
+  const startedAt = dbosContainerState()?.startedAt;
+  if (!startedAt) return dbosLogTail(lines);
+  const since = new Date(new Date(startedAt).getTime() - 1000).toISOString();
+  return composeQuiet([
+    "logs",
+    "--no-color",
+    `--since=${since}`,
+    `--tail=${lines}`,
+    "dbos",
+  ]);
 }
 
 /**
@@ -224,7 +265,7 @@ async function gateDbosWorker(): Promise<void> {
     );
   }
 
-  const logs = dbosLogTail();
+  const logs = dbosLogSinceBoot();
   if (WORKER_FAILED_MARKER.test(logs)) {
     throw new Error(
       `[global-setup.render] the dbos worker logged a launch failure.\n` +
@@ -242,10 +283,15 @@ async function gateDbosWorker(): Promise<void> {
       );
     }
     throw new Error(
-      `[global-setup.render] the dbos worker never logged that it launched ` +
-        `(${JSON.stringify(WORKER_READY_LOG)}). It is running but has not registered its ` +
-        `queues, so no scaffold or render job will ever be picked up.\n` +
-        `  Log tail:\n${dbosLogTail(80)}`,
+      `[global-setup.render] the dbos worker has not logged that it launched ` +
+        `(${JSON.stringify(WORKER_READY_LOG)}) SINCE ITS CURRENT BOOT. It is running but ` +
+        `has not registered its queues, so no scaffold or render job will be picked up.\n` +
+        `  This read is bounded to the container's current process on purpose: ` +
+        `\`docker compose up -d\` leaves an already-running container alone, so an ` +
+        `unbounded read would find a PREVIOUS session's ready line and pass the gate for ` +
+        `a worker that has since lost its database. If the worker really is fine, ` +
+        `restart it so it re-announces: ${composeCommand("restart dbos")}\n` +
+        `  Log tail (this boot):\n${dbosLogSinceBoot(80)}`,
     );
   }
 }

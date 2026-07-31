@@ -1329,7 +1329,21 @@ async function completeCreateRepoCallback(
       throw new Error(
         `[github-e2e] the create-repo callback page reported data-state="error". ` +
           `That is POST /api/projects/create-repo → POST /v1/projects/create-repo ` +
-          `failing. The usual causes, in order:\n` +
+          `failing.\n` +
+          `  ⚠️ KNOWN AND EXPECTED IN THIS HARNESS (measured 2026-07-31). The api's ` +
+          `\`awaitInstallationVisibility\` gate walks ` +
+          `\`GET /user/installations/:id/repositories\`, which GitHub serves ONLY to a ` +
+          `GitHub App USER-TO-SERVER token. Row 66's synthetic exchange cannot mint one — ` +
+          `it hands back \`GITHUB_E2E_EXCHANGE_TOKEN\`, a classic PAT — and GitHub answers ` +
+          `403 to that token type. Verified directly against api.github.com with BOTH the ` +
+          `exchange PAT and \`GITHUB_E2E_PAT_TOKEN\`: 403 for each. The api then burns its ` +
+          `full 60 s visibility budget re-probing and raises RepoNotVisibleError.\n` +
+          `  So this is a TEST-SEAM fidelity gap, not necessarily a product fault: ` +
+          `production's real OAuth hop yields a user-to-server token, which the endpoint ` +
+          `accepts. Confirm which you are looking at BEFORE chasing anything below:\n` +
+          `    docker compose -f docker-compose.yml -f docker-compose.test.yml \\\n` +
+          `      logs api | grep create-repo\n` +
+          `  A 403 on list-installation-repos ⇒ the gap above. Otherwise:\n` +
           `  • the api container has no GITHUB_E2E_EXCHANGE_TOKEN, so the test-only ` +
           `exchange route refused to register (check \`docker compose logs api\` — it ` +
           `names the variable and refuses to boot);\n` +
@@ -1354,6 +1368,59 @@ async function completeCreateRepoCallback(
 }
 
 /**
+ * What the page is showing at the moment the ready card did not arrive.
+ *
+ * Read at FAILURE time only. It exists because the timeout below used to name one
+ * cause ("the DBOS git-ops worker: running but wedged") for a symptom with at
+ * least three, and two of them are not the worker at all — so the message sent
+ * every investigation to `docker compose logs dbos`, where a healthy worker was
+ * waiting to be found.
+ */
+async function projectReadyDiagnosis(page: StagehandPage): Promise<string> {
+  const [wizard, backdrop, guardrail, setup, home] = await Promise.all([
+    countTestId(page, "new-project-wizard"),
+    countTestId(page, "modal-backdrop"),
+    countTestId(page, "connections-required-cta"),
+    countTestId(page, "setup-wizard"),
+    countTestId(page, "workspace-home"),
+  ]);
+  const eyebrow = await page.evaluate(
+    () =>
+      document
+        .querySelector<HTMLElement>('[data-testid="new-project-eyebrow"]')
+        ?.textContent?.trim() ?? "",
+  );
+
+  if (wizard > 0) {
+    return (
+      `The wizard is STILL MOUNTED, on step ${JSON.stringify(eyebrow)}. Its own poller ` +
+      `(700 ms interval, 120 s budget) either never saw a terminal job or is still ` +
+      `running, so this really is the scaffold: check the worker.`
+    );
+  }
+
+  // The wizard is GONE while its scaffold was in flight. `drivePolling`'s
+  // `if (!aliveRef.current) return` then swallows BOTH terminal branches, so the
+  // job can succeed or fail and nothing renders either way. That is a PRODUCT
+  // defect, not a worker fault, and no amount of waiting will change it.
+  const took =
+    guardrail > 0
+      ? `R3's connections-required modal replaced it (the guardrail verdict flipped to blocked mid-scaffold)`
+      : setup > 0
+        ? `the first-time setup wizard replaced it (firstSignIn flipped true mid-scaffold, so launcherLive went false)`
+        : home > 0
+          ? `the workspace rendered without it (launcherLive/blocked/wizard state changed, or something called onClose)`
+          : `the page is no longer the workspace at all (navigated away?)`;
+  return (
+    `The wizard is NOT MOUNTED — ${took}. modal-backdrop=${backdrop}. ` +
+    `Unmounting mid-scaffold makes drivePolling's \`if (!aliveRef.current) return\` ` +
+    `swallow the terminal outcome, so neither project-ready-card nor new-project-error ` +
+    `can ever render. This is a nextjs bug, NOT the dbos worker — the scaffold job has ` +
+    `very likely already finished. Confirm by reading the fixture repo's branches/tags.`
+  );
+}
+
+/**
  * Wait for the terminal ready card, with a SEMANTIC BACKSTOP.
  *
  * The render lane's globalSetup gates that the `dbos` container is running and
@@ -1361,6 +1428,20 @@ async function completeCreateRepoCallback(
  * fails here, minutes later. So this error names the worker and the exact command
  * to inspect it — otherwise the most common real failure in this lane presents as
  * an anonymous timeout on a testid.
+ *
+ * ── But the worker is only ONE of the three causes (2026-07-31) ─────────────
+ *
+ * This message used to assert the worker unconditionally, and that is wrong often
+ * enough to matter. `pollJobUntilTerminal` polls every 700 ms for 120 s and
+ * `fetchJob` never throws (`catch { return null }`), so the wizard's own poller
+ * cannot stop early for any reason other than a TERMINAL job. Three outcomes are
+ * therefore distinguishable, and `projectReadyDiagnosis` reads which one happened
+ * off the DOM instead of guessing:
+ *
+ *   · `project-ready-card`  → success;
+ *   · `new-project-error`   → terminal FAILED job — the worker, genuinely;
+ *   · neither, wizard gone  → the wizard unmounted mid-scaffold and the terminal
+ *                             outcome was swallowed. Not the worker.
  */
 async function waitForProjectReady(
   page: StagehandPage,
@@ -1379,22 +1460,22 @@ async function waitForProjectReady(
       );
       throw new Error(
         `[github-e2e] the wizard surfaced a scaffold failure for ${repo.fullName}: ` +
-          `${JSON.stringify(message)}. Inspect the worker's own error with:\n` +
-          `  docker compose -f docker-compose.yml -f docker-compose.override.yml ` +
-          `-f docker-compose.test.yml logs --tail=200 dbos`,
+          `${JSON.stringify(message)}. The job reached a TERMINAL failed status, so the ` +
+          `worker's own error is the thing to read:\n` +
+          `  docker compose -f docker-compose.yml -f docker-compose.test.yml ` +
+          `logs --tail=200 dbos`,
       );
     }
     await page.waitForTimeout(500);
   }
   throw new Error(
     `[github-e2e] project-ready-card never appeared within ${timeoutMs}ms for ` +
-      `${repo.fullName}. The scaffold job (clone → commit v0.0.0 → push → open+merge ` +
-      `base PR → cut v0.0.1, all against real github.com) never reached a terminal ` +
-      `status. The usual cause is the DBOS git-ops worker: running but wedged, or ` +
-      `never picking up the queue. Check it with:\n` +
-      `  docker compose -f docker-compose.yml -f docker-compose.override.yml ` +
-      `-f docker-compose.test.yml logs --tail=200 dbos\n` +
-      `The fixture repo is deliberately NOT deleted — inspect it at ` +
+      `${repo.fullName}.\n` +
+      `  What the page is showing: ${await projectReadyDiagnosis(page)}\n` +
+      `  If (and only if) the diagnosis above points at the scaffold, read the worker:\n` +
+      `    docker compose -f docker-compose.yml -f docker-compose.test.yml ` +
+      `logs --tail=200 dbos\n` +
+      `  The fixture repo is deliberately NOT deleted — inspect it at ` +
       `https://github.com/${repo.fullName}`,
   );
 }

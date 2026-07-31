@@ -109,19 +109,25 @@ export function estimateGenerationCost(args: EstimateArgs): CostEstimate {
 
   if (kind === "image") {
     if (model.provider === "openrouter") {
-      const perImage = pricing.perImage;
-      if (perImage === undefined) {
+      const perImageToken = pricing.perOutputImageToken;
+      if (perImageToken === undefined) {
         // The api already drops a zero (those "free" models 500 in practice) and a
-        // negative (variable/auto-priced) per-image price, so absent here means "nothing
-        // to say" — and `$0.00` would be recommending a model that cannot run.
-        return unpriced("This model publishes no per-image price.");
+        // negative (variable/auto-priced) rate, so absent here means "nothing to say" —
+        // and `$0.00` would be recommending a model that cannot run. Live on 2026-07-31
+        // this is the COMMON branch: 36 of 40 OpenRouter image models land here.
+        return unpriced("This model publishes no generated-image price.");
       }
-      return {
-        usdPerRun: perImage,
-        rate: null,
-        basis: `${formatUsd(perImage)} per image × 1 image`,
-        confidence: "measured",
-      };
+      // Per TOKEN, not per image — so this is Gloo's situation, and it gets Gloo's
+      // answer. Until 2026-07-31 this branch multiplied `pricing.image` by one and
+      // called the result `measured`; `pricing.image` is the image-INPUT rate, so the
+      // number was ~5 orders of magnitude low with the module's strongest confidence
+      // label on it. There is no total to compute: an image's output-token count depends
+      // on the resolution the provider picks at generation time.
+      return unpriced(
+        "OpenRouter prices generated images per token, so the total depends on the " +
+          "image the model decides to produce.",
+        { usd: perImageToken * 1000, per: "1K output image tokens" },
+      );
     }
     // Gloo. Prices per token, and an image's token count is not predictable — so show the
     // published rate and say plainly that the total depends on the prompt. This is the
