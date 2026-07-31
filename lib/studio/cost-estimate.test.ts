@@ -35,6 +35,7 @@ const orImage = (perImage?: number): AiModelInfo => ({
   label: "Vendor Image",
   kinds: ["image"],
   pricing: perImage === undefined ? null : { perImage },
+  voices: null,
 });
 
 const glooImage: AiModelInfo = {
@@ -43,6 +44,7 @@ const glooImage: AiModelInfo = {
   label: "Vendor Flux",
   kinds: ["image"],
   pricing: { perOutputToken: 0.00000456 },
+  voices: null,
 };
 
 const orSpeech: AiModelInfo = {
@@ -51,6 +53,7 @@ const orSpeech: AiModelInfo = {
   label: "Vendor TTS",
   kinds: ["narration", "music"],
   pricing: { perInputToken: 0.000004 },
+  voices: null,
 };
 
 const orVideo: AiModelInfo = {
@@ -59,6 +62,7 @@ const orVideo: AiModelInfo = {
   label: "Vendor Video",
   kinds: ["video"],
   pricing: null,
+  voices: null,
 };
 
 describe("estimateTokens", () => {

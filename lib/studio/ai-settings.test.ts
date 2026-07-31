@@ -54,6 +54,7 @@ const CATALOGUE: AiModelInfo[] = [
     label: "Vendor Image",
     kinds: ["image"],
     pricing: { perImage: 0.03 },
+    voices: null,
   },
   {
     id: "gloo-vendor-flux",
@@ -61,6 +62,7 @@ const CATALOGUE: AiModelInfo[] = [
     label: "Vendor Flux",
     kinds: ["image"],
     pricing: null,
+    voices: null,
   },
   {
     id: "vendor/tts",
@@ -68,6 +70,7 @@ const CATALOGUE: AiModelInfo[] = [
     label: "Vendor TTS",
     kinds: ["narration", "music"],
     pricing: { perInputToken: 0.000004 },
+    voices: null,
   },
 ];
 

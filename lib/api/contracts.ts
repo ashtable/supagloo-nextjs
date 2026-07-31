@@ -601,6 +601,22 @@ export const AiModelInfoSchema = z.object({
   /** `null` means the provider publishes nothing usable — deliberately distinct from a
    *  price of zero, which the cost estimate renders completely differently. */
   pricing: AiModelPricingSchema.nullable(),
+  /**
+   * The provider's OWN voice vocabulary for a speech model (`supported_voices`), the
+   * source the narrator-voice picker reads. `null` for every non-speech model and for a
+   * speech model that publishes none — 6 of the 19 live speech models answer exactly that.
+   *
+   * This mirrors the api's `AiModelInfoSchema` and is the third and last strip point: a
+   * plain `z.object` drops unknown keys, so the field would die here even with both api
+   * boundaries widened.
+   *
+   * **`.default(null)` and not plain `.nullable()`, deliberately asymmetric with the api's
+   * copy.** nextjs and the api deploy independently. A required `voices` against an api
+   * that has not shipped it yet fails the whole `safeParse`, `fetchModelCatalogue` turns
+   * that into `null`, and the Inspector loses its entire model picker AND its cost row —
+   * far worse than one absent field. Strict at the producer, tolerant at the consumer.
+   */
+  voices: z.array(z.string()).nullable().default(null),
 });
 export type AiModelInfo = z.infer<typeof AiModelInfoSchema>;
 

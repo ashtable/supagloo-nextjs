@@ -91,6 +91,10 @@ import {
   type SelectableKind,
 } from "@/lib/studio/ai-settings";
 import { effectiveSceneDurationSeconds } from "@/lib/studio/scene-duration";
+import {
+  effectiveVoiceId,
+  voicesForModelId,
+} from "@/lib/studio/speech-voices";
 import type {
   AiGenerationDto,
   AiProvider,
@@ -160,7 +164,7 @@ interface StudioContextValue {
   setFaithAlignment: (value: FaithAlignment | null) => void;
   /** Item 4: generate a VIDEO for a scene instead of a still image. */
   generateSceneVideo: (sceneId?: string) => void;
-  /** Feature 1 / 19b: pick the narrator from the model's curated voice list. */
+  /** Pick the narrator from the resolved model's OWN published voice vocabulary. */
   setVoiceId: (voiceId: string) => void;
   /** 20a: cancel the running generation — the ONLY live control behind the lock. */
   cancelGeneration: () => void;
@@ -858,8 +862,42 @@ export function StudioProvider({
       description: state.storyboard.voiceDescription,
     };
     if (state.storyboard.voiceLabel) voice.label = state.storyboard.voiceLabel;
-    if (state.storyboard.voiceId) voice.voiceId = state.storyboard.voiceId;
     const { target } = generationTarget("narration");
+    /**
+     * The voice that will ACTUALLY be used — the same rule the picker displays.
+     *
+     * Sending `state.storyboard.voiceId` raw was half of the reported bug. It is absent
+     * whenever the user has not opened the picker, and it holds a stale id whenever the
+     * narration model changed under a persisted choice; in both cases the picker showed a
+     * voice while the request carried nothing, and the provider narrated in a voice
+     * nobody chose. `effectiveVoiceId` keeps a valid pick, drops one the resolved model
+     * does not publish, and otherwise resolves that model's own derived default.
+     *
+     * It is deliberately NOT written back to the manifest: a default frozen into a file
+     * committed to the user's repo stops being a default.
+     *
+     * `voices === null` is FOUR states, and only one of them means "this model publishes
+     * nothing". The other reachable ones are "the catalogue is still in flight" and "the
+     * catalogue read failed" — in both `state.modelCatalogue` is null, so the model list is
+     * EMPTY and `voicesForModelId` has no entry to read a vocabulary off. Note it is NOT
+     * that no model resolved: a project that committed `aiSettings.narration.model` gets it
+     * straight back from `resolveChoice` before any catalogue arrives, and the lookup misses
+     * anyway. Either way there is no vocabulary to check the pick AGAINST, which is why the
+     * guard keys on `voices` and not on `target.model`. Applying the rule anyway drops the user's
+     * committed id and lets dbos discover the model's first published voice instead. This
+     * button does not wait for the catalogue (it gates on the manifest and the scene count
+     * only), and a failed read never retries, so that window is reachable and permanent.
+     *
+     * The fallback is a NO-OP once the catalogue has landed: whenever
+     * `voicesForModelId(...)` returns null after that, `storyboard.voiceId` is already
+     * `undefined` — `MODELS_LOADED` and `remapVoiceForSettings` both clear under exactly
+     * that condition, and `SET_VOICE_ID` can only write an id the rendered list offered.
+     */
+    const voices = voicesForModelId(target.model, state.modelCatalogue?.models ?? []);
+    const voiceId = voices
+      ? effectiveVoiceId(state.storyboard.voiceId, voices)
+      : (state.storyboard.voiceId ?? null);
+    if (voiceId) voice.voiceId = voiceId;
     runGeneration(
       NARRATION_SLOT,
       {
@@ -868,15 +906,17 @@ export function StudioProvider({
         ...target,
         input: {
           voice,
-          // Feature 1: the CHOSEN provider voice id, TOP-LEVEL — the only value the
-          // provider is ever sent. It is a sibling of `voice` rather than a property of
-          // it because `GenerateNarrationInputSchema` is
-          // `NarrationSpecSchema.passthrough()`: a top-level key survives an api/dbos
-          // still pinned to an older db-lib, while a key nested inside `voice` is
-          // stripped by `VoiceDescriptorSchema` (a plain `z.object`). Same mechanism
-          // `faithAlignment` already rides. Omitted when the user never picked one, so
-          // the provider default still applies, byte-identically to before.
-          ...(state.storyboard.voiceId ? { voiceId: state.storyboard.voiceId } : {}),
+          // The CHOSEN provider voice id, TOP-LEVEL — the only value the provider is
+          // ever sent. It is a sibling of `voice` rather than a property of it because
+          // `GenerateNarrationInputSchema` is `NarrationSpecSchema.passthrough()`: a
+          // top-level key survives an api/dbos still pinned to an older db-lib, while a
+          // key nested inside `voice` is stripped by `VoiceDescriptorSchema` (a plain
+          // `z.object`). Same mechanism `faithAlignment` already rides.
+          //
+          // Omitted only when the resolved model publishes NO vocabulary at all — the one
+          // case where there is nothing honest to send, and where `requestSpeech` asks the
+          // provider itself rather than guessing.
+          ...(voiceId ? { voiceId } : {}),
           scenes,
         },
       },

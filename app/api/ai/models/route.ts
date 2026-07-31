@@ -1,7 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { forwardToApi } from "@/lib/api/proxy";
 import { SESSION_COOKIE_NAME } from "@/lib/api/cookies";
-import { resolveGenerationTarget, type GenerationKind } from "@/lib/api/ai-config";
+import {
+  narrowNarrationModels,
+  resolveGenerationTarget,
+  type GenerationKind,
+} from "@/lib/api/ai-config";
 
 /**
  * `GET /api/ai/models` — the live provider/model catalogue behind the Inspector's model
@@ -41,5 +45,21 @@ export async function GET(request: NextRequest) {
   }
 
   const body = (result.body ?? {}) as Record<string, unknown>;
-  return NextResponse.json({ ...body, defaults }, { status: 200 });
+
+  // The narration narrowing (2026-07-30, at the user's direction — see
+  // `narrowNarrationModels`). It belongs HERE for the same reason `defaults` does: the
+  // narration model is `resolveGenerationTarget`'s answer, which is THIS process's
+  // configuration and something the api has no way to know. Publishing config, not
+  // business logic.
+  //
+  // Narrowing the offer without narrowing the default would let the picker show a model
+  // the narration path will not run, so the two must be answered by the same call.
+  const models = Array.isArray(body.models)
+    ? narrowNarrationModels(
+        body.models as Array<{ id: string; kinds: string[] }>,
+        defaults.narration.model,
+      )
+    : body.models;
+
+  return NextResponse.json({ ...body, models, defaults }, { status: 200 });
 }

@@ -41,7 +41,7 @@ import {
   settingsAfterProviderChange,
   type SelectableKind,
 } from "./ai-settings";
-import { remapVoice } from "./speech-voices";
+import { remapVoice, voicesForModelId } from "./speech-voices";
 import {
   nextVersion,
   postPublishBranch,
@@ -439,19 +439,39 @@ export function isStudioLocked(state: StudioState): boolean {
   return activeGeneration(state) !== null;
 }
 
+/** The voices the narration model resolved from `settings` actually publishes. */
+function narrationVoicesFor(
+  catalogue: AiModelCatalogueResponse | null,
+  settings: AiGenerationSettings | undefined,
+): readonly string[] | null {
+  const defaults = catalogue?.defaults ?? {};
+  const models = catalogue?.models ?? [];
+  return voicesForModelId(
+    resolveChoice("narration", settings, defaults, models).model,
+    models,
+  );
+}
+
 /**
- * Feature 1 / 19b, verbatim: *"Change the speech model and the voices swap; the previously
- * chosen voice maps to the nearest match or falls back to the recommended one."*
+ * Change the speech model and the voices swap; a chosen voice the new model does not
+ * publish is CLEARED.
  *
  * This is what makes persisting a provider voice id SAFE. Without it, switching the speech
- * model would leave a voice id the new model has never heard of on the manifest, and the
- * next narration generation would be a hard provider 400 — the feature would break the
- * exact thing it was added to fix, and the studio would still be displaying the voice it
- * had already invalidated.
+ * model would leave a voice id the new model has never heard of on the manifest — and the
+ * next narration generation would either be a hard provider 400 or, worse and what
+ * actually happened, would silently alias onto an unrelated voice while the studio went on
+ * displaying the one it had already invalidated.
+ *
+ * **The rule MOVED with the catalogue.** It used to pick a "nearest match" over the
+ * curated table's display names, genders and dramatic flags, falling back to a
+ * `recommended` id. None of that metadata exists — the provider publishes bare strings —
+ * so what survives is the only step that was ever a provider fact: keep the id if the
+ * target lists it, else clear it. Clearing is safe because `regenerateNarration` sends
+ * `effectiveVoiceId`, which then supplies the target's own derived default.
  *
  * Only the `narration` kind can move the voice, and only when a voice has actually been
- * chosen: a project that never opened the voice list keeps sending nothing and keeps
- * getting the provider default, byte-identically to before.
+ * chosen: a project that never opened the voice list keeps sending nothing, byte-
+ * identically to before.
  */
 function remapVoiceForSettings(
   state: StudioState,
@@ -460,12 +480,14 @@ function remapVoiceForSettings(
 ): Storyboard {
   const sb = setAiSettings(state.storyboard, next);
   if (kind !== "narration" || sb.voiceId === undefined) return sb;
-  const defaults = state.modelCatalogue?.defaults ?? {};
-  const models = state.modelCatalogue?.models ?? [];
+  const catalogue = state.modelCatalogue;
+  const defaults = catalogue?.defaults ?? {};
+  const models = catalogue?.models ?? [];
   const before = resolveChoice("narration", state.storyboard.aiSettings, defaults, models);
   const after = resolveChoice("narration", next, defaults, models);
   if (before.model === after.model) return sb;
-  return { ...sb, voiceId: remapVoice(sb.voiceId, before.model, after.model) };
+  const remapped = remapVoice(sb.voiceId, voicesForModelId(after.model, models));
+  return { ...sb, voiceId: remapped ?? undefined };
 }
 
 export function studioReducer(
@@ -858,11 +880,45 @@ export function studioReducer(
           settingsAfterFaithAlignmentChange(state.storyboard.aiSettings, action.value),
         ),
       );
-    case "MODELS_LOADED":
+    case "MODELS_LOADED": {
       // Deliberately NOT `edited(...)`: a background read is not a user edit. Dirtying
       // here would arm Commit the moment the studio opened and make "All changes
       // committed" a lie about work the user never did.
-      return { ...state, modelCatalogue: action.catalogue };
+      const next = { ...state, modelCatalogue: action.catalogue };
+
+      // A read we could NOT MAKE is not evidence the pick is wrong. `fetchModelCatalogue`
+      // returns null on ANY failure and never throws, and its effect runs once per studio
+      // open — so `null` here is permanent for the session, not a step towards an answer.
+      // Clearing on it would delete a choice that came out of the user's own manifest;
+      // and because this case does not dirty, nothing on screen would report the loss,
+      // so their next unrelated Commit would write it back OUT of their repo
+      // (`serializeManifest` emits `narratorVoice.voiceId` only when it is defined).
+      if (action.catalogue === null) return next;
+
+      // …but a catalogue that DID land IS the moment the narration model's vocabulary
+      // first becomes knowable, so it is the one action that must re-check the chosen
+      // voice.
+      //
+      // Until then, `resolveChoice("narration", …)` resolves NO model, so there is no
+      // vocabulary and a voice cannot be validated against one. Only SET_AI_PROVIDER and
+      // SET_AI_MODEL remapped; this case never did. That was invisible while every model
+      // shared one hardcoded list and is a real defect now that the list is the model's
+      // own — `voiceId` is optional and written only by the picker, so the projects this
+      // fires for are the ones where a voice was actually picked AND committed.
+      //
+      // The clear does NOT dirty, for the same reason the rest of this case does not. It
+      // still beats leaving the id: once the vocabulary IS known, an id it does not
+      // contain is invalid, and leaving it in memory would ride into the user's repo on
+      // their next unrelated Commit.
+      if (state.storyboard.voiceId === undefined) return next;
+      const voices = narrationVoicesFor(action.catalogue, state.storyboard.aiSettings);
+      const remapped = remapVoice(state.storyboard.voiceId, voices);
+      if (remapped === state.storyboard.voiceId) return next;
+      return {
+        ...next,
+        storyboard: { ...state.storyboard, voiceId: remapped ?? undefined },
+      };
+    }
     case "SET_SCENE_NARRATION_URL":
       // Display-only, like every case in this group: NOT an edit.
       return {

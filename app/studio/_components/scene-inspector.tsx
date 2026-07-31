@@ -13,6 +13,7 @@ import {
 } from "@/lib/studio/reducer";
 import { MIN_SCENES, canDeleteScene } from "@/lib/studio/storyboard";
 import { resolveChoice } from "@/lib/studio/ai-settings";
+import { voicesForModelId } from "@/lib/studio/speech-voices";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
 const MONO = "ui-monospace, Menlo, monospace";
@@ -126,12 +127,23 @@ export default function SceneInspector() {
   // 19a orders the narration card provider -> model -> VOICE, "because the voice options
   // come FROM the model". This is the resolved speech model the list keys off; a change
   // to it remaps the chosen voice (see `remapVoiceForSettings` in the reducer).
+  //
+  // `null` until the catalogue lands, and that is now a MEANINGFUL null rather than an
+  // ignorable one: the voice list is the resolved model's own published vocabulary, so
+  // before a model resolves there is nothing to offer. `<VoiceList>` renders that state
+  // instead of accepting a pick against a list belonging to no model.
   const narrationModelId = resolveChoice(
     "narration",
     storyboard.aiSettings,
     state.modelCatalogue?.defaults ?? {},
     state.modelCatalogue?.models ?? [],
   ).model;
+  // The provider's OWN `supported_voices` for that model — never a curated table, never
+  // another model's list. `null` covers every "we have no vocabulary to offer" state.
+  const narrationVoices = voicesForModelId(
+    narrationModelId,
+    state.modelCatalogue?.models ?? [],
+  );
 
   const visualStatus = generations[imageSlot(scene.id)]?.status;
   const narrationStatus = generations[NARRATION_SLOT]?.status;
@@ -519,7 +531,7 @@ export default function SceneInspector() {
                   options come FROM the model". */}
               <AiSettingsPanel kinds={["narration"]} heading={null} includeFaithAlignment={false} />
               <div style={{ marginTop: 14 }} />
-              {/* 19b — the curated per-model voice list REPLACES the free-text descriptor.
+              {/* The three cascading dropdowns REPLACE the free-text descriptor.
                   The box is gone because it was a lie: OpenRouter's speech endpoint takes
                   a NAMED voice, its request body is exactly
                   `{model, input, voice, response_format}`, and the descriptor reached no
@@ -532,6 +544,7 @@ export default function SceneInspector() {
                   keep it. It is shown read-only below, as context for the choice. */}
               <VoiceList
                 modelId={narrationModelId}
+                voices={narrationVoices}
                 selectedVoiceId={storyboard.voiceId}
                 onSelect={setVoiceId}
               />

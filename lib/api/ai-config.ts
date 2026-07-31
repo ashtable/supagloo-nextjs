@@ -80,6 +80,52 @@ const DEFAULT_GENERATION_PROVIDERS: Record<GenerationKind, string> = {
   video: "openrouter",
 };
 
+/**
+ * Offer exactly ONE narration model — the one this deployment is configured to run.
+ *
+ * ── The directive, and why this is an exception ─────────────────────────────────────
+ * The user narrowed the supported narration models twice, on 2026-07-30:
+ *
+ *   > "let's stick to only the hexgrad/kokoro-82m and zyphra/zonos-* narration models,
+ *   >  with the default being kokoro"
+ *   …superseded minutes later by "actually, let's just do kokora" /
+ *   "forget about the zonos narration".
+ *
+ * That is a deliberate, user-chosen narrowing, and it is a stated exception to
+ * `design-delta.md:1143` ("Model ids are never hardcoded") and to the user's own
+ * "don't hardcode OpenRouter ids" instruction. It is recorded here rather than left to
+ * look accidental.
+ *
+ * **The exception costs zero NEW hardcoded ids.** The RULE below names no model: it keeps
+ * whichever narration model `resolveGenerationTarget("narration")` resolves — i.e.
+ * `SUPAGLOO_AI_MODEL_NARRATION`, or this module's documented default, which has been
+ * `hexgrad/kokoro-82m` since 2026-07-27 and is the id every narration generation has
+ * already been running on. So the narrowing is operator-overridable rather than frozen,
+ * and it stays SERVER-side, which is what keeps this module's stated property true: no
+ * model id ships in the browser bundle.
+ *
+ * **The narrowing is about which MODEL is offered, never about which VOICES it has.**
+ * Voices are read live from the provider's `supported_voices` and nothing here touches
+ * them. `dbos/src/providers/no-model-ids.test.ts` scans `dbos/src/providers/*.ts` only
+ * (measured, non-recursive) and is unaffected.
+ *
+ * A model that serves narration AND some other kind keeps the other kind: the rule is
+ * about the KIND, not the entry. Speech-catalogue entries carry exactly `["narration"]`
+ * today, so dropping whole models would agree by accident — and stop agreeing the moment
+ * the catalogue changes.
+ */
+export function narrowNarrationModels<
+  T extends { id: string; kinds: string[] },
+>(models: T[], narrationModelId: string): T[] {
+  return models
+    .map((m) =>
+      m.kinds.includes("narration") && m.id !== narrationModelId
+        ? { ...m, kinds: m.kinds.filter((k) => k !== "narration") }
+        : m,
+    )
+    .filter((m) => m.kinds.length > 0);
+}
+
 const nonEmpty = (v: string | undefined): string | undefined =>
   v && v.length > 0 ? v : undefined;
 

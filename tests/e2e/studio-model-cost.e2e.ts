@@ -290,6 +290,45 @@ describe("Inspector — provider/model selection, faith alignment and cost (gene
     expect(selected.length).toBeGreaterThan(0);
   });
 
+  test("E-MC6: the narration model is NARROWED, and its voices come from the provider", async () => {
+    // Two claims, and only this lane can make either.
+    //
+    // (1) The narrowing. On a direct user directive ("actually, let's just do kokora" /
+    //     "forget about the zonos narration") the picker offers exactly the narration model
+    //     this deployment is configured to run. The rule names no id — it reads
+    //     `resolveGenerationTarget("narration")` — so this is the assertion that it lines
+    //     up with the live catalogue rather than narrowing to something absent from it.
+    //
+    // (2) The voices. The studio shipped a CURATED per-model voice table which was wrong
+    //     for every model it covered: there is no `openai/` entry in the speech catalogue
+    //     at all, so its fallback matched nothing real, and against the narration model six
+    //     of its eight ids aliased silently onto other voices while two hard-400'd. The
+    //     replacement reads `supported_voices` off the live catalogue, and whether the
+    //     provider really publishes it is a PROVIDER fact — no unit test can hold it.
+    const catalogue = await page.evaluate(async () => {
+      const res = await fetch("/api/ai/models", { credentials: "include" });
+      return (await res.json()) as {
+        models: Array<{ id: string; kinds: string[]; voices: string[] | null }>;
+        defaults: Record<string, { provider: string; model: string }>;
+      };
+    });
+
+    const narration = catalogue.models.filter((m) => m.kinds.includes("narration"));
+    expect(narration.map((m) => m.id)).toEqual([catalogue.defaults.narration.model]);
+
+    // The vocabulary really arrived — through the mapper, the api's Fastify serializer and
+    // this repo's contracts mirror, all three of which are `z.object` strip points.
+    expect(narration[0].voices, "the live catalogue published no supported_voices").not
+      .toBeNull();
+    expect(narration[0].voices!.length).toBeGreaterThan(0);
+
+    // …and the picker is offering that vocabulary, not a list of its own. Every option the
+    // VOICE select carries must be one the provider named.
+    const offered = await optionValues("voice-select");
+    expect(offered.length).toBeGreaterThan(0);
+    for (const id of offered) expect(narration[0].voices!).toContain(id);
+  });
+
   test("E-MC3: choosing Gloo for images reveals FAITH ALIGNMENT with exactly the four real values", async () => {
     expect(await dataAttr("ai-settings", "data-faith-visible")).toBe("false");
     expect(await countTestId("faith-alignment")).toBe(0);
