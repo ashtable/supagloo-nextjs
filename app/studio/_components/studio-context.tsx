@@ -878,8 +878,12 @@ export function StudioProvider({
      *
      * `voices === null` is FOUR states, and only one of them means "this model publishes
      * nothing". The other reachable ones are "the catalogue is still in flight" and "the
-     * catalogue read failed" — in both, `target.model` is `undefined`, so we have no
-     * vocabulary to check the pick AGAINST. Applying the rule anyway drops the user's
+     * catalogue read failed" — in both `state.modelCatalogue` is null, so the model list is
+     * EMPTY and `voicesForModelId` has no entry to read a vocabulary off. Note it is NOT
+     * that no model resolved: a project that committed `aiSettings.narration.model` gets it
+     * straight back from `resolveChoice` before any catalogue arrives, and the lookup misses
+     * anyway. Either way there is no vocabulary to check the pick AGAINST, which is why the
+     * guard keys on `voices` and not on `target.model`. Applying the rule anyway drops the user's
      * committed id and lets dbos discover the model's first published voice instead. This
      * button does not wait for the catalogue (it gates on the manifest and the scene count
      * only), and a failed read never retries, so that window is reachable and permanent.

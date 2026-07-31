@@ -127,6 +127,25 @@ const projectWithVoice = (voiceId: string): StudioProject => ({
   manifest: { ...MANIFEST, narratorVoice: { ...MANIFEST.narratorVoice, voiceId } },
 });
 
+/**
+ * …and that ALSO committed an explicit narration model, which is what the studio writes
+ * as soon as the user touches the model dropdown.
+ *
+ * It is a materially different route to `voices === null`: `resolveChoice` hands a chosen
+ * `model` straight back without consulting the catalogue, so in this window `target.model`
+ * is a real id and only the LOOKUP misses. The guard therefore has to key on the absent
+ * vocabulary, never on an absent model.
+ */
+const projectWithVoiceAndModel = (voiceId: string, model: string): StudioProject => {
+  const base = projectWithVoice(voiceId);
+  const aiSettings = { narration: { provider: "openrouter" as const, model } };
+  return {
+    ...base,
+    storyboard: { ...base.storyboard, aiSettings },
+    manifest: { ...MANIFEST, narratorVoice: { ...MANIFEST.narratorVoice, voiceId }, aiSettings },
+  };
+};
+
 let mounted: Mounted | null = null;
 afterEach(() => {
   mounted?.unmount();
@@ -265,6 +284,24 @@ describe("a persisted voice survives a catalogue we do not have", () => {
     await click(byTestId(c, "regenerate-narration"));
 
     const body = narrationBody();
+    expect(body.input.voiceId).toBe("am_echo");
+    expect(body.input.voice.voiceId).toBe("am_echo");
+  });
+
+  it("U-V71: a committed narration MODEL resolves pre-catalogue, and the id still survives", async () => {
+    // The two cases above leave `aiSettings` unset, so `resolveChoice` finds nothing and
+    // `target.model` is `undefined` — which makes them silent about the state most real
+    // projects are in once the model dropdown has been touched. Here the model DOES
+    // resolve with no catalogue in hand, so "we have no vocabulary" and "we have no
+    // model" come apart, and only the first one is true.
+    fetchModelCatalogue.mockReturnValue(new Promise(() => {}));
+    const c = await openWith(projectWithVoiceAndModel("am_echo", "hexgrad/kokoro-82m"));
+
+    await click(byTestId(c, "regenerate-narration"));
+
+    const body = narrationBody();
+    // The model really did resolve without a catalogue — this is the load-bearing half.
+    expect(body.model).toBe("hexgrad/kokoro-82m");
     expect(body.input.voiceId).toBe("am_echo");
     expect(body.input.voice.voiceId).toBe("am_echo");
   });
