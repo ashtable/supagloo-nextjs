@@ -262,12 +262,14 @@ function logResolution(
  *
  * ```
  * preferred = env[SUPAGLOO_AI_PROVIDER_<KIND>] ?? DEFAULT_GENERATION_PROVIDERS[kind]
+ * wanted    = MATRIX[kind].includes(preferred)          // ← the clamp, applied ONCE
+ *               ? preferred : DEFAULT_GENERATION_PROVIDERS[kind]
  *
  * provider =
- *   connected == null                            -> preferred   // we could not ask
- *   connected[preferred]                         -> preferred
+ *   connected == null                            -> wanted      // we could not ask
+ *   connected[wanted]                            -> wanted
  *   first p of MATRIX[kind] where connected[p]    -> p           // ← R4 / R6 live here
- *   otherwise                                    -> preferred   // nothing connected
+ *   otherwise                                    -> wanted      // nothing connected
  *
  * model =
  *   provider === preferred
@@ -281,12 +283,17 @@ function logResolution(
  * returns. Treating it as "not connected" would silently move a connected user's defaults
  * on every network blip. It resolves identically to the connection-blind answer.
  *
- * ## Nothing connected keeps the PREFERRED provider
+ * ## Nothing connected keeps the PREFERRED provider — clamped to the matrix
  *
  * There is no repair to make, and blanking the selection would render an incoherent picker.
  * The api answers `409 provider_not_connected` before creating a row, which is the honest
  * refusal — better than the studio inventing a provider the user has never linked and
  * failing deep inside DBOS.
+ *
+ * "Keeps the preferred provider" is bounded by the MATRIX, not unconditional: a preference
+ * this kind cannot serve degrades to the kind's own default, because the alternative is a
+ * `{provider, model: undefined}` target that is not merely wrong for this kind but fails
+ * the catalogue schema and blanks the entire Studio AI surface. See `repairProvider`.
  *
  * ## `SUPAGLOO_AI_MODEL_<KIND>` binds to the PREFERRED provider only
  *
@@ -341,16 +348,56 @@ export function resolveGenerationTarget(
   return { provider, model };
 }
 
-/** Layer 2. Keep the preference when it is viable or unknowable; otherwise take the first
- *  matrix-compatible provider the user actually has. Never returns a provider outside the
- *  matrix, so a repair can never produce a target the api's 422 would reject. */
+/**
+ * Layer 2. Keep the preference when it is viable or unknowable; otherwise take the first
+ * matrix-compatible provider the user actually has. Never returns a provider outside the
+ * matrix, so a repair can never produce a target the api's 422 would reject.
+ *
+ * ── The clamp, and what it is FOR (2026-07-31 review, revision R2) ───────────────────
+ *
+ * `preferred` comes from `SUPAGLOO_AI_PROVIDER_<KIND>` and is an unvalidated operator
+ * string widened to `AiProviderName` by a cast — so at runtime it can be a provider this
+ * kind cannot serve (`SUPAGLOO_AI_PROVIDER_NARRATION=gloo`) or a provider that does not
+ * exist at all. Both paths below used to return it UNCLAMPED, and the caller then does
+ * `DEFAULT_MODEL_BY_KIND_PROVIDER[kind][provider]!` into a slot `U-DT17` guarantees is
+ * absent. The result was `model: undefined` on a `GenerationTarget.model: string`, which
+ * fails `AiModelCatalogueResponseSchema`'s `min(1)` and takes the WHOLE Studio AI surface
+ * down (`fetchModelCatalogue` returns `null`), not just the misconfigured kind.
+ *
+ * ── D3: the fallback is the kind's OWN default, not `allowed[0]` ─────────────────────
+ *
+ * The obvious clamp is `allowed[0]`, and it is wrong for `script`. `providersForKind`
+ * returns the matrix row, which states COMPATIBILITY, not preference — `script`'s row is
+ * `["gloo", "openrouter"]` while `DEFAULT_GENERATION_PROVIDERS.script` is `"openrouter"`
+ * (R8's "everything else"). Clamping to `allowed[0]` would answer `gloo` there: an
+ * unrecognised override would not be ignored, it would silently re-pick the provider by
+ * the matrix's declaration ORDER — turning a typo into a provider migration, and making
+ * the matrix literal's line order load-bearing for defaults it was never meant to decide.
+ * `DEFAULT_GENERATION_PROVIDERS[kind]` is the answer the resolver gives with no override
+ * at all, so an unusable override degrades to "as if unset". It is in-matrix and has a
+ * model for every kind (`U-DT18`/`U-DT19`, and `DEFAULT_GENERATION_MODELS` already asserts
+ * the model half at module load).
+ *
+ * ── The clamp happens ONCE, BEFORE the repair — not at each return ───────────────────
+ *
+ * Clamping the two `return preferred` sites individually is a half fix, and `U-DT19`
+ * caught it: the surviving `allowed.find((p) => connected[p])` path is ALSO ordered by the
+ * matrix literal, so `script` with an unusable override and BOTH providers connected still
+ * came back `gloo`. There is nothing to repair when the preference was never viable in the
+ * first place — so the preference is normalised first and the untouched R4/R6 repair then
+ * runs on a preference that is guaranteed to be in the matrix.
+ */
 function repairProvider(
   kind: GenerationKind,
   preferred: AiProviderName,
   connected: ProviderConnectivity | null | undefined,
 ): AiProviderName {
-  if (connected == null) return preferred;
   const allowed = providersForKind(kind);
-  if (allowed.includes(preferred) && connected[preferred]) return preferred;
-  return allowed.find((p) => connected[p]) ?? preferred;
+  // Layer 0: an operator preference this kind cannot serve is not a preference.
+  const wanted = allowed.includes(preferred)
+    ? preferred
+    : DEFAULT_GENERATION_PROVIDERS[kind];
+  if (connected == null) return wanted;
+  if (connected[wanted]) return wanted;
+  return allowed.find((p) => connected[p]) ?? wanted;
 }

@@ -100,6 +100,50 @@ export default function WorkspaceHome() {
   const blocked = verdict.kind === "blocked";
   const wizardRequested = wizard !== "none";
 
+  /**
+   * Nothing in the LAUNCHER FAMILY — R3's modal and both project wizards — may render
+   * while the user is still inside first-time onboarding.
+   *
+   * ## Why (2026-07-31 review, revision R3)
+   *
+   * `/?newproject=blank` is reachable from the landing page's "Blank canvas" card, from a
+   * bookmark, from history and from a typed URL. A signed-out visitor who follows it and
+   * signs in lands here with the query intact, so the mount effect above sets
+   * `wizard = "new"` while `firstSignIn` is still true — and `<SetupWizard/>` is already
+   * on screen. Two portalled dialogs stack, and 6 s later R3's redirect pushes
+   * `/profile#connections`, where `profile-page.tsx` `router.replace("/")`s any
+   * `firstSignIn` user straight back. The user is yanked twice and returns to a setup
+   * wizard reset to step 1. A user inside onboarding is ALREADY being shown the connection
+   * screens; R3 has nothing to add to them, and its destination is unreachable for them.
+   *
+   * ## D2 — ONE derived predicate, not three inline `!firstSignIn` copies
+   *
+   * Same reasoning as `evaluateConnectionGuardrail` itself: the rule has one name and one
+   * definition, and a fourth launcher would otherwise be guarded by whoever remembered to.
+   *
+   * ## The gate covers THREE elements because there are TWO doorways, not one
+   *
+   * Gating only the modal is a half fix. `evaluateConnectionGuardrail` deliberately
+   * verdicts ALLOWED while `connectionsResolved` is false (a failed/pending read is not an
+   * answer about the user's data — `U-GR5`), and `connectionsResolved` is false until the
+   * real-mode fetch lands. So on the FIRST mount at `?newproject=blank`, `blocked` is
+   * false, the modal never renders, and `<NewProjectWizard/>` renders over the setup
+   * wizard anyway. Both wizards need live GitHub data on their first step and neither has
+   * a designed empty state — the comment below says so — so the second doorway leads to
+   * exactly the harm the first one was closed for.
+   *
+   * ## D1 — this is a RENDER gate, not an intent gate (decided; pinned by U-WGC4)
+   *
+   * `wizard` is deliberately left set. When onboarding completes and `firstSignIn` flips
+   * false, the requested wizard (or R3's modal, if they are still unconnected) opens. That
+   * is coherent with the intent/verdict split this component already documents — the user
+   * DID ask for a project, and the ask is honoured as soon as it can be. The alternative,
+   * suppressing `setWizard("new")` in the mount effect while `firstSignIn`, silently drops
+   * the deep link for exactly the users it most exists for: the ones arriving from the
+   * landing page for the first time.
+   */
+  const launcherLive = !firstSignIn;
+
   return (
     <div
       data-testid="workspace-home"
@@ -194,13 +238,13 @@ export default function WorkspaceHome() {
           a redirect away from this page — which is worse fired from a modal over a modal.
           So the refusal happens here, at the one point all six entry points converge, and
           the wizard below simply never mounts while blocked. */}
-      {wizardRequested && blocked && (
+      {launcherLive && wizardRequested && blocked && (
         <ConnectionsRequiredModal open verdict={verdict} />
       )}
-      {wizard === "new" && !blocked && (
+      {launcherLive && wizard === "new" && !blocked && (
         <NewProjectWizard onClose={() => setWizard("none")} />
       )}
-      {wizard === "import" && !blocked && (
+      {launcherLive && wizard === "import" && !blocked && (
         <ImportWizard
           onClose={() => setWizard("none")}
           onStartNew={() => setWizard("new")}

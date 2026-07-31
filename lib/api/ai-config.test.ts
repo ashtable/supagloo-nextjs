@@ -190,6 +190,22 @@ const CONNECTIVITY_COLUMNS = [
   ["neither", NEITHER],
 ] as const;
 
+/**
+ * The compatibility matrix, hand-written HERE rather than imported from `ai-matrix.ts`.
+ * Reading the expectation out of the module under test would make these assertions agree
+ * with whatever the matrix happens to hold. `ai-matrix.test.ts` is what pins the matrix
+ * itself against db-lib's measured truth; this copy is what pins the RESOLVER against the
+ * matrix. Shared by `U-DT8` and `U-DT18`, which both need it — one copy, not two.
+ */
+const MATRIX: Record<(typeof ALL_KINDS)[number], readonly string[]> = {
+  storyboard: ["gloo", "openrouter"],
+  script: ["gloo", "openrouter"],
+  image: ["gloo", "openrouter"],
+  narration: ["openrouter"],
+  music: ["openrouter"],
+  video: ["openrouter"],
+};
+
 describe("resolveGenerationTarget — the connection-aware resolver (R4/R6/R8)", () => {
   it("U-DT1: resolves the whole (kind × connectivity) table", () => {
     const actual: Record<string, Record<string, unknown>> = {};
@@ -267,24 +283,23 @@ describe("resolveGenerationTarget — the connection-aware resolver (R4/R6/R8)",
 
   it("U-DT8: every resolved provider is matrix-compatible for its kind, in every state", () => {
     // The repair must never route a kind onto a provider the api's 422 would reject.
-    const MATRIX: Record<string, readonly string[]> = {
-      storyboard: ["gloo", "openrouter"],
-      script: ["gloo", "openrouter"],
-      image: ["gloo", "openrouter"],
-      narration: ["openrouter"],
-      music: ["openrouter"],
-      video: ["openrouter"],
-    };
+    //
+    // The `model` half was ADDED 2026-07-31 (revision R2). This sweep destructured only
+    // `provider`, so it swept every kind × every connectivity column and still could not
+    // see `model: undefined` — the field it never looked at. It passes `{}` for env, so it
+    // cannot see the override-driven cause either; `U-DT18` covers that dimension.
     const bad: string[] = [];
     for (const kind of ALL_KINDS) {
+      const check = (label: string, t: { provider: string; model: string }) => {
+        if (!MATRIX[kind].includes(t.provider)) bad.push(`${label} → ${t.provider}`);
+        if (typeof t.model !== "string" || t.model.length === 0) {
+          bad.push(`${label} → model ${JSON.stringify(t.model)}`);
+        }
+      };
       for (const [column, connected] of CONNECTIVITY_COLUMNS) {
-        const { provider } = resolveGenerationTarget(kind, {}, connected);
-        if (!MATRIX[kind].includes(provider)) bad.push(`${kind}/${column} → ${provider}`);
+        check(`${kind}/${column}`, resolveGenerationTarget(kind, {}, connected));
       }
-      const unknown = resolveGenerationTarget(kind, {}, null);
-      if (!MATRIX[kind].includes(unknown.provider)) {
-        bad.push(`${kind}/unknown → ${unknown.provider}`);
-      }
+      check(`${kind}/unknown`, resolveGenerationTarget(kind, {}, null));
     }
     expect(bad).toEqual([]);
   });
@@ -329,6 +344,96 @@ describe("resolveGenerationTarget — the connection-aware resolver (R4/R6/R8)",
     );
     // A slot override for another kind does not leak.
     expect(resolveGenerationTarget("video", env, BOTH).model).toBe(OR_VIDEO);
+  });
+
+  // ── Revision R2 (2026-07-31): the out-of-matrix provider override ──────────────
+  //
+  // `SUPAGLOO_AI_PROVIDER_<KIND>` is an unvalidated operator string cast to
+  // `AiProviderName`. Naming a provider the kind cannot serve — `…_NARRATION=gloo`, or a
+  // typo — used to be returned unrepaired, and the caller's
+  // `DEFAULT_MODEL_BY_KIND_PROVIDER[kind][provider]!` then non-null-asserted a slot
+  // `U-DT17` guarantees is ABSENT. The observed result was `{provider: "gloo", model:
+  // undefined}` on a `GenerationTarget.model: string`.
+  //
+  // The blast radius is why this is a sweep and not a one-liner: `model: undefined` fails
+  // `AiModelCatalogueResponseSchema`'s `defaults[kind].model.min(1)`, `fetchModelCatalogue`
+  // returns `null`, and the ENTIRE Studio AI surface goes permanently "Checking…" —
+  // every kind, not the misconfigured one.
+  it("U-DT18: an out-of-matrix SUPAGLOO_AI_PROVIDER_<KIND> never yields an undefined model", () => {
+    // Two flavours of bad value: a REAL provider the matrix forbids for that kind (the
+    // reported case), and a value that is not a provider at all (the typo case).
+    const BAD_VALUES = ["gloo", "openrouter", "not-a-provider", "OpenRouter"];
+    const bad: string[] = [];
+    for (const kind of ALL_KINDS) {
+      const envKey = `SUPAGLOO_AI_PROVIDER_${kind.toUpperCase()}`;
+      for (const value of BAD_VALUES) {
+        const env = { [envKey]: value };
+        for (const [column, connected] of [
+          ...CONNECTIVITY_COLUMNS,
+          ["unknown", null],
+        ] as const) {
+          const t = resolveGenerationTarget(kind, env, connected);
+          const label = `${kind}/${value}/${column}`;
+          // `model` is the assertion U-DT8 could not make — it destructures only
+          // `provider`, which is why a sweep of every kind × every column still missed this.
+          if (typeof t.model !== "string" || t.model.length === 0) {
+            bad.push(`${label} → model ${JSON.stringify(t.model)}`);
+          }
+          if (!MATRIX[kind].includes(t.provider)) {
+            bad.push(`${label} → provider ${t.provider}`);
+          }
+        }
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("U-DT19: D3 — an unusable provider override degrades to AS IF UNSET, not to the matrix's first entry", () => {
+    // THE DECISION, pinned. The obvious clamp is `providersForKind(kind)[0]`, and it is
+    // wrong: the matrix row states COMPATIBILITY, not preference. `script`'s row is
+    // `["gloo","openrouter"]` while its default provider is `openrouter`, so `allowed[0]`
+    // would answer `gloo` — a typo in an env var would not be ignored, it would migrate
+    // `script` onto the other provider by the matrix literal's LINE ORDER. `script` is the
+    // one kind where the two candidate clamps disagree, which is exactly why it is asserted
+    // by name here and not left to the sweep above.
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "nonsense" }, null)
+        .provider,
+    ).toBe("openrouter");
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "nonsense" }, NEITHER)
+        .provider,
+    ).toBe("openrouter");
+
+    // Stated generally: with an unusable override the answer equals the no-override answer,
+    // for every kind and every connectivity state.
+    for (const kind of ALL_KINDS) {
+      const env = { [`SUPAGLOO_AI_PROVIDER_${kind.toUpperCase()}`]: "nonsense" };
+      for (const [column, connected] of [
+        ...CONNECTIVITY_COLUMNS,
+        ["unknown", null],
+      ] as const) {
+        expect(`${kind}/${column}:${JSON.stringify(resolveGenerationTarget(kind, env, connected))}`)
+          .toBe(`${kind}/${column}:${JSON.stringify(resolveGenerationTarget(kind, {}, connected))}`);
+      }
+    }
+  });
+
+  it("U-DT20: an IN-matrix provider override is still honoured — the clamp is not a blanket ignore", () => {
+    // The anti-vacuity control for U-DT19. Without it, `repairProvider` could ignore the
+    // override entirely and both U-DT18 and U-DT19 would stay green while
+    // `SUPAGLOO_AI_PROVIDER_<KIND>` had silently stopped working.
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "gloo" }, NEITHER)
+        .provider,
+    ).toBe("gloo");
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "gloo" }, null)
+        .provider,
+    ).toBe("gloo");
+    expect(
+      resolveGenerationTarget("image", { SUPAGLOO_AI_PROVIDER_IMAGE: "openrouter" }, BOTH),
+    ).toEqual({ provider: "openrouter", model: OR_IMAGE });
   });
 });
 

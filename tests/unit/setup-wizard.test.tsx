@@ -195,6 +195,38 @@ describe("R2 — dismissing the wizard counts as having completed it", () => {
     expect(markOnboarded).toHaveBeenCalledTimes(1);
   });
 
+  it("U-OW8: the BACKDROP dismisses AND persists — the third route R2's wording names", async () => {
+    // R2's wording covers dismissal, and `Modal` offers three routes to it: the ✕
+    // (`U-OW2`/`U-OW3`), Escape (`U-OW6`) and the backdrop. All three run through the same
+    // `onClose`, so this is a gap in PROOF rather than in behaviour — but the wizard passes
+    // `dismissible`, which is what arms the backdrop, and nothing held that the third route
+    // persists. A future `dismissible` narrowed to "Escape only" would leave a user who
+    // clicked outside the panel shown this wizard again forever, with U-OW2/3/6 green.
+    const root = await openWizard();
+
+    // The panel stops propagation, so clicking the backdrop itself is the real gesture.
+    await click(byTestId(root, "modal-backdrop"));
+
+    expect(markOnboarded).toHaveBeenCalledTimes(1);
+    // No assertion that the panel GOES AWAY: `SetupWizard` passes `open` as a literal
+    // `true`, so nothing here unmounts it. The removal is the parent's — `firstSignIn`
+    // flips once `markOnboarded` lands and `WorkspaceHome` stops rendering it. That
+    // transition is held at the composition level (`workspace-guardrail-composition`),
+    // where the session it depends on is actually driveable.
+  });
+
+  it("U-OW9: a click INSIDE the panel does not dismiss — the backdrop test is not a free pass", async () => {
+    // The anti-vacuity control for U-OW8. Without it, a `Modal` that closed on any click
+    // anywhere would satisfy U-OW8 while making the wizard impossible to use.
+    const root = await openWizard();
+
+    await click(byTestId(root, "setup-wizard"));
+
+    expect(markOnboarded).not.toHaveBeenCalled();
+    // Deliberately no `panel is still there` assertion — see U-OW8: it never leaves in this
+    // harness, so it would read as a check while being unconditionally true.
+  });
+
   it("U-OW7: the Done step's Finish still persists — R2 adds a path, it does not move one", async () => {
     // The regression guard. `wizard-finish` is what `E-B2` clicks and what every existing
     // onboarding assertion depends on.

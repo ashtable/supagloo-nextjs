@@ -295,19 +295,32 @@ describe("task 43 — no secret material in any serialized log line", () => {
    * deleted.
    *
    * The discriminating shape is to make the LOGGED VALUE itself be the secret's value: the
-   * `SUPAGLOO_AI_*_SCRIPT` overrides carry exactly what `GLOO_CLIENT_SECRET` carries, so
-   * both `console.info` lines would print it verbatim unless they go through
-   * `redactSecrets`. Remove either `redactSecrets(...)` call in `lib/api/ai-config.ts` and
-   * this case goes red.
+   * `SUPAGLOO_AI_MODEL_SCRIPT_OPENROUTER` override carries exactly what `GLOO_CLIENT_SECRET`
+   * carries, so the model `console.info` line would print it verbatim unless it goes through
+   * `redactSecrets`. Remove that `redactSecrets(...)` call in `lib/api/ai-config.ts` and this
+   * case goes red.
+   *
+   * ── Why the MODEL line, and only the model line (2026-07-31, revision R2) ────────────
+   *
+   * This case used to smuggle the sentinel into the PROVIDER line too, via
+   * `SUPAGLOO_AI_PROVIDER_SCRIPT`, and asserted two redaction markers. `repairProvider` now
+   * CLAMPS an unrecognised provider override to the kind's matrix default, so the provider
+   * slot is a closed vocabulary — `openrouter` or `gloo` — and can no longer echo arbitrary
+   * operator input into a log at all. That is a strictly stronger position for the property
+   * this case is about, not a weakening of it, and it cannot be re-created: `redactSecrets`
+   * only masks values of 8+ characters, so no valid provider name could ever be a needle.
+   * The provider half is therefore asserted STRUCTURALLY below (the line prints the clamped
+   * provider, never the input) and the redaction half rides on the model line.
    */
   it("the ai-config resolution log REDACTS a value that is also a secret's value", () => {
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
       resolveGenerationTarget("script", {
-        // Not secret-named (no SECRET/TOKEN/…, no trailing _KEY/_PAT segment), so these
-        // two are needles only because GLOO_CLIENT_SECRET below holds the same value.
+        // Not secret-named (no SECRET/TOKEN/…, no trailing _KEY/_PAT segment), so these are
+        // needles only because GLOO_CLIENT_SECRET below holds the same value. The SLOT form
+        // is used because it binds regardless of which provider the repair settles on.
         SUPAGLOO_AI_PROVIDER_SCRIPT: SENTINEL,
-        SUPAGLOO_AI_MODEL_SCRIPT: SENTINEL,
+        SUPAGLOO_AI_MODEL_SCRIPT_OPENROUTER: SENTINEL,
         GLOO_CLIENT_SECRET: SENTINEL,
         SECRETS_ENCRYPTION_KEY: SENTINEL,
         GITHUB_E2E_PAT_TOKEN: SENTINEL,
@@ -315,10 +328,13 @@ describe("task 43 — no secret material in any serialized log line", () => {
       const lines = infoSpy.mock.calls.map((c) => c.join(" ")).join("\n");
       expect(infoSpy).toHaveBeenCalledTimes(2); // one provider line, one model line
       expect(lines).not.toContain(SENTINEL);
-      // Positively: the redactor is what removed it, once per line. (Which secret NAME
+      // Positively: the redactor is what removed it from the model line. (Which secret NAME
       // labels the mask depends on needle order among equal-length values, so match the
       // marker rather than one name.)
-      expect(lines.match(/\[redacted:[A-Z0-9_]+\]/g)).toHaveLength(2);
+      expect(lines.match(/\[redacted:[A-Z0-9_]+\]/g)).toHaveLength(1);
+      // The provider line never had to be redacted, because the clamp meant it never held
+      // the value: it names the closed-vocabulary provider that was actually resolved.
+      expect(lines).toMatch(/provider .*-> openrouter\b/);
       // It still says the useful thing.
       expect(lines).toContain("SUPAGLOO_AI_MODEL_SCRIPT");
       expect(lines).toContain("SUPAGLOO_AI_PROVIDER_SCRIPT");
