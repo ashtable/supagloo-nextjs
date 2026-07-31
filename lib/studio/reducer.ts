@@ -886,19 +886,30 @@ export function studioReducer(
       // committed" a lie about work the user never did.
       const next = { ...state, modelCatalogue: action.catalogue };
 
-      // …but it IS the moment the narration model's vocabulary first becomes knowable, so
-      // it is the one action that must re-check the chosen voice.
+      // A read we could NOT MAKE is not evidence the pick is wrong. `fetchModelCatalogue`
+      // returns null on ANY failure and never throws, and its effect runs once per studio
+      // open — so `null` here is permanent for the session, not a step towards an answer.
+      // Clearing on it would delete a choice that came out of the user's own manifest;
+      // and because this case does not dirty, nothing on screen would report the loss,
+      // so their next unrelated Commit would write it back OUT of their repo
+      // (`serializeManifest` emits `narratorVoice.voiceId` only when it is defined).
+      if (action.catalogue === null) return next;
+
+      // …but a catalogue that DID land IS the moment the narration model's vocabulary
+      // first becomes knowable, so it is the one action that must re-check the chosen
+      // voice.
       //
-      // Until the catalogue lands, `resolveChoice("narration", …)` resolves NO model, so
-      // there is no vocabulary and a voice cannot be validated against one. Only
-      // SET_AI_PROVIDER and SET_AI_MODEL remapped; this case never did. That was invisible
-      // while every model shared one hardcoded list and is a real defect now that the list
-      // is the model's own — it is also the state every manifest committed before this
-      // change is in, since they all carry an id from the deleted OpenAI set.
+      // Until then, `resolveChoice("narration", …)` resolves NO model, so there is no
+      // vocabulary and a voice cannot be validated against one. Only SET_AI_PROVIDER and
+      // SET_AI_MODEL remapped; this case never did. That was invisible while every model
+      // shared one hardcoded list and is a real defect now that the list is the model's
+      // own — `voiceId` is optional and written only by the picker, so the projects this
+      // fires for are the ones where a voice was actually picked AND committed.
       //
       // The clear does NOT dirty, for the same reason the rest of this case does not. It
-      // still beats leaving the id: an invalid voice left in memory would ride into the
-      // user's repo on their next unrelated Commit.
+      // still beats leaving the id: once the vocabulary IS known, an id it does not
+      // contain is invalid, and leaving it in memory would ride into the user's repo on
+      // their next unrelated Commit.
       if (state.storyboard.voiceId === undefined) return next;
       const voices = narrationVoicesFor(action.catalogue, state.storyboard.aiSettings);
       const remapped = remapVoice(state.storyboard.voiceId, voices);

@@ -875,11 +875,24 @@ export function StudioProvider({
      *
      * It is deliberately NOT written back to the manifest: a default frozen into a file
      * committed to the user's repo stops being a default.
+     *
+     * `voices === null` is FOUR states, and only one of them means "this model publishes
+     * nothing". The other reachable ones are "the catalogue is still in flight" and "the
+     * catalogue read failed" — in both, `target.model` is `undefined`, so we have no
+     * vocabulary to check the pick AGAINST. Applying the rule anyway drops the user's
+     * committed id and lets dbos discover the model's first published voice instead. This
+     * button does not wait for the catalogue (it gates on the manifest and the scene count
+     * only), and a failed read never retries, so that window is reachable and permanent.
+     *
+     * The fallback is a NO-OP once the catalogue has landed: whenever
+     * `voicesForModelId(...)` returns null after that, `storyboard.voiceId` is already
+     * `undefined` — `MODELS_LOADED` and `remapVoiceForSettings` both clear under exactly
+     * that condition, and `SET_VOICE_ID` can only write an id the rendered list offered.
      */
-    const voiceId = effectiveVoiceId(
-      state.storyboard.voiceId,
-      voicesForModelId(target.model, state.modelCatalogue?.models ?? []),
-    );
+    const voices = voicesForModelId(target.model, state.modelCatalogue?.models ?? []);
+    const voiceId = voices
+      ? effectiveVoiceId(state.storyboard.voiceId, voices)
+      : (state.storyboard.voiceId ?? null);
     if (voiceId) voice.voiceId = voiceId;
     runGeneration(
       NARRATION_SLOT,

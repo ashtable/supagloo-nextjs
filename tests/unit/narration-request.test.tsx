@@ -116,6 +116,17 @@ const project = (): StudioProject => ({
   manifest: MANIFEST,
 });
 
+/**
+ * A project whose voice was picked and COMMITTED — the manifest carries the id and the
+ * hydrated storyboard carries it too, which is what `storyboardFromManifest` produces.
+ * `MANIFEST` above deliberately has none, so `project()` cannot exercise this.
+ */
+const projectWithVoice = (voiceId: string): StudioProject => ({
+  ...project(),
+  storyboard: { ...DEMO_STORYBOARD, voiceId },
+  manifest: { ...MANIFEST, narratorVoice: { ...MANIFEST.narratorVoice, voiceId } },
+});
+
 let mounted: Mounted | null = null;
 afterEach(() => {
   mounted?.unmount();
@@ -123,20 +134,29 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 
-async function open() {
-  fetchModelCatalogue.mockResolvedValue(CATALOGUE);
+/**
+ * Mount the studio over whatever `fetchModelCatalogue` the CALLER has already armed —
+ * the catalogue's outcome is the variable in the two cases below, so it cannot be baked
+ * in here.
+ */
+async function openWith(proj: StudioProject) {
   // A generation that never settles: this file asserts on the REQUEST, and letting the
   // poll resolve would drag the presign/asset path into every case for nothing.
   createGeneration.mockResolvedValue({ id: "gen-1", status: "queued" });
   pollGenerationUntilTerminal.mockReturnValue(new Promise(() => {}));
 
   mounted = await mount(
-    <StudioProvider project={project()}>
+    <StudioProvider project={proj}>
       <SceneInspector />
     </StudioProvider>,
   );
   await flush();
   return mounted.container;
+}
+
+async function open() {
+  fetchModelCatalogue.mockResolvedValue(CATALOGUE);
+  return openWith(project());
 }
 
 /** The body of the one `createGeneration` call, typed enough to assert on. */
@@ -204,5 +224,48 @@ describe("the chosen narrator voice reaches the generation request", () => {
     };
     const listed = CATALOGUE.models.find((m) => m.id === sent.model)!.voices;
     expect(listed).toContain(sent.input.voiceId);
+  });
+});
+
+describe("a persisted voice survives a catalogue we do not have", () => {
+  // The three cases above all mount over a RESOLVED catalogue, which is exactly why the
+  // regression below survived review: `voicesForModelId` answers `null` for four states
+  // that are not the same thing, and only one of them ("this model publishes nothing")
+  // justifies dropping the user's pick. The other two reachable ones are here.
+  //
+  // Both are reachable from the button, not merely from a race. `regenerateNarration`
+  // guards on the manifest and the scene count only, and `scene-inspector.tsx` disables
+  // the control only while a narration is running or the storyboard is empty — neither
+  // waits on the catalogue. The BFF injects a model regardless, so the generation runs;
+  // dbos then discovers the model's FIRST published voice (`af_alloy`, American female
+  // for Kokoro) and narrates in a voice nobody chose. That is the reported bug, produced
+  // by the fix for it.
+
+  it("U-V69: catalogue STILL IN FLIGHT — the committed id is sent, not dropped", async () => {
+    // A promise that never settles: `MODELS_LOADED` is never dispatched, so
+    // `state.modelCatalogue` is null for the whole case — the real first paint.
+    fetchModelCatalogue.mockReturnValue(new Promise(() => {}));
+    const c = await openWith(projectWithVoice("am_echo"));
+
+    await click(byTestId(c, "regenerate-narration"));
+
+    const body = narrationBody();
+    expect(body.input.voiceId).toBe("am_echo");
+    expect(body.input.voice.voiceId).toBe("am_echo");
+  });
+
+  it("U-V70: catalogue read FAILED — the committed id is still sent, and never cleared", async () => {
+    // `fetchModelCatalogue` returns null on ANY failure and the effect runs once, so this
+    // window never closes: without the reducer's guard the id is wiped from the storyboard
+    // on arrival, and without the request-side fallback it would be dropped even if it
+    // survived. Both halves are under test here.
+    fetchModelCatalogue.mockResolvedValue(null);
+    const c = await openWith(projectWithVoice("am_echo"));
+
+    await click(byTestId(c, "regenerate-narration"));
+
+    const body = narrationBody();
+    expect(body.input.voiceId).toBe("am_echo");
+    expect(body.input.voice.voiceId).toBe("am_echo");
   });
 });

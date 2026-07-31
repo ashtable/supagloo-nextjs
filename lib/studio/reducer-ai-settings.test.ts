@@ -362,22 +362,34 @@ describe("remapping the voice when the speech model changes", () => {
     // (only SET_AI_PROVIDER and SET_AI_MODEL did). It was invisible while every model
     // shared one hardcoded list; it is a real defect the moment the list is the model's own.
     //
+    // `voiceId` is optional and written only by the picker, so the branch fires for the
+    // projects where a voice was actually picked AND committed — not for every manifest.
+    //
     // The clear must NOT dirty: a background read arming Commit would make "All changes
     // committed" a lie about work the user never did. Clearing rather than leaving is
     // still the right half of that trade — a stale id left in memory would ride into the
     // user's repo on their next unrelated commit.
-    const preCatalogue = studioReducer(start(), {
-      type: "SET_VOICE_ID",
-      voiceId: "shimmer", // not in ANY live vocabulary; every pre-existing manifest has one
+    //
+    // Driven from a MANIFEST-HYDRATED state, not from `SET_VOICE_ID`. Seeding through the
+    // action made the dirty assertion `expect(loaded.dirty).toBe(preCatalogue.dirty)` —
+    // and `U-V34` twelve lines above pins `SET_VOICE_ID` to dirty, so that reduced to
+    // `expect(true).toBe(true)` and could not tell "MODELS_LOADED left dirty alone" from
+    // "MODELS_LOADED set it". Measured: injecting `dirty: true` into the clear branch left
+    // the whole lane green. Hydration is also the state that actually reaches this branch
+    // in production — a clean project opening with a committed pick.
+    const preCatalogue = initialStudioState({
+      ...PROJECT,
+      storyboard: { ...DEMO_STORYBOARD, voiceId: "shimmer" }, // in no live vocabulary
     });
     expect(preCatalogue.storyboard.voiceId).toBe("shimmer");
+    expect(preCatalogue.dirty).toBe(false);
 
     const loaded = studioReducer(preCatalogue, {
       type: "MODELS_LOADED",
       catalogue: CATALOGUE,
     });
     expect(loaded.storyboard.voiceId).toBeUndefined();
-    expect(loaded.dirty).toBe(preCatalogue.dirty);
+    expect(loaded.dirty).toBe(false);
 
     // A pick the resolved model DOES list survives, and the storyboard object is not
     // rebuilt for nothing.
@@ -388,5 +400,36 @@ describe("remapping the voice when the speech model changes", () => {
     });
     expect(stillValid.storyboard.voiceId).toBe("am_adam");
     expect(stillValid.storyboard).toBe(valid.storyboard);
+  });
+
+  it("U-V68: a FAILED catalogue read must not clear the pick — it is not evidence of anything", () => {
+    // `MODELS_LOADED` carries `catalogue: null` for a read that FAILED, not for a model
+    // with no voices — `fetchModelCatalogue` returns null on ANY failure and never throws
+    // (`lib/studio/model-catalogue-data.ts`). Its effect runs once per studio open, so
+    // there is no retry: whatever this case decides is the answer for the whole session.
+    //
+    // Clearing there deletes a choice that came out of the user's OWN manifest on the
+    // strength of a request that never arrived. And because this case deliberately does
+    // not dirty, nothing on screen reports it — the studio still says "All changes
+    // committed" while holding a storyboard that has silently lost the field. The next
+    // unrelated Commit then serializes the loss into the repo, since `serializeManifest`
+    // writes `narratorVoice.voiceId` only when it is defined.
+    //
+    // Post-catalogue this guard is a no-op: whenever the resolved model publishes no
+    // vocabulary, the clear branch below (and `remapVoiceForSettings`) has already left
+    // `voiceId` undefined, so there is no pick left to keep.
+    const hydrated = initialStudioState({
+      ...PROJECT,
+      storyboard: { ...DEMO_STORYBOARD, voiceId: "am_adam" },
+    });
+    expect(hydrated.storyboard.voiceId).toBe("am_adam");
+    expect(hydrated.dirty).toBe(false);
+
+    const failed = studioReducer(hydrated, { type: "MODELS_LOADED", catalogue: null });
+    expect(failed.modelCatalogue).toBeNull();
+    expect(failed.storyboard.voiceId).toBe("am_adam");
+    expect(failed.dirty).toBe(false);
+    // Identity: the storyboard is not rebuilt for a read that told us nothing.
+    expect(failed.storyboard).toBe(hydrated.storyboard);
   });
 });
