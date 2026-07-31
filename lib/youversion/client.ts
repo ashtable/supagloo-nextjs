@@ -42,6 +42,44 @@ import type {
 
 export const YOUVERSION_BASE_URL = "https://api.youversion.com";
 
+/**
+ * An explicit `Accept-Encoding`, pinned onto the `language_ranges[]=*` catalogue request
+ * ONLY.
+ *
+ * ⚠️ THIS IS A WORKAROUND FOR SOMEONE ELSE'S CACHE, not a protocol requirement. Read this
+ * before deleting it, and read it again before widening it.
+ *
+ * **What was measured** (2026-07-31, deterministic across 4 consecutive probes per
+ * variant, same URL, same app key, same process):
+ *
+ * | request | rows | `total_size` | distinct `language_tag` | upstream `Age` |
+ * |---|---|---|---|---|
+ * | undici's default (NO `accept-encoding`) | **1472** | 1472 | 1252 | ~35 800 s |
+ * | the same URL + `accept-encoding: gzip, deflate` | **1479** | 1479 | 1258 | ~1 200 s |
+ *
+ * It is not about compression — `gzip`, `identity` and `br` all return 1479. The mere
+ * PRESENCE of the header selects a different upstream cache variant, and the variant
+ * undici's default lands on is **stale**. The header-carrying view is a strict SUPERSET:
+ * on the day of measurement it added `ceb ycn aab egm jub sax` and dropped nothing.
+ *
+ * **Why the client cannot detect it.** `total_size` matches the TRUNCATED count and
+ * `next_page_token` is `null`, so the truncated response is internally consistent. There
+ * is no error, no partial-page signal, nothing to test — the only symptom is ~6 languages
+ * silently missing from the studio's scripture picker for real users.
+ *
+ * **When this can go.** The moment the two variants agree. That is not a guess: the live
+ * lane's `E-YV1b` fetches BOTH variants and asserts this client's catalogue covers the
+ * union of their tags, so a convergence shows up as the two counts becoming equal and a
+ * REMOVAL of this header shows up as a red test rather than as a silent regression.
+ *
+ * **Why it is not applied to every request.** Only this one index was measured stale.
+ * `language_ranges[]=<tag>` (the per-language listing) was probed directly on the same day
+ * and is NOT stale. Sending the header everywhere would change the cache key of five other
+ * routes on a hunch; `U-YV1b` pins the narrow scope so widening it stays a deliberate act
+ * with a measurement behind it.
+ */
+export const CATALOGUE_ACCEPT_ENCODING = "gzip, deflate";
+
 /** A non-ok response from YouVersion. Carries the status so 401 (bad app key), 404
  *  (unknown ref) and 422 (unsupported id) stay distinguishable at the call site — the
  *  same classification `supagloo-nodejs-dbos/src/providers/youversion.ts` keeps. */
@@ -63,11 +101,14 @@ export interface YouVersionDeps {
   fetchImpl?: typeof fetch;
 }
 
-/** `null` means "204, deliberately empty" — a shape a JSON parse would throw on. */
+/** `null` means "204, deliberately empty" — a shape a JSON parse would throw on.
+ *
+ *  `extraHeaders` exists for exactly one caller: see {@link CATALOGUE_ACCEPT_ENCODING}. */
 async function getJson(
   path: string,
   params: Array<[string, string]>,
   deps: YouVersionDeps,
+  extraHeaders?: Record<string, string>,
 ): Promise<unknown | null> {
   const doFetch = deps.fetchImpl ?? fetch;
   const base = deps.baseUrl ?? YOUVERSION_BASE_URL;
@@ -76,7 +117,11 @@ async function getJson(
     : "";
 
   const res = await doFetch(`${base}${path}${query}`, {
-    headers: { accept: "application/json", "x-yvp-app-key": deps.appKey },
+    headers: {
+      accept: "application/json",
+      "x-yvp-app-key": deps.appKey,
+      ...extraHeaders,
+    },
   });
 
   // MUST be checked before any parse: 204 carries `content-type: text/html` and a
@@ -170,6 +215,10 @@ export async function fetchLanguageCatalogue(
         ["fields[]", "language_tag"],
       ],
       deps,
+      // The stale-cache-variant workaround. Scoped to THIS request and nothing else —
+      // see {@link CATALOGUE_ACCEPT_ENCODING} for the two measured row counts, the date,
+      // and the condition under which it can be deleted.
+      { "accept-encoding": CATALOGUE_ACCEPT_ENCODING },
     ),
     getJson(
       "/v1/languages",

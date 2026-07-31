@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CATALOGUE_ACCEPT_ENCODING,
   YouVersionHttpError,
   fetchBooks,
   fetchChapters,
@@ -78,6 +79,35 @@ async function allLanguageTags(): Promise<string[]> {
   return (body.data ?? []).map((l) => l.id).filter((id): id is string => !!id);
 }
 
+/**
+ * The `language_ranges[]=*` catalogue index, fetched RAW so the two cache variants can be
+ * compared. `extraHeaders` is the whole experiment: sending an explicit `Accept-Encoding`
+ * selects a different — fresher — upstream variant (see `CATALOGUE_ACCEPT_ENCODING`).
+ *
+ * The URL is byte-identical between the two calls on purpose. A comparison whose baseline
+ * changes more than one variable measures the wrong thing.
+ */
+async function rawCatalogueTags(
+  extraHeaders: Record<string, string>,
+): Promise<Set<string>> {
+  const res = await fetch(
+    "https://api.youversion.com/v1/bibles?language_ranges%5B%5D=*&page_size=*" +
+      "&fields%5B%5D=id&fields%5B%5D=abbreviation&fields%5B%5D=language_tag",
+    {
+      headers: {
+        accept: "application/json",
+        "x-yvp-app-key": APP_KEY,
+        ...extraHeaders,
+      },
+    },
+  );
+  if (!res.ok) throw new Error(`/v1/bibles?language_ranges[]=* answered ${res.status}`);
+  const body = (await res.json()) as { data?: Array<{ language_tag?: string }> };
+  return new Set(
+    (body.data ?? []).map((b) => b.language_tag).filter((t): t is string => !!t),
+  );
+}
+
 /** The raw status `fetchTranslations` collapses. `[]` is returned for a 204 AND for a
  *  200-with-empty-`data`, so only this can hold E-YV4's actual claim — that the live host
  *  still emits the empty-BODY status `JSON.parse` would throw on. */
@@ -111,7 +141,9 @@ describe("YouVersion live contract — catalogue", () => {
     // request gets 1472 rows and no `aab`, while the identical URL with an explicit
     // `Accept-Encoding` gets 1479 rows and `aab`. So that assertion was green for a
     // reason that had nothing to do with the rule, and would have gone red the moment the
-    // cache settled. See the run report: the variant split is an OPEN upstream finding.
+    // cache settled. (The variant split itself is now WORKED AROUND in the client and
+    // pinned by `E-YV1b` below — but naming a tag would still be the wrong assertion
+    // here, because which tags are licensed is upstream's decision to change daily.)
     //
     // A ratio cannot rot that way, and it fails for exactly the bug the `aab` line
     // existed to catch: re-deriving this list from `/v1/languages` (every language
@@ -136,6 +168,57 @@ describe("YouVersion live contract — catalogue", () => {
       (l) => !all.has(l.tag) && !all.has(l.tag.split("-")[0]!),
     );
     expect(unknown).toEqual([]);
+  });
+
+  /**
+   * The live half of the stale-cache-variant workaround (`CATALOGUE_ACCEPT_ENCODING`).
+   * `U-YV1b` proves the header is SENT; only a live probe can say whether it still helps.
+   *
+   * The claim is deliberately not "the client returns ≥ 1258 languages". A bare floor rots
+   * the moment upstream adds a language to both variants: 1252 → 1262 would clear a 1258
+   * floor with the workaround deleted. What is held instead:
+   *
+   *   the client's catalogue ⊇ (header-free variant ∪ header-carrying variant)
+   *
+   * — which is red for a REMOVAL for exactly as long as the divergence exists, and which
+   * degrades correctly rather than falsely if the variants converge (then the union is the
+   * same set either way, and this test is simply reporting that the workaround has become
+   * inert and can go).
+   *
+   * The absolute floor below it is an anti-vacuity control, not the claim: three empty
+   * responses would satisfy a superset assertion perfectly.
+   *
+   * ⚠️ If this goes red with `client < headerFree`, the header has stopped selecting the
+   * fresher variant. That is not a reason to weaken the assertion — it is the signal to
+   * re-measure and either repoint or delete the workaround.
+   */
+  it("E-YV1b: the pinned Accept-Encoding still buys the fresher cache variant, and never a smaller one", async () => {
+    const [languages, headerFree, headerCarrying] = await Promise.all([
+      fetchLanguageCatalogue(deps),
+      rawCatalogueTags({}),
+      rawCatalogueTags({ "accept-encoding": CATALOGUE_ACCEPT_ENCODING }),
+    ]);
+    const offered = new Set(languages.map((l) => l.tag));
+
+    // anti-vacuity: all three reads actually returned a catalogue
+    expect(offered.size).toBeGreaterThan(1000);
+    expect(headerFree.size).toBeGreaterThan(1000);
+    expect(headerCarrying.size).toBeGreaterThan(1000);
+
+    // THE CLAIM: nothing any observable variant offers is missing from what we ship.
+    const missing = [...headerFree, ...headerCarrying].filter((t) => !offered.has(t));
+    expect(missing).toEqual([]);
+
+    // …and the count the user's picker sees is never the smaller of the two.
+    expect(offered.size).toBeGreaterThanOrEqual(headerFree.size);
+
+    // Recorded, not asserted: `0` means the variants have converged and
+    // `CATALOGUE_ACCEPT_ENCODING` can be deleted (measured 2026-07-31: 6).
+    // eslint-disable-next-line no-console
+    console.log(
+      `[E-YV1b] catalogue variant delta: header-free=${headerFree.size} ` +
+        `header-carrying=${headerCarrying.size} client=${offered.size}`,
+    );
   });
 
   it("E-YV2: direction comes from the provider — English ltr, Hebrew/Arabic rtl", async () => {

@@ -13,6 +13,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CATALOGUE_ACCEPT_ENCODING,
   YOUVERSION_BASE_URL,
   YouVersionHttpError,
   fetchBooks,
@@ -104,6 +105,61 @@ describe("fetchLanguageCatalogue", () => {
     expect(lq.getAll("fields[]").length).toBeLessThanOrEqual(3);
 
     for (const h of r.headers) {
+      expect(h["x-yvp-app-key"]).toBe(APP_KEY);
+    }
+  });
+
+  /**
+   * The stale-cache-variant workaround, pinned from BOTH sides.
+   *
+   * `lib/youversion/client.ts` sends an explicit `Accept-Encoding` on the
+   * `language_ranges[]=*` catalogue request because the same URL WITHOUT one lands on a
+   * stale upstream cache variant that silently drops ~6 languages (measured 2026-07-31:
+   * 1472 rows / 1252 tags vs 1479 / 1258 — see `CATALOGUE_ACCEPT_ENCODING`).
+   *
+   * Two claims, and the second is the one that stops this from being cargo cult:
+   *  1. the catalogue request carries it — so deleting the workaround is RED here, not
+   *     merely a quieter picker in production;
+   *  2. the other six requests do NOT — the staleness was measured on exactly one index,
+   *     and widening a third-party cache workaround to routes nobody probed should cost a
+   *     deliberate test edit.
+   *
+   * The header's live EFFECT cannot be asserted from a unit test (it is a property of
+   * YouVersion's cache, not of our code); `E-YV1b` in the real lane holds that half.
+   */
+  it("U-YV1b: an explicit Accept-Encoding is pinned to the `*` catalogue request AND to nothing else", async () => {
+    const r = catalogueRouter();
+    await fetchLanguageCatalogue({ appKey: APP_KEY, fetchImpl: r.impl });
+
+    const sent = new Map(r.calls.map((url, i) => [url, r.headers[i]!]));
+    const catalogue = r.calls.find((u) => u.includes("/v1/bibles?language_ranges"))!;
+    const languages = r.calls.find((u) => u.includes("/v1/languages?"))!;
+    expect(catalogue).toBeDefined();
+    expect(languages).toBeDefined();
+
+    expect(sent.get(catalogue)?.["accept-encoding"]).toBe(CATALOGUE_ACCEPT_ENCODING);
+    // the sibling request in the SAME function — a different index, measured NOT stale
+    expect(sent.get(languages)?.["accept-encoding"]).toBeUndefined();
+
+    // …and every other read on the surface. Driven for real rather than asserted about,
+    // so a future call added to any of them inherits the check.
+    const other = router([
+      ["/v1/bibles?language_ranges", () => json({ data: [], total_size: 0 })],
+      ["/books/GEN/chapters/1/verses", () => json({ data: [] })],
+      ["/books/GEN/chapters", () => json({ data: [] })],
+      ["/books", () => json({ data: [] })],
+      ["/passages/", () => json({ id: "GEN.1.1", content: "x", reference: "Gen 1:1" })],
+    ]);
+    const deps = { appKey: APP_KEY, fetchImpl: other.impl };
+    await fetchTranslations("en", deps);
+    await fetchBooks("12", deps);
+    await fetchChapters("12", "GEN", deps);
+    await fetchVerses("12", "GEN", "1", deps);
+    await fetchPassage("12", "GEN.1.1", deps);
+
+    expect(other.calls).toHaveLength(5);
+    for (const h of other.headers) {
+      expect(h["accept-encoding"]).toBeUndefined();
       expect(h["x-yvp-app-key"]).toBe(APP_KEY);
     }
   });

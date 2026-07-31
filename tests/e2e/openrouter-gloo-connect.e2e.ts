@@ -172,6 +172,34 @@ async function waitForStatus(id: string, expected: string, timeoutMs = 20_000) {
   );
 }
 
+/** The live-credits readout, once it has SETTLED either way.
+ *
+ *  `data-status="connected"` is not a barrier for it: the card reaches `connected` off
+ *  `GET /api/connections`, while the balance comes from a SEPARATE
+ *  `GET /api/connections/openrouter/credits` that is still in flight at that moment.
+ *  `E-C4` read the page in the gap and saw `Checking credits…` — measured at 226 ms and
+ *  230 ms on two runs, against a credits call that took 152 ms and answered 200 both
+ *  times. So the failure was the spec racing its own precondition, not the product.
+ *
+ *  This waits for a TERMINAL state and returns which one it is; it deliberately does NOT
+ *  wait for the money shape. Waiting for the thing under assertion would make the
+ *  assertion vacuous — "Credits unavailable" (a key real OpenRouter rejected) has to stay
+ *  observable, because it is one of the two ways this can genuinely break. */
+async function settledCreditsText(timeoutMs = 20_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let last = "";
+  while (Date.now() < deadline) {
+    last = await testidText("connection-card-openrouter");
+    if (!last.includes("Checking credits")) return last;
+    await page.waitForTimeout(150);
+  }
+  throw new Error(
+    `the OpenRouter card never left "Checking credits…" within ${timeoutMs}ms — the live ` +
+      `GET /api/connections/openrouter/credits neither resolved nor errored. Last text: ` +
+      `${JSON.stringify(last)}`,
+  );
+}
+
 beforeAll(async () => {
   stagehand = new Stagehand({ env: "LOCAL", verbose: 1 }); // Gloo-free
   await stagehand.init();
@@ -252,6 +280,9 @@ describe("OpenRouter + Gloo connect (real) — wizard + profile", () => {
 
     await waitForStatus("connection-card-openrouter", "connected");
     await waitForStatus("connection-card-gloo", "connected");
+    // The credits read is a SECOND, independent request that `connected` does not gate.
+    // Barrier first, assert second — see `settledCreditsText`.
+    await settledCreditsText();
 
     const text = await h.bodyText();
     // OpenRouter: the masked form of the REAL key that was stored (last4 DERIVED from
