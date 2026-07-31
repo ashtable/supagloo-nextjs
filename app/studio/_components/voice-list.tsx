@@ -1,263 +1,251 @@
 "use client";
 
 import { useState } from "react";
-import styles from "../studio.module.css";
 import {
-  VOICE_FILTERS,
-  filterVoices,
-  recommendedVoiceFor,
-  voicesForModel,
-  type VoiceFilter,
+  buildVoiceGroups,
+  effectiveVoiceId,
+  selectionFor,
+  voiceLabel,
+  type VoiceGender,
+  type VoiceGroup,
 } from "@/lib/studio/speech-voices";
 
 /**
- * Figure 19b — the curated narrator-voice list that replaces the free-text descriptor.
+ * The narrator-voice picker — three cascading dropdowns over the LIVE provider vocabulary.
  *
- * ## What is transcribed and what is not
+ * ## What this replaces, and on whose instruction
  *
- * TRANSCRIBED from 19b: the filter field, the four `All / Male / Female / Dramatic` chips
- * as a single-select radio group, the row geometry (avatar · name · sub-line), the rust
- * border + tint for the selected row, and the `RECOMMENDED` badge. Geometry is taken
- * literally; **colour is translated** to the studio's Wilderness tokens — 19a/19b/20a/20b
- * are a THIRD dark palette, consistently a few units off Wilderness (`#17120f` vs
- * `--ws-bg #16110d`, `#c0392b` vs `--ws-rust #c6552b`, `#d9a05b` vs `--ws-amber #e6a43b`),
- * and the house rule at `scripture-picker.tsx:56` is take the geometry, translate the
- * colour.
+ * Figure 19b drew a filterable row list: a `🔍 Filter voices…` box, four
+ * `All / Male / Female / Dramatic` chips, a three-word descriptor under each name, and a
+ * `RECOMMENDED` badge. All of it is gone, on a direct user directive:
  *
- * NOT BUILT, deliberately (settled decision D3, and independently flagged in the design
- * review):
- *   - the `♪ ▶ / ❙❙` per-row audio PREVIEW. It needs sample assets that do not exist, a
- *     place to store them, and provider spend per voice per model.
- *   - the `PACE 0.92×` slider. `RequestSpeechArgs` is `{modelId, input, voice?}` and
- *     `media-client.test.ts` pins the request body to `{model, input, voice,
- *     response_format}` with an explicit assertion that no other field is carried. There
- *     is no parameter to send it to and no manifest field to keep it in. (The figure's own
- *     HTML comment mentions a pitch control; that is undesigned and is not built either.)
+ *   > "lets use 3 dropdown lists for the voice picker: language (default to English),
+ *   >  gender (default to male), voice (default to the alphabetically sorted first
+ *   >  american/english male voice)"
+ *   > "no need for any other filter chips for the voice picker"
  *
- * 19a's "8 voices for this model" is DERIVED from the catalogue here, never printed as a
- * literal — the figure asserts 8 and specifies 6, so the number has to come from the data.
+ * The `RECOMMENDED` badge went with them, and that is Step 6's call rather than the
+ * user's: no provider publishes a recommendation, so it was a property of the curated
+ * table — and it was already wrong, badging a voice the resolved model does not have.
+ *
+ * ## Where the rows come from now
+ *
+ * `voices` is the provider's own `supported_voices` for the resolved narration model,
+ * carried live through the api's speech-catalogue read. This component asserts nothing
+ * about which voices exist; `lib/studio/speech-voices.ts` only GROUPS what arrived, and
+ * says so wherever the id convention publishes no language or gender.
+ *
+ * ## The two honest-empty states, which are not the same state
+ *
+ *  - **`modelId === null`** — the catalogue has not landed yet. Until `MODELS_LOADED`,
+ *    `resolveChoice("narration", …)` resolves no model at all. The shipped picker
+ *    accepted a pick in that window against a fallback list resolved for NO model, so a
+ *    choice made there meant nothing.
+ *  - **`voices` empty** — the model published no vocabulary. Six of the nineteen live
+ *    speech models answer exactly that. Offering nothing is the true statement; offering
+ *    another model's list is what caused the bug this run fixes.
+ *
+ * ## Still not built, deliberately
+ *
+ * 19b's per-row `♪ ▶ / ❙❙` audio preview (it needs sample assets and provider spend per
+ * voice per model) and its `PACE 0.92×` slider (there is no parameter to send it to —
+ * `media-client.test.ts` pins the speech body to exactly
+ * `{model, input, voice, response_format}`). `U-V50` is a negative test so a later pass
+ * does not "restore" them from the figure.
  */
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
 const MONO = "ui-monospace, Menlo, monospace";
 
-const CHIP_LABEL: Record<VoiceFilter, string> = {
-  all: "All",
-  male: "Male",
-  female: "Female",
-  dramatic: "Dramatic",
+/** `ai-settings-panel.tsx`'s BOX — the studio's established select shape. These three
+ *  dropdowns sit directly under that panel's PROVIDER/MODEL selects, so they are the same
+ *  control and must look like it. */
+const BOX: React.CSSProperties = {
+  width: "100%",
+  height: 34,
+  border: "1px solid rgba(230,180,120,.24)",
+  borderRadius: 9,
+  background: "#0f0b07",
+  padding: "0 10px",
+  color: "#f1e7d6",
+  fontSize: 12.5,
+  fontWeight: 600,
+  outline: "none",
+  appearance: "none",
 };
+
+const FIELD_LABEL: React.CSSProperties = {
+  fontFamily: SEMI,
+  fontWeight: 700,
+  fontSize: 9.5,
+  letterSpacing: ".16em",
+  color: "var(--ws-dim)",
+};
+
+/** The bucket a voice should land in when the LANGUAGE changes: the gender the user is
+ *  already on if the new language has it, else that language's own first bucket. */
+function bucketFor(group: VoiceGroup, gender: VoiceGender | null) {
+  return group.genders.find((b) => b.gender === gender) ?? group.genders[0];
+}
 
 export default function VoiceList({
   modelId,
+  voices,
   selectedVoiceId,
   onSelect,
 }: {
-  /** The RESOLVED speech model — the voices come from it, which is why 19a orders the
-   *  narration card provider → model → voice. */
+  /** The RESOLVED speech model. `null` until the catalogue lands — 19a orders the
+   *  narration card provider → model → voice "because the voice options come FROM the
+   *  model", and before a model resolves there are no options to come from. */
   modelId: string | null;
+  /** The provider's `supported_voices` for {@link modelId}; `null` when it published none. */
+  voices: readonly string[] | null;
   selectedVoiceId: string | undefined;
   onSelect: (voiceId: string) => void;
 }) {
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<VoiceFilter>("all");
+  /**
+   * The in-session pick, held here because the parent may not have committed it yet.
+   *
+   * It is dropped automatically once it is no longer a voice THIS vocabulary offers —
+   * which is exactly what happens when the narration model changes underneath the picker.
+   * So there is no stale-selection effect to write and no dependency array to get wrong:
+   * the vocabulary itself invalidates it.
+   */
+  const [pending, setPending] = useState<string | null>(null);
 
-  const all = voicesForModel(modelId);
-  const recommended = recommendedVoiceFor(modelId);
-  const shown = filterVoices(all, filter, search);
-  // The effective selection: an unset project shows the recommendation as selected rather
-  // than nothing, because that IS what the generation will use.
-  const selected = selectedVoiceId ?? recommended;
+  const groups = buildVoiceGroups(voices);
+  const resolved = effectiveVoiceId(selectedVoiceId, voices);
+  const current = pending && voices?.includes(pending) ? pending : resolved;
+
+  const header = (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+      <span style={FIELD_LABEL}>{"VOICE"}</span>
+      {voices && voices.length > 0 ? (
+        <span style={{ fontSize: 10, color: "var(--ws-dim-2)" }}>
+          {`${voices.length} voices for this model`}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const empty = (message: string) => (
+    <div data-testid="voice-list" data-voice-count={voices?.length ?? 0}>
+      {header}
+      <div
+        data-testid="voice-empty"
+        style={{ fontSize: 11.5, color: "var(--ws-dim)", padding: "4px 2px" }}
+      >
+        {message}
+      </div>
+    </div>
+  );
+
+  // Order matters: no resolved model is a DIFFERENT statement from a model with no
+  // voices, and collapsing them would tell a user whose catalogue is still in flight that
+  // their model has no narrators.
+  if (!modelId) return empty("Loading voices…");
+  if (groups.length === 0 || !current) {
+    return empty("This model publishes no selectable voices.");
+  }
+
+  const selection = selectionFor(groups, current);
+  const group =
+    groups.find((g) => g.languageCode === selection?.languageCode) ?? groups[0];
+  const bucket = bucketFor(group, selection?.gender ?? null);
+
+  const report = (voiceId: string) => {
+    setPending(voiceId);
+    onSelect(voiceId);
+  };
+
+  /** Every cascade step reports the voice it RESOLVED to, not just the leaf select — the
+   *  parent persists a voice id, so a language change that reported nothing would leave a
+   *  voice from the previous language on the manifest. */
+  const pickLanguage = (code: string) => {
+    const next = groups.find((g) => (g.languageCode ?? "") === code);
+    const nextBucket = next && bucketFor(next, bucket?.gender ?? null);
+    if (nextBucket?.voiceIds[0]) report(nextBucket.voiceIds[0]);
+  };
+
+  const pickGender = (value: string) => {
+    const next = group.genders.find((b) => (b.gender ?? "") === value);
+    if (next?.voiceIds[0]) report(next.voiceIds[0]);
+  };
 
   return (
-    <div data-testid="voice-list" data-voice-count={all.length}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span
-          style={{
-            fontFamily: SEMI,
-            fontWeight: 700,
-            fontSize: 9.5,
-            letterSpacing: ".16em",
-            color: "var(--ws-dim)",
-          }}
-        >
-          {"VOICE"}
-        </span>
-        <span style={{ fontSize: 10, color: "var(--ws-dim-2)" }}>
-          {`${all.length} voices for this model`}
-        </span>
-      </div>
+    <div data-testid="voice-list" data-voice-count={voices?.length ?? 0}>
+      {header}
 
-      <input
-        data-testid="voice-filter"
-        aria-label="Filter voices"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="🔍 Filter voices…"
-        style={{
-          width: "100%",
-          height: 36,
-          border: "1px solid rgba(230,180,120,.18)",
-          borderRadius: 9,
-          background: "#0f0b07",
-          padding: "0 11px",
-          fontSize: 12.5,
-          color: "#e8dcc6",
-          outline: "none",
-        }}
-      />
-
-      {/* Single-select, a radio group rather than checkboxes — 19b draws exactly one chip
-          active and the others plain. */}
-      <div
-        role="radiogroup"
-        aria-label="Voice category"
-        style={{ display: "flex", gap: 7, marginTop: 10, flexWrap: "wrap" }}
-      >
-        {VOICE_FILTERS.map((f) => {
-          const active = f === filter;
-          return (
-            <button
-              key={f}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              data-testid={`voice-chip-${f}`}
-              data-active={active ? "true" : "false"}
-              onClick={() => setFilter(f)}
-              className={styles.hoverable}
-              style={{
-                padding: "5px 11px",
-                borderRadius: 20,
-                fontSize: 11,
-                fontWeight: active ? 700 : 600,
-                color: active ? "#fff" : "var(--ws-dim)",
-                background: active ? "var(--ws-rust)" : "transparent",
-                border: active ? "none" : "1px solid rgba(230,180,120,.18)",
-              }}
-            >
-              {CHIP_LABEL[f]}
-            </button>
-          );
-        })}
-      </div>
-
-      <div
-        style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 12 }}
-      >
-        {shown.map((voice) => {
-          const isSelected = voice.id === selected;
-          return (
-            <button
-              key={voice.id}
-              type="button"
-              data-testid={`voice-row-${voice.id}`}
-              data-selected={isSelected ? "true" : "false"}
-              aria-pressed={isSelected}
-              onClick={() => onSelect(voice.id)}
-              className={styles.hoverable}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 11,
-                width: "100%",
-                textAlign: "left",
-                padding: "10px 12px",
-                borderRadius: 10,
-                // Selection is marked TWICE — border/fill and weight — never colour alone
-                // (design-system rule 7).
-                border: isSelected
-                  ? "1.5px solid var(--ws-rust)"
-                  : "1px solid rgba(230,180,120,.14)",
-                background: isSelected ? "rgba(198,85,43,.10)" : "transparent",
-                color: "#f1e7d6",
-              }}
-            >
-              <span
-                aria-hidden
-                style={{
-                  width: 28,
-                  height: 28,
-                  flex: "none",
-                  borderRadius: "50%",
-                  display: "grid",
-                  placeItems: "center",
-                  fontSize: 11,
-                  color: isSelected ? "#fff" : "var(--ws-dim)",
-                  background: isSelected
-                    ? "linear-gradient(150deg,var(--ws-amber),#6d3b26)"
-                    : "rgba(230,180,120,.10)",
-                }}
-              >
-                {"♪"}
-              </span>
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <span
-                    style={{
-                      fontWeight: isSelected ? 700 : 600,
-                      fontSize: 13,
-                      color: isSelected ? "#f1e7d6" : "#e8dcc6",
-                    }}
-                  >
-                    {voice.name}
-                  </span>
-                  {voice.id === recommended ? (
-                    <span
-                      data-testid="voice-recommended"
-                      style={{
-                        fontWeight: 600,
-                        fontSize: 10,
-                        color: "var(--ws-amber)",
-                        border: "1px solid rgba(230,164,59,.4)",
-                        borderRadius: 20,
-                        padding: "1px 7px",
-                      }}
-                    >
-                      {"RECOMMENDED"}
-                    </span>
-                  ) : null}
-                </span>
-                <span
-                  style={{
-                    display: "block",
-                    fontSize: 11,
-                    color: "var(--ws-dim)",
-                    marginTop: 1,
-                  }}
-                >
-                  {voice.descriptor}
-                </span>
-              </span>
-            </button>
-          );
-        })}
-        {shown.length === 0 ? (
-          <span
-            data-testid="voice-none"
-            style={{ fontSize: 11.5, color: "var(--ws-dim)", padding: "8px 2px" }}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={FIELD_LABEL}>{"LANGUAGE"}</span>
+          <select
+            data-testid="voice-language"
+            aria-label="Narrator language"
+            value={group.languageCode ?? ""}
+            onChange={(e) => pickLanguage(e.target.value)}
+            style={BOX}
           >
-            {"No voices match that filter."}
-          </span>
-        ) : null}
+            {groups.map((g) => (
+              <option key={g.languageCode ?? "unknown"} value={g.languageCode ?? ""}>
+                {g.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={FIELD_LABEL}>{"GENDER"}</span>
+          {/* Populated from what THIS language has, never from a fixed pair: the narration
+              model publishes no French male voice, and offering one would be a control
+              whose pick cannot be honoured. */}
+          <select
+            data-testid="voice-gender"
+            aria-label="Narrator gender"
+            value={bucket?.gender ?? ""}
+            onChange={(e) => pickGender(e.target.value)}
+            style={BOX}
+          >
+            {group.genders.map((b) => (
+              <option key={b.gender ?? "unknown"} value={b.gender ?? ""}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={FIELD_LABEL}>{"VOICE"}</span>
+          <select
+            data-testid="voice-select"
+            aria-label="Narrator voice"
+            value={current}
+            onChange={(e) => report(e.target.value)}
+            style={BOX}
+          >
+            {(bucket?.voiceIds ?? []).map((id) => (
+              <option key={id} value={id}>
+                {voiceLabel(id)}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* 19b prints the model id as an at-a-glance context tag. The FULL id, not the
           figure's hand-shortened "orpheus-3b" — shortening per model is a rule nobody can
           apply consistently, and the id is what a support conversation needs. */}
-      {modelId ? (
-        <div
-          data-testid="voice-model-tag"
-          style={{
-            marginTop: 8,
-            fontFamily: MONO,
-            fontSize: 10.5,
-            color: "var(--ws-dim-2)",
-          }}
-        >
-          {modelId}
-        </div>
-      ) : null}
+      <div
+        data-testid="voice-model-tag"
+        style={{
+          marginTop: 8,
+          fontFamily: MONO,
+          fontSize: 10.5,
+          color: "var(--ws-dim-2)",
+        }}
+      >
+        {modelId}
+      </div>
     </div>
   );
 }

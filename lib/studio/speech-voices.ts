@@ -1,263 +1,320 @@
+import type { AiModelInfo } from "../api/contracts";
+
 /**
- * Feature 1 / figure 19b — the curated per-model narrator-voice catalogue.
+ * The narrator-voice vocabulary — sourced LIVE from the provider, never asserted here.
  *
- * ## Why a hardcoded table is the only option
+ * ## What this file used to be, and why that was wrong
  *
- * `narratorVoice.description` was written, validated, persisted to jsonb, committed to
- * git, round-tripped through five schema mirrors and snapshotted into the gallery — and
- * read by ZERO provider-facing code. Every project narrated in `"alloy"`. The reason is
- * structural, not an oversight: OpenRouter's speech endpoint takes a NAMED voice, its
- * request body is exactly `{model, input, voice, response_format}` (there is not even an
- * unused `instructions`/`style` field a descriptor could travel through), and **no
- * provider publishes a voice-enumeration API** — verified live 2026-07-29. OpenRouter's
- * own TTS guide says *"Available voices vary by model — check each model's page"*, and a
- * repo-wide grep for `voices|voice_list|available_voices` returns zero.
+ * It held a curated per-model table: three families (`ORPHEUS` / `GROK` / `OPENAI`) plus a
+ * `FALLBACK` for anything unmatched, each with hand-written names, descriptors, genders
+ * and a `recommended` id. Its own header argued that a hardcoded table was "the only
+ * option" because "no provider publishes a voice-enumeration API".
  *
- * So the choice is: ship a curated table, or leave the control inert. **Do not invent a
- * `GET /voices` endpoint** (design-delta §2.7.1 flag F6).
+ * **That claim was false, and the table was wrong for every model it claimed to cover.**
+ * Verified live 2026-07-30: `GET /api/v1/models?output_modalities=speech` carries a
+ * top-level `supported_voices` array on every entry, and it answers unauthenticated. There
+ * is no `openai/` model in that catalogue at all — so `FALLBACK = OPENAI` matched nothing
+ * real and *every* live speech model fell through to a list none of them declare. Measured
+ * against `hexgrad/kokoro-82m`: six of the eight offered ids alias silently onto Kokoro
+ * voices (both "Alloy" and "Shimmer" onto American FEMALE ones — hence the report of one
+ * narrator for two different picks) and two hard-400 the whole generation.
  *
- * ## Why it lives HERE, in nextjs, and nowhere else
+ * The user's instruction, verbatim:
  *
- * This is a UI catalogue: which voices to OFFER, with names and descriptors and a
- * recommendation. The machine value the user picks (`voiceId`) is persisted on the
- * manifest and sent on the generation request, so dbos is a pure pass-through
- * (`synthesize.ts` / `render/audio.ts` read the id and fall back to the provider default)
- * and needs no copy of this table. One table, in the one repo that reads it — no
- * duplication to drift, and no db-lib release gating the feature's visible half.
+ *   > "we should not hardcode the IDs of anything from the openrouter API (where we're
+ *   >  getting the narration generation). instead, we should always query the openrouter
+ *   >  API to figure out which voices exist for the selected narration model when
+ *   >  rendering the studio inspector ui"
  *
- * ## Provenance, honestly
+ * This is the same principle already enforced for scripture: which books a translation has
+ * is YouVersion's fact to state, not a canon we hardcode.
  *
- * The **ids** are facts: they are each model's documented voice vocabulary. The
- * **descriptors and facets are EDITORIAL** — a curated list is a curated list, and the
- * three-word descriptors for the Orpheus voices are transcribed verbatim from figure 19b.
- * Where a provider does not publish a gender for a voice, the facet is `"unknown"` rather
- * than guessed; the `Male`/`Female` filters simply do not claim it, and `All` always shows
- * everything.
+ * ## What this file is now
  *
- * ## Lint
+ * Pure rules over `readonly string[] | null` — the vocabulary the api forwarded from the
+ * provider. **It names no voice id**, and `U-V28` scans this source to keep it that way.
  *
- * This file is keyed by model id and that is deliberate. The `no-model-ids` invariant
- * (design-delta §7, lint-enforced by `dbos/src/providers/no-model-ids.test.ts`, which
- * scans `dbos/src/providers/*.ts` only) exists so nothing FREEZES A MODEL CHOICE into a
- * call path. Nothing here selects a model: this is a lookup FROM whichever model the
- * catalogue resolved, and an unknown model degrades to a generic list rather than
- * steering anyone toward a known one.
+ * ## Parsing a convention is not hardcoding ids
+ *
+ * `supported_voices` entries are plain strings for all 13 voice-bearing models; there is
+ * no structured language or gender metadata anywhere on the catalogue (`architecture`,
+ * `supported_parameters` and `default_parameters` were all checked). So LANGUAGE and
+ * GENDER can only come from interpreting the names the provider returned.
+ *
+ * That is a different act from asserting which voices exist. We never claim a voice is
+ * there; we group the ones the provider said are there. When the convention does not
+ * match, the grouping says so rather than guessing, and the VOICE list still carries every
+ * id — so a model with opaque names stays fully usable through one dropdown.
  */
 
-export type VoiceGender = "male" | "female" | "unknown";
+export type VoiceGender = "male" | "female";
 
-export interface SpeechVoice {
-  /** The provider voice id — the ONLY value ever sent to a provider. */
-  id: string;
-  /** Display name (19b's rows: `Zac`, `Tara`, …). */
-  name: string;
-  /** 19b's three-word sub-line, e.g. `"deep · commanding · male"`. Editorial. */
-  descriptor: string;
+export interface ParsedVoiceId {
+  /** The provider's own language letter — its token, not our label. */
+  languageCode: string;
   gender: VoiceGender;
-  /** Feeds 19b's `Dramatic` filter chip. Editorial. */
-  dramatic: boolean;
-}
-
-export interface SpeechVoiceSet {
-  /** Human label for the family, used only in comments/diagnostics. */
-  family: string;
-  /** Matched against the resolved model id, case-insensitively, as a substring. */
-  match: readonly string[];
-  /** The id 19b badges `RECOMMENDED`. Exactly one per set (pinned by a test). */
-  recommended: string;
-  voices: readonly SpeechVoice[];
+  /** The part after the underscore, used only as a display label. */
+  name: string;
 }
 
 /**
- * Canopy Labs Orpheus 3B — the model figure 19b draws (`orpheus-3b` in its header tag).
+ * `[lang][gender]_name` — the convention the narration model uses for all of its voices.
  *
- * Eight voices, which is where 19a's `"8 voices for this model"` and `"Show all 8 voices"`
- * come from; 19b draws six of them. The count is DERIVED from this list and never printed
- * as a literal (flag F7).
- *
- * The six descriptors 19b specifies are transcribed verbatim. `leah` and `zoe` — the two
- * the figure did not draw — get plain descriptors in the same register rather than
- * invented character.
+ * Deliberately STRICT, and verified not to fire on any other model's convention:
+ * `american_female` (Zonos), `en_paul_sad` (Voxtral), `aura-2-thalia-en` (Deepgram),
+ * `Zephyr` (Gemini), `conversational_a` (Sesame) and the bare Orpheus/Grok names all
+ * return `null`. A loose parse would invent a language for names that carry none, which is
+ * the same class of lie as the deleted table.
  */
-const ORPHEUS: SpeechVoiceSet = {
-  family: "Orpheus",
-  match: ["orpheus"],
-  recommended: "zac",
-  voices: [
-    { id: "zac", name: "Zac", descriptor: "deep · commanding · male", gender: "male", dramatic: true },
-    { id: "tara", name: "Tara", descriptor: "warm · measured · female", gender: "female", dramatic: false },
-    { id: "leo", name: "Leo", descriptor: "gravelly · weathered · male", gender: "male", dramatic: true },
-    { id: "mia", name: "Mia", descriptor: "bright · hopeful · female", gender: "female", dramatic: false },
-    { id: "jess", name: "Jess", descriptor: "soft · intimate · female", gender: "female", dramatic: false },
-    { id: "dan", name: "Dan", descriptor: "steady · plainspoken · male", gender: "male", dramatic: false },
-    { id: "leah", name: "Leah", descriptor: "clear · even · female", gender: "female", dramatic: false },
-    { id: "zoe", name: "Zoe", descriptor: "light · quick · female", gender: "female", dramatic: false },
-  ],
+const CONVENTIONAL_ID = /^([a-z])([fm])_(.+)$/;
+
+export function parseVoiceId(id: string): ParsedVoiceId | null {
+  const m = CONVENTIONAL_ID.exec(id);
+  if (!m) return null;
+  return {
+    languageCode: m[1],
+    gender: m[2] === "m" ? "male" : "female",
+    name: m[3],
+  };
+}
+
+/**
+ * The provider's language letter → a human name.
+ *
+ * Convention INTERPRETATION, the same permitted class as the parse above: it never asserts
+ * which voices exist, it only names the groups the provider's own ids fall into. An
+ * unrecognised letter is shown as the letter itself, upper-cased — the raw provider token
+ * is the honest thing to display when we cannot name it.
+ */
+const LANGUAGE_LABELS: Record<string, string> = {
+  a: "American English",
+  b: "British English",
+  e: "Spanish",
+  f: "French",
+  h: "Hindi",
+  i: "Italian",
+  j: "Japanese",
+  p: "Portuguese",
+  z: "Chinese",
+};
+
+export function languageLabel(code: string): string {
+  return LANGUAGE_LABELS[code] ?? code.toUpperCase();
+}
+
+export const GENDER_LABELS: Record<VoiceGender, string> = {
+  male: "Male",
+  female: "Female",
 };
 
 /**
- * OpenAI's TTS voices (`openai/gpt-4o-mini-tts` and siblings). `alloy` is the value this
- * codebase already shipped as `DEFAULT_NARRATION_VOICE`, so it stays the recommendation —
- * changing the default narrator of every existing project is not this feature's job.
- *
- * OpenAI publishes the NAMES but not a gender per voice. The four whose perceived gender
- * is not clearly documented are `"unknown"` rather than guessed: a filter that quietly
- * mislabels a voice is worse than one that returns fewer rows.
+ * The honest-unknown token, borrowed from this design system's existing vocabulary for it
+ * (19a's `Provider publishes no pricing.` + `—`). It is not a language and does not
+ * pretend to be one.
  */
-const OPENAI: SpeechVoiceSet = {
-  family: "OpenAI",
-  match: ["openai/"],
-  recommended: "alloy",
-  voices: [
-    { id: "alloy", name: "Alloy", descriptor: "balanced · neutral · versatile", gender: "unknown", dramatic: false },
-    { id: "onyx", name: "Onyx", descriptor: "deep · authoritative · male", gender: "male", dramatic: true },
-    { id: "echo", name: "Echo", descriptor: "even · articulate · male", gender: "male", dramatic: false },
-    { id: "fable", name: "Fable", descriptor: "expressive · storytelling", gender: "unknown", dramatic: true },
-    { id: "nova", name: "Nova", descriptor: "bright · energetic · female", gender: "female", dramatic: false },
-    { id: "shimmer", name: "Shimmer", descriptor: "gentle · airy · female", gender: "female", dramatic: false },
-    { id: "ash", name: "Ash", descriptor: "measured · grounded", gender: "unknown", dramatic: false },
-    { id: "sage", name: "Sage", descriptor: "calm · reflective", gender: "unknown", dramatic: false },
-  ],
-};
+export const UNKNOWN_LABEL = "—";
 
-/** xAI's Grok voice model. The five names verified live 2026-07-29 (brief §2.2). Their
- *  perceived genders are not published, so only the descriptors are claimed. */
-const GROK: SpeechVoiceSet = {
-  family: "Grok",
-  match: ["grok-voice", "x-ai/"],
-  // Exactly as it appears in `voices` below. This read `"rex"`, which is not an id this
-  // module has — so `remapVoice` returned, and the 19b list badged, a voice absent from
-  // the module's own list for every switch INTO this model.
-  recommended: "Rex",
-  voices: [
-    { id: "Rex", name: "Rex", descriptor: "firm · declarative", gender: "unknown", dramatic: true },
-    { id: "Eve", name: "Eve", descriptor: "warm · conversational", gender: "unknown", dramatic: false },
-    { id: "Ara", name: "Ara", descriptor: "clear · composed", gender: "unknown", dramatic: false },
-    { id: "Sal", name: "Sal", descriptor: "relaxed · easy", gender: "unknown", dramatic: false },
-    { id: "Leo", name: "Leo", descriptor: "steady · assured", gender: "unknown", dramatic: false },
-  ],
-};
+/** A voice's display name: the part after the convention's prefix, or the id verbatim. */
+export function voiceLabel(id: string): string {
+  const parsed = parseVoiceId(id);
+  if (!parsed) return id;
+  return parsed.name.charAt(0).toUpperCase() + parsed.name.slice(1);
+}
+
+export interface VoiceGenderGroup {
+  /** `null` when the id convention published no gender. */
+  gender: VoiceGender | null;
+  label: string;
+  /** Alphabetically sorted, so "the first American male voice" is well-defined. */
+  voiceIds: string[];
+}
+
+export interface VoiceGroup {
+  /** `null` when the id convention published no language. */
+  languageCode: string | null;
+  label: string;
+  genders: VoiceGenderGroup[];
+}
+
+/** Male first — the specified default — then female, then the unparsed bucket. */
+const GENDER_ORDER: Array<VoiceGender | null> = ["male", "female", null];
 
 /**
- * The fallback for a speech model this table does not know.
+ * Group a provider vocabulary into the LANGUAGE → GENDER → VOICE cascade.
  *
- * It is OpenAI's set because `alloy` is what every provider-facing call in this codebase
- * has actually been sending, and because "the voice we were already using" is the only
- * option that cannot make an unknown model WORSE than it is today. An unknown model with
- * an unknown vocabulary would otherwise have to offer nothing at all, which would make the
- * inspector's voice block look broken.
+ * Every published id lands in exactly one bucket, verbatim. Ids whose convention does not
+ * parse collect in a single `languageCode: null` group with a `gender: null` bucket, which
+ * is what keeps an opaque-id model fully usable rather than empty.
+ *
+ * `null`/`undefined`/`[]` all yield NO groups. That is not a degenerate case to paper
+ * over: 6 of the 19 live speech models publish `supported_voices: null`, and offering
+ * nothing — while saying so — is the only honest answer for them.
  */
-const FALLBACK = OPENAI;
+export function buildVoiceGroups(
+  voices: readonly string[] | null | undefined,
+): VoiceGroup[] {
+  if (!voices || voices.length === 0) return [];
 
-const VOICE_SETS: readonly SpeechVoiceSet[] = [ORPHEUS, GROK, OPENAI];
+  const byLanguage = new Map<string | null, Map<VoiceGender | null, string[]>>();
+  for (const id of voices) {
+    const parsed = parseVoiceId(id);
+    const languageCode = parsed?.languageCode ?? null;
+    const gender = parsed?.gender ?? null;
+    let genders = byLanguage.get(languageCode);
+    if (!genders) {
+      genders = new Map();
+      byLanguage.set(languageCode, genders);
+    }
+    const bucket = genders.get(gender);
+    if (bucket) bucket.push(id);
+    else genders.set(gender, [id]);
+  }
 
-/** The voice set for a resolved speech model id. Never empty. */
-export function voiceSetForModel(modelId: string | null | undefined): SpeechVoiceSet {
-  if (!modelId) return FALLBACK;
-  const needle = modelId.toLowerCase();
-  return (
-    VOICE_SETS.find((set) => set.match.some((m) => needle.includes(m))) ?? FALLBACK
-  );
-}
+  const groups: VoiceGroup[] = [];
+  for (const [languageCode, genders] of byLanguage) {
+    const buckets: VoiceGenderGroup[] = [];
+    for (const gender of GENDER_ORDER) {
+      const voiceIds = genders.get(gender);
+      if (!voiceIds) continue;
+      buckets.push({
+        gender,
+        label: gender ? GENDER_LABELS[gender] : UNKNOWN_LABEL,
+        voiceIds: [...voiceIds].sort(),
+      });
+    }
+    groups.push({
+      languageCode,
+      label: languageCode ? languageLabel(languageCode) : UNKNOWN_LABEL,
+      genders: buckets,
+    });
+  }
 
-/** The voices to offer for a model. 19a's "N voices for this model" counts THIS. */
-export function voicesForModel(
-  modelId: string | null | undefined,
-): readonly SpeechVoice[] {
-  return voiceSetForModel(modelId).voices;
-}
-
-/** The id 19b badges `RECOMMENDED`, and the fallback when a remap finds no match. */
-export function recommendedVoiceFor(modelId: string | null | undefined): string {
-  return voiceSetForModel(modelId).recommended;
+  // Named languages alphabetically by the LABEL the user reads; the unparsed group last,
+  // because it is a residue rather than a language.
+  return groups.sort((a, b) => {
+    if (a.languageCode === null) return 1;
+    if (b.languageCode === null) return -1;
+    return a.label.localeCompare(b.label);
+  });
 }
 
 /**
- * 19b's stated rule, verbatim: *"Change the speech model and the voices swap; the
- * previously chosen voice maps to the nearest match or falls back to the recommended
- * one."*
+ * The user's specified defaults:
  *
- * This is the whole reason the id can be persisted safely. Without it, switching the
- * speech model would leave a voice id the new model has never heard of on the manifest,
- * and the next narration generation would be a hard provider 400 — the feature would
- * break the thing it was added to fix.
+ *   > "language (default to English), gender (default to male), voice (default to the
+ *   >  alphabetically sorted first american/english male voice)"
  *
- * "Nearest match", in descending order of confidence:
- *   1. the SAME id, if the new model happens to have it (case-insensitively — `Leo`
- *      exists in both the Grok and Orpheus vocabularies);
- *   2. the same display NAME;
- *   3. the same gender AND dramatic flag;
- *   4. the same gender;
- *   5. the new model's recommended voice.
+ * The constants below are the provider's own language letter for American English and a
+ * facet of its own ids — neither is a voice id, and neither asserts that any particular
+ * voice exists. Both fall back to whatever the selected vocabulary actually has.
+ */
+export const DEFAULT_LANGUAGE_CODE = "a";
+export const DEFAULT_GENDER: VoiceGender = "male";
+
+export interface VoiceSelection {
+  languageCode: string | null;
+  gender: VoiceGender | null;
+  voiceId: string;
+}
+
+/**
+ * Where the three dropdowns land when nothing has been chosen.
  *
- * Deliberately never returns a voice from the OLD model: the whole point is that the
- * result is always sendable to the NEW one.
+ * Every fallback is to what EXISTS rather than to a constant — the narration model has no
+ * French male voice, so a cascade that assumed a fixed `[male, female]` pair would offer a
+ * narrator that is not there. `null` when the vocabulary is empty: there is nothing to
+ * default to, and saying so beats inventing.
+ */
+export function defaultSelection(
+  groups: readonly VoiceGroup[],
+): VoiceSelection | null {
+  const group =
+    groups.find((g) => g.languageCode === DEFAULT_LANGUAGE_CODE) ?? groups[0];
+  if (!group) return null;
+  const bucket =
+    group.genders.find((b) => b.gender === DEFAULT_GENDER) ?? group.genders[0];
+  const voiceId = bucket?.voiceIds[0];
+  if (!bucket || !voiceId) return null;
+  return { languageCode: group.languageCode, gender: bucket.gender, voiceId };
+}
+
+/** Which language/gender a persisted id belongs to, or `null` if this vocabulary has no
+ *  such id — which is exactly the state every pre-existing manifest is in. */
+export function selectionFor(
+  groups: readonly VoiceGroup[],
+  voiceId: string,
+): VoiceSelection | null {
+  for (const group of groups) {
+    for (const bucket of group.genders) {
+      if (bucket.voiceIds.includes(voiceId)) {
+        return { languageCode: group.languageCode, gender: bucket.gender, voiceId };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * THE INVARIANT: the result is always `null`, or a voice the target model accepts.
+ *
+ * This is what makes persisting a provider voice id safe. Without it, switching the speech
+ * model would leave an id the new model has never heard of on the manifest, and the next
+ * narration generation would be a hard provider 400 — or, worse and what actually
+ * happened, would silently alias onto an unrelated voice.
+ *
+ * The old rule had four descending "nearest match" steps (same id → same display NAME →
+ * same gender AND dramatic flag → same gender) and always returned SOMETHING, falling back
+ * to a `recommended` id. Every step after the first read editorial metadata that no
+ * provider publishes, so all four are gone. What is left is the only step that was ever
+ * grounded in a provider fact — and when it does not match, the honest answer is NOTHING.
+ *
+ * Clearing is safe because it is never the end of the story: `regenerateNarration` sends
+ * {@link effectiveVoiceId}, which supplies the target's own derived default. Compared
+ * EXACTLY, never case-folded: this string is sent to the provider verbatim, and an id that
+ * differs only in case is an id the provider does not have.
  */
 export function remapVoice(
   currentVoiceId: string | null | undefined,
-  fromModelId: string | null | undefined,
-  toModelId: string | null | undefined,
-): string {
-  const target = voiceSetForModel(toModelId);
-  if (!currentVoiceId) return target.recommended;
-
-  const sameId = target.voices.find(
-    (v) => v.id.toLowerCase() === currentVoiceId.toLowerCase(),
-  );
-  if (sameId) return sameId.id;
-
-  const current = voicesForModel(fromModelId).find(
-    (v) => v.id.toLowerCase() === currentVoiceId.toLowerCase(),
-  );
-  if (!current) return target.recommended;
-
-  const sameName = target.voices.find(
-    (v) => v.name.toLowerCase() === current.name.toLowerCase(),
-  );
-  if (sameName) return sameName.id;
-
-  if (current.gender !== "unknown") {
-    const exact = target.voices.find(
-      (v) => v.gender === current.gender && v.dramatic === current.dramatic,
-    );
-    if (exact) return exact.id;
-    const byGender = target.voices.find((v) => v.gender === current.gender);
-    if (byGender) return byGender.id;
-  }
-
-  return target.recommended;
+  toVoices: readonly string[] | null | undefined,
+): string | null {
+  if (!currentVoiceId) return null;
+  return toVoices?.includes(currentVoiceId) ? currentVoiceId : null;
 }
 
-/** 19b's four filter chips. Single-select (a radio group, not checkboxes). */
-export type VoiceFilter = "all" | "male" | "female" | "dramatic";
-export const VOICE_FILTERS: readonly VoiceFilter[] = [
-  "all",
-  "male",
-  "female",
-  "dramatic",
-];
+/**
+ * What the generation will ACTUALLY narrate in — one rule, shared by the picker's
+ * displayed selection and the outgoing request.
+ *
+ * The shipped picker read `selected = selectedVoiceId ?? recommended` for display while
+ * omitting `voiceId` from the request whenever nothing had been picked. Two answers to one
+ * question, and only one of them audible: the UI showed a voice as chosen and the provider
+ * used its own. Sharing this function makes disagreeing impossible.
+ *
+ * It deliberately does NOT write to the manifest. A default frozen into a file committed
+ * to the user's repo stops being a default — the deployment could never move it again.
+ */
+export function effectiveVoiceId(
+  selectedVoiceId: string | null | undefined,
+  voices: readonly string[] | null | undefined,
+): string | null {
+  const kept = remapVoice(selectedVoiceId, voices);
+  if (kept) return kept;
+  return defaultSelection(buildVoiceGroups(voices))?.voiceId ?? null;
+}
 
 /**
- * 19b's `🔍 Filter voices…` box + the active chip, applied together.
+ * The vocabulary for a resolved speech model, straight off the live catalogue entry.
  *
- * They are independent, always-visible controls in the figure, so they COMPOSE rather
- * than override each other. The search matches the name and the descriptor, because the
- * descriptor is where the words a user would actually type ("deep", "warm", "female")
- * live.
+ * All four "we cannot offer a vocabulary" states collapse to `null` on purpose: no model
+ * resolved yet (the pre-`MODELS_LOADED` window), a model that is not in the catalogue, a
+ * model that published nothing, and an empty catalogue. Borrowing another model's list —
+ * which is precisely what the deleted `FALLBACK` did — is the one thing that must not
+ * happen.
  */
-export function filterVoices(
-  voices: readonly SpeechVoice[],
-  filter: VoiceFilter,
-  search: string,
-): readonly SpeechVoice[] {
-  const q = search.trim().toLowerCase();
-  return voices.filter((v) => {
-    if (filter === "male" && v.gender !== "male") return false;
-    if (filter === "female" && v.gender !== "female") return false;
-    if (filter === "dramatic" && !v.dramatic) return false;
-    if (!q) return true;
-    return (
-      v.name.toLowerCase().includes(q) || v.descriptor.toLowerCase().includes(q)
-    );
-  });
+export function voicesForModelId(
+  modelId: string | null | undefined,
+  models: readonly AiModelInfo[],
+): readonly string[] | null {
+  if (!modelId) return null;
+  return models.find((m) => m.id === modelId)?.voices ?? null;
 }

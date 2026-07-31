@@ -135,6 +135,7 @@ describe("AI settings actions (U-AS11..13)", () => {
           label: "Other",
           kinds: ["image" as const],
           pricing: null,
+          voices: null,
         },
       ],
       providers: { gloo: true, openrouter: true },
@@ -235,61 +236,82 @@ describe("per-scene video (U-SV1)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Feature 1 / 19b — the chosen narrator voice, and the remap on a model change
+// The chosen narrator voice, and the remap on a model change
+//
+// MOVED as a block. These cases were written against the curated
+// `ORPHEUS`/`GROK`/`OPENAI` table, which asserted which voices each model has and was
+// wrong for every model it claimed to cover. The vocabularies below now ride on the
+// CATALOGUE, exactly as they do in production — `supported_voices` sourced live per
+// model — so the reducer's remap is driven by provider facts rather than by a table the
+// test and the code both agreed on and reality did not.
 // ---------------------------------------------------------------------------
 
+/** Two REAL vocabularies, captured live 2026-07-30. TEST DATA, never source. */
+const KOKORO_VOICES = ["af_alloy", "af_nova", "am_adam", "am_echo", "bm_daniel"];
+const ORPHEUS_VOICES = ["tara", "leah", "jess", "leo", "dan", "mia", "zac"];
+
 const CATALOGUE = {
-  defaults: { narration: { provider: "openrouter" as const, model: "canopylabs/orpheus-3b" } },
+  defaults: { narration: { provider: "openrouter" as const, model: "hexgrad/kokoro-82m" } },
   models: [
     {
-      id: "canopylabs/orpheus-3b",
+      id: "hexgrad/kokoro-82m",
+      provider: "openrouter" as const,
+      label: "hexgrad: Kokoro 82M",
+      kinds: ["narration" as const],
+      pricing: {},
+      voices: KOKORO_VOICES,
+    },
+    {
+      id: "canopylabs/orpheus-3b-0.1-ft",
       provider: "openrouter" as const,
       label: "Canopy Labs: Orpheus 3B",
       kinds: ["narration" as const],
       pricing: {},
-    },
-    {
-      id: "openai/gpt-4o-mini-tts",
-      provider: "openrouter" as const,
-      label: "OpenAI: GPT-4o mini TTS",
-      kinds: ["narration" as const],
-      pricing: {},
+      voices: ORPHEUS_VOICES,
     },
   ],
 } as unknown as StudioState["modelCatalogue"];
 
 const withCatalogue = (): StudioState => ({ ...start(), modelCatalogue: CATALOGUE });
 
-describe("SET_VOICE_ID (19b's curated voice list)", () => {
+describe("SET_VOICE_ID (the live narrator-voice picker)", () => {
   it("U-V34: writes the chosen voice id and dirties the project", () => {
     // A content edit: it changes what the project generates, so it must reach the repo
     // through Commit like every other manifest field.
-    const next = studioReducer(start(), { type: "SET_VOICE_ID", voiceId: "tara" });
-    expect(next.storyboard.voiceId).toBe("tara");
+    const next = studioReducer(start(), { type: "SET_VOICE_ID", voiceId: "am_adam" });
+    expect(next.storyboard.voiceId).toBe("am_adam");
     expect(next.dirty).toBe(true);
   });
 });
 
 describe("remapping the voice when the speech model changes", () => {
   it("U-V35: THE INVARIANT — a model change never leaves an unsendable voice behind", () => {
-    // 19b: "Change the speech model and the voices swap; the previously chosen voice maps
-    // to the nearest match or falls back to the recommended one." Without this the
-    // manifest would carry a voice the new model has never heard of, and the next
-    // narration generation would be a hard provider 400 — the feature breaking the exact
-    // thing it was added to fix.
+    // Without this the manifest would carry a voice the new model has never heard of, and
+    // the next narration generation would either be a hard provider 400 or — worse, and
+    // what actually happened — silently alias onto some unrelated voice.
+    //
+    // What MOVED: the old assertion hardcoded OpenAI's eight ids as the expected landing
+    // set. There is no `openai/` model in the speech catalogue at all, so that set could
+    // never have been right for any live model. The rule is now "keep the id if the target
+    // lists it, else CLEAR it" — and clearing is safe because `regenerateNarration` omits
+    // an absent voiceId and the picker's own derived default takes over.
     const chosen = studioReducer(withCatalogue(), {
       type: "SET_VOICE_ID",
-      voiceId: "zac", // an Orpheus voice
+      voiceId: "am_adam", // a Kokoro voice
     });
     const switched = studioReducer(chosen, {
       type: "SET_AI_MODEL",
       kind: "narration",
-      model: "openai/gpt-4o-mini-tts",
+      model: "canopylabs/orpheus-3b-0.1-ft",
     });
-    expect(switched.storyboard.voiceId).not.toBe("zac");
-    expect(["alloy", "onyx", "echo", "fable", "nova", "shimmer", "ash", "sage"]).toContain(
-      switched.storyboard.voiceId,
+    expect(switched.storyboard.voiceId).toBeUndefined();
+
+    // …and the other direction: a voice the target DOES list survives.
+    const backAgain = studioReducer(
+      studioReducer(withCatalogue(), { type: "SET_VOICE_ID", voiceId: "af_nova" }),
+      { type: "SET_AI_MODEL", kind: "narration", model: "hexgrad/kokoro-82m" },
     );
+    expect(backAgain.storyboard.voiceId).toBe("af_nova");
   });
 
   it("U-V36: a project that never picked a voice stays untouched", () => {
@@ -297,7 +319,7 @@ describe("remapping the voice when the speech model changes", () => {
     const switched = studioReducer(withCatalogue(), {
       type: "SET_AI_MODEL",
       kind: "narration",
-      model: "openai/gpt-4o-mini-tts",
+      model: "canopylabs/orpheus-3b-0.1-ft",
     });
     expect(switched.storyboard.voiceId).toBeUndefined();
   });
@@ -306,7 +328,7 @@ describe("remapping the voice when the speech model changes", () => {
     // The image/video/music selectors have nothing to do with who is speaking.
     const chosen = studioReducer(withCatalogue(), {
       type: "SET_VOICE_ID",
-      voiceId: "zac",
+      voiceId: "am_adam",
     });
     for (const kind of ["image", "music", "video"] as const) {
       const next = studioReducer(chosen, {
@@ -314,20 +336,57 @@ describe("remapping the voice when the speech model changes", () => {
         kind,
         model: "some/other-model",
       });
-      expect(next.storyboard.voiceId, kind).toBe("zac");
+      expect(next.storyboard.voiceId, kind).toBe("am_adam");
     }
   });
 
   it("U-V38: re-selecting the SAME narration model leaves the voice exactly as it was", () => {
     const chosen = studioReducer(withCatalogue(), {
       type: "SET_VOICE_ID",
-      voiceId: "tara",
+      voiceId: "am_echo",
     });
     const same = studioReducer(chosen, {
       type: "SET_AI_MODEL",
       kind: "narration",
-      model: "canopylabs/orpheus-3b",
+      model: "hexgrad/kokoro-82m",
     });
-    expect(same.storyboard.voiceId).toBe("tara");
+    expect(same.storyboard.voiceId).toBe("am_echo");
+  });
+
+  it("U-V39: MODELS_LOADED remaps a pick made BEFORE the catalogue landed — without dirtying", () => {
+    // NEW, and it closes a hole the model-specific list makes load-bearing.
+    //
+    // Until the catalogue lands, `resolveChoice("narration", …)` returns `model: null` —
+    // there is no resolved model, so there is no vocabulary. Today a pick made in that
+    // window is simply kept, and `MODELS_LOADED` is the ONE action that never remapped
+    // (only SET_AI_PROVIDER and SET_AI_MODEL did). It was invisible while every model
+    // shared one hardcoded list; it is a real defect the moment the list is the model's own.
+    //
+    // The clear must NOT dirty: a background read arming Commit would make "All changes
+    // committed" a lie about work the user never did. Clearing rather than leaving is
+    // still the right half of that trade — a stale id left in memory would ride into the
+    // user's repo on their next unrelated commit.
+    const preCatalogue = studioReducer(start(), {
+      type: "SET_VOICE_ID",
+      voiceId: "shimmer", // not in ANY live vocabulary; every pre-existing manifest has one
+    });
+    expect(preCatalogue.storyboard.voiceId).toBe("shimmer");
+
+    const loaded = studioReducer(preCatalogue, {
+      type: "MODELS_LOADED",
+      catalogue: CATALOGUE,
+    });
+    expect(loaded.storyboard.voiceId).toBeUndefined();
+    expect(loaded.dirty).toBe(preCatalogue.dirty);
+
+    // A pick the resolved model DOES list survives, and the storyboard object is not
+    // rebuilt for nothing.
+    const valid = studioReducer(start(), { type: "SET_VOICE_ID", voiceId: "am_adam" });
+    const stillValid = studioReducer(valid, {
+      type: "MODELS_LOADED",
+      catalogue: CATALOGUE,
+    });
+    expect(stillValid.storyboard.voiceId).toBe("am_adam");
+    expect(stillValid.storyboard).toBe(valid.storyboard);
   });
 });

@@ -1,184 +1,345 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
+import type { AiModelInfo } from "../api/contracts";
 import {
-  VOICE_FILTERS,
-  filterVoices,
-  recommendedVoiceFor,
+  DEFAULT_GENDER,
+  DEFAULT_LANGUAGE_CODE,
+  buildVoiceGroups,
+  defaultSelection,
+  effectiveVoiceId,
+  languageLabel,
+  parseVoiceId,
   remapVoice,
-  voiceSetForModel,
-  voicesForModel,
+  selectionFor,
+  voiceLabel,
+  voicesForModelId,
 } from "./speech-voices";
 
 /**
- * Feature 1 / figure 19b — the curated per-model voice catalogue.
+ * The narrator-voice vocabulary, sourced LIVE from the provider.
  *
- * The properties asserted here are the ones the FEATURE depends on, not the contents of
- * the table (which is editorial and will change): every id is unique within its model,
- * every model recommends exactly one voice it actually has, and — the load-bearing one —
- * a remap ALWAYS returns a voice the target model can accept. Without that last property
- * switching the speech model would leave an unknown id on the manifest and the next
- * narration generation would be a hard provider 400, i.e. the feature would break the
- * exact thing it was added to fix.
+ * The curated `ORPHEUS`/`GROK`/`OPENAI`/`FALLBACK` table this replaces was wrong for
+ * every model it claimed to cover: there is no `openai/` entry in OpenRouter's speech
+ * catalogue at all, so `FALLBACK = OPENAI` matched nothing real and EVERY live speech
+ * model fell through to a list none of them declare. Measured against
+ * `hexgrad/kokoro-82m` on 2026-07-30: 6 of the 8 offered ids alias silently onto Kokoro
+ * voices (both "Alloy" and "Shimmer" onto American FEMALE ones — the user's actual bug
+ * report) and 2 (`ash`, `sage`) hard-400 the whole generation.
+ *
+ * So the properties asserted here are about the RULES, never about which voices exist.
+ * The vocabularies below are FIXTURES — evidence captured live — and `U-V28` is the
+ * standing guard that they never migrate into the source.
  */
 
-const MODELS = [
-  "canopylabs/orpheus-3b",
-  "openai/gpt-4o-mini-tts",
-  "x-ai/grok-voice-tts-1.0",
-  "some/model-nobody-curated",
-  null,
+/** `hexgrad/kokoro-82m`'s 54 `supported_voices`, captured live 2026-07-30. TEST DATA. */
+const KOKORO = [
+  "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore",
+  "af_nicole", "af_nova", "af_river", "af_sarah", "af_sky",
+  "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael",
+  "am_onyx", "am_puck", "am_santa",
+  "bf_alice", "bf_emma", "bf_isabella", "bf_lily",
+  "bm_daniel", "bm_fable", "bm_george", "bm_lewis",
+  "ef_dora", "em_alex", "em_santa",
+  "ff_siwis",
+  "hf_alpha", "hf_beta", "hm_omega", "hm_psi",
+  "if_sara", "im_nicola",
+  "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo",
+  "pf_dora", "pm_alex", "pm_santa",
+  "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi",
+  "zm_yunjian", "zm_yunxi", "zm_yunxia", "zm_yunyang",
 ];
 
-describe("the catalogue's shape", () => {
-  it("U-V10: every model offers at least one voice — the block is never empty", () => {
-    for (const m of MODELS) {
-      expect(voicesForModel(m).length, String(m)).toBeGreaterThan(0);
+/** `canopylabs/orpheus-3b-0.1-ft` — ids that carry NO convention at all. TEST DATA. */
+const OPAQUE = ["tara", "leah", "jess", "leo", "dan", "mia", "zac"];
+
+const model = (id: string, voices: string[] | null): AiModelInfo => ({
+  id,
+  provider: "openrouter",
+  label: id,
+  kinds: ["narration"],
+  pricing: null,
+  voices,
+});
+
+describe("the vocabulary's shape", () => {
+  it("U-V10: an UNPUBLISHED vocabulary offers no voices at all", () => {
+    // MOVED. This case used to read "every model offers at least one voice — the block is
+    // never empty", which was true only because the deleted FALLBACK invented a list for
+    // every model it did not know. Live, 6 of 19 speech models publish
+    // `supported_voices: null` (all `fish-audio/*`, both `minimax/*`) — so "never empty"
+    // is a claim the provider directly contradicts. Offering nothing, and saying so, is
+    // the only honest answer.
+    for (const empty of [null, undefined, []]) {
+      expect(buildVoiceGroups(empty)).toEqual([]);
+      expect(defaultSelection(buildVoiceGroups(empty))).toBeNull();
+      expect(effectiveVoiceId("am_adam", empty)).toBeNull();
     }
   });
 
-  it("U-V11: ids are unique within a model", () => {
-    for (const m of MODELS) {
-      const ids = voicesForModel(m).map((v) => v.id.toLowerCase());
-      expect(new Set(ids).size, String(m)).toBe(ids.length);
+  it("U-V11: every published id is carried VERBATIM, exactly once", () => {
+    // The id is the only value the provider is ever sent. Case-folding or renaming it —
+    // which the deleted table did while ALSO holding its own copy of the ids — is how a
+    // recommendation of "rex" came to sit against an id of "Rex" with 18 tests green.
+    const flat = buildVoiceGroups(KOKORO).flatMap((g) =>
+      g.genders.flatMap((b) => b.voiceIds),
+    );
+    expect(new Set(flat).size).toBe(flat.length);
+    expect([...flat].sort()).toEqual([...KOKORO].sort());
+  });
+
+  it("U-V12: the DEFAULT is derived, and is always one of the offered voices", () => {
+    // MOVED. There is no `recommended` any more: no provider publishes a recommendation,
+    // and the curated one was already wrong (it badged `alloy` for a model with no
+    // `alloy`). What replaces it is a DERIVED default — English, male, alphabetically
+    // first — which by construction cannot name a voice the model does not have.
+    for (const vocab of [KOKORO, OPAQUE, ["ff_siwis"], ["zm_yunxi", "af_nova"]]) {
+      const groups = buildVoiceGroups(vocab);
+      const chosen = defaultSelection(groups);
+      expect(chosen, JSON.stringify(vocab.slice(0, 3))).not.toBeNull();
+      expect(vocab).toContain(chosen!.voiceId);
     }
   });
 
-  it("U-V12: every model recommends EXACTLY ONE voice, and it is one of its own", () => {
-    // 19b badges exactly one row `RECOMMENDED`, and `remapVoice` falls back to it — a
-    // recommendation the model does not have would be an unsendable default.
+  it("U-V13: ids with NO derivable convention are still all offered", () => {
+    // MOVED. This case used to pin "an unknown model degrades to a usable list rather
+    // than nothing" — i.e. the FALLBACK, which handed the user OpenAI's names for a model
+    // that has none of them. The property that actually matters survives, in an honest
+    // form: when the id convention does not parse, LANGUAGE and GENDER say so rather than
+    // guessing, and the VOICE dropdown still lists every id the provider returned, so the
+    // model stays fully usable through one dropdown.
+    const groups = buildVoiceGroups(OPAQUE);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].languageCode).toBeNull();
+    expect(groups[0].genders).toHaveLength(1);
+    expect(groups[0].genders[0].gender).toBeNull();
+    expect([...groups[0].genders[0].voiceIds].sort()).toEqual([...OPAQUE].sort());
+    // "—" is this design system's established honest-unknown token (19a's
+    // `Provider publishes no pricing.` + `—`). It is not a language and does not pretend
+    // to be one.
+    expect(groups[0].label).toBe("—");
+    expect(groups[0].genders[0].label).toBe("—");
+  });
+
+  it("U-V14: the offered count is exactly what the provider published", () => {
+    const count = buildVoiceGroups(KOKORO).reduce(
+      (n, g) => n + g.genders.reduce((m, b) => m + b.voiceIds.length, 0),
+      0,
+    );
+    expect(count).toBe(KOKORO.length);
+    expect(count).toBe(54);
+  });
+
+  it("U-V15: the `[lang][gender]_name` convention parses, and the letter names a language", () => {
+    // Parsing a NAMING CONVENTION is not hardcoding ids: it never asserts which voices
+    // exist — the provider does — it only interprets the names it returned in order to
+    // group them.
+    expect(parseVoiceId("am_adam")).toEqual({
+      languageCode: "a",
+      gender: "male",
+      name: "adam",
+    });
+    expect(parseVoiceId("ff_siwis")).toEqual({
+      languageCode: "f",
+      gender: "female",
+      name: "siwis",
+    });
+    expect(languageLabel("a")).toBe("American English");
+    expect(languageLabel("b")).toBe("British English");
+    expect(languageLabel("f")).toBe("French");
+
+    // And it does NOT fire on the other models' conventions, which is what keeps the
+    // degradation in U-V13 reachable rather than decorative.
+    for (const foreign of [
+      "american_female",
+      "en_paul_sad",
+      "aura-2-thalia-en",
+      "Zephyr",
+      "conversational_a",
+    ]) {
+      expect(parseVoiceId(foreign), foreign).toBeNull();
+    }
+
+    expect(voiceLabel("am_adam")).toBe("Adam");
+    expect(voiceLabel("zac")).toBe("zac"); // unparsed ⇒ shown exactly as published
+  });
+});
+
+describe("remapping when the speech model changes", () => {
+  const VOCABULARIES: Array<string[] | null> = [
+    KOKORO,
+    OPAQUE,
+    ["american_female", "american_male", "british_female"],
+    ["Zephyr", "Puck"],
+    [],
+    null,
+  ];
+
+  it("U-V16: THE INVARIANT — the result is ALWAYS null or a voice the target accepts", () => {
+    // The load-bearing property, preserved verbatim in MEANING from the curated table's
+    // era. Without it, changing the speech model would leave an id the new model has
+    // never heard of on the manifest and the next narration generation would be a hard
+    // provider 400 — the feature breaking the exact thing it was added to fix.
     //
-    // Compared EXACTLY, not case-folded. The provider is sent this id verbatim, and the
-    // table's own ids are the only thing establishing what "one of its own" means — so a
-    // recommendation that differs only in case is a recommendation the module cannot find.
-    // Case-folding here is what let `recommended: "rex"` sit against ids `Rex/Eve/Ara/…`
-    // with all 18 tests green.
-    for (const m of MODELS) {
-      const rec = recommendedVoiceFor(m);
-      const ids = voicesForModel(m).map((v) => v.id);
-      expect(ids, String(m)).toContain(rec);
-    }
-  });
-
-  it("U-V13: an unknown model degrades to a usable list rather than nothing", () => {
-    expect(voicesForModel("some/model-nobody-curated").length).toBeGreaterThan(0);
-    // …and to the voice this codebase has actually been sending all along, so an unknown
-    // model is never WORSE than today's behaviour.
-    expect(recommendedVoiceFor("some/model-nobody-curated")).toBe("alloy");
-  });
-
-  it("U-V14: figure 19a's voice COUNT is derived, and 19b's six rows are a subset of it", () => {
-    // Flag F7: 19a asserts "8 voices for this model" while 19b specifies six. The eight
-    // are the model's real vocabulary; the figure drew six of them. Nothing prints 8.
-    const orpheus = voicesForModel("canopylabs/orpheus-3b");
-    const drawn = ["Zac", "Tara", "Leo", "Mia", "Jess", "Dan"];
-    const names = orpheus.map((v) => v.name);
-    for (const n of drawn) expect(names, n).toContain(n);
-    expect(orpheus.length).toBeGreaterThanOrEqual(drawn.length);
-  });
-
-  it("U-V15: model matching is case-insensitive and tolerant of vendor prefixes", () => {
-    expect(voiceSetForModel("CanopyLabs/Orpheus-3B").family).toBe(
-      voiceSetForModel("canopylabs/orpheus-3b").family,
-    );
-  });
-});
-
-describe("remapVoice — 19b's stated rule", () => {
-  it("U-V16: THE INVARIANT — the result is ALWAYS a voice the target model accepts", () => {
-    // Swept over every (voice, from, to) pair in the table rather than three examples: a
-    // test that claims a class has to drive the class, and this is the property that keeps
-    // a model change from producing an unsendable manifest.
-    // Compared EXACTLY — see U-V12. The id is what goes on the wire, so "a voice the
-    // target model accepts" is an exact-string claim about this table, not a case-folded
-    // one; folding it made the invariant unable to see a mis-cased `recommended`.
-    for (const from of MODELS) {
-      for (const to of MODELS) {
-        const targetIds = voicesForModel(to).map((v) => v.id);
-        for (const voice of voicesForModel(from)) {
-          const mapped = remapVoice(voice.id, from, to);
-          expect(
-            targetIds,
-            `${voice.id}: ${String(from)} → ${String(to)}`,
-          ).toContain(mapped);
-        }
+    // What CHANGED is only the shape of the answer: the old rule always returned some id
+    // (falling back to a "recommended" one) because it had editorial name/gender/dramatic
+    // metadata to match on. That metadata is gone — the provider publishes bare strings —
+    // so the honest answer when nothing matches is NOTHING. `regenerateNarration` omits
+    // an absent voiceId and `effectiveVoiceId` then supplies the target's own derived
+    // default, so a cleared voice is never an unsendable one.
+    const candidates = [
+      ...KOKORO,
+      ...OPAQUE,
+      "american_male",
+      "Zephyr",
+      "alloy",
+      "shimmer",
+      "AM_ADAM",
+      "",
+    ];
+    for (const to of VOCABULARIES) {
+      for (const current of candidates) {
+        const result = remapVoice(current, to);
+        if (result === null) continue;
+        expect(to ?? [], `${current} -> ${JSON.stringify(to)}`).toContain(result);
       }
     }
   });
 
-  it("U-V17: staying on the same model keeps the exact voice", () => {
-    for (const m of MODELS) {
-      for (const voice of voicesForModel(m)) {
-        expect(remapVoice(voice.id, m, m)).toBe(voice.id);
-      }
+  it("U-V17: an id the target still lists survives the change untouched", () => {
+    expect(remapVoice("am_adam", KOKORO)).toBe("am_adam");
+    expect(remapVoice("zac", OPAQUE)).toBe("zac");
+  });
+
+  it("U-V18: an id the target does NOT list is CLEARED, never passed through", () => {
+    // This is the whole of bug 2 in one assertion: `alloy` and `shimmer` are not Kokoro
+    // voices. They reached the provider anyway, aliased onto American FEMALE Kokoro
+    // voices, and the user heard one narrator for two different picks.
+    expect(remapVoice("alloy", KOKORO)).toBeNull();
+    expect(remapVoice("shimmer", KOKORO)).toBeNull();
+    expect(remapVoice("am_adam", OPAQUE)).toBeNull();
+    // Exactly, not case-folded — the provider is sent this string verbatim.
+    expect(remapVoice("AM_ADAM", KOKORO)).toBeNull();
+  });
+
+  it("U-V19: no chosen voice stays no chosen voice — never a guess", () => {
+    for (const to of VOCABULARIES) {
+      expect(remapVoice(undefined, to)).toBeNull();
+      expect(remapVoice(null, to)).toBeNull();
+      expect(remapVoice("", to)).toBeNull();
     }
-  });
-
-  it("U-V18: a shared id survives the switch (Leo exists in two vocabularies)", () => {
-    expect(remapVoice("Leo", "x-ai/grok-voice-tts-1.0", "canopylabs/orpheus-3b")).toBe(
-      "leo",
-    );
-  });
-
-  it("U-V19: no chosen voice yet → the target's recommendation", () => {
-    expect(remapVoice(null, null, "canopylabs/orpheus-3b")).toBe("zac");
-    expect(remapVoice(undefined, null, "openai/gpt-4o-mini-tts")).toBe("alloy");
-    expect(remapVoice("", null, "openai/gpt-4o-mini-tts")).toBe("alloy");
-  });
-
-  it("U-V20: an id from NEITHER model falls back rather than being passed through", () => {
-    // The dangerous case: a manifest written by an older build, or hand-edited. Passing it
-    // through would put an unknown voice on the wire.
-    const mapped = remapVoice("not-a-real-voice", "openai/gpt-4o-mini-tts", "canopylabs/orpheus-3b");
-    expect(voicesForModel("canopylabs/orpheus-3b").map((v) => v.id)).toContain(mapped);
-  });
-
-  it("U-V21: gender is preserved when the target can honour it", () => {
-    // "nearest match" has to mean something: a user who picked a male narrator should not
-    // silently get a female one because the recommendation happens to be one.
-    const mapped = remapVoice("onyx", "openai/gpt-4o-mini-tts", "canopylabs/orpheus-3b");
-    const voice = voicesForModel("canopylabs/orpheus-3b").find((v) => v.id === mapped);
-    expect(voice?.gender).toBe("male");
   });
 });
 
-describe("filterVoices — 19b's search box + chips", () => {
-  const orpheus = voicesForModel("canopylabs/orpheus-3b");
+describe("the three cascading dropdowns", () => {
+  it("U-V20: GENDER is populated from what EXISTS for that language, not a fixed pair", () => {
+    // Kokoro publishes one French voice and it is female. A fixed [male, female] pair
+    // would offer a male French narrator that does not exist, and picking it would either
+    // send nothing or send a voice from another language.
+    const groups = buildVoiceGroups(KOKORO);
+    const french = groups.find((g) => g.languageCode === "f")!;
+    expect(french.genders.map((b) => b.gender)).toEqual(["female"]);
 
-  it("U-V22: `all` with no search returns everything", () => {
-    expect(filterVoices(orpheus, "all", "")).toHaveLength(orpheus.length);
+    const american = groups.find((g) => g.languageCode === "a")!;
+    // Male first — the specified default — then female.
+    expect(american.genders.map((b) => b.gender)).toEqual(["male", "female"]);
+    expect(american.genders[0].voiceIds).toHaveLength(9);
+    expect(american.genders[1].voiceIds).toHaveLength(11);
   });
 
-  it("U-V23: the chips are a single-select radio group over the four values", () => {
-    expect([...VOICE_FILTERS]).toEqual(["all", "male", "female", "dramatic"]);
+  it("U-V21: the defaults are English, male, alphabetically first", () => {
+    expect(DEFAULT_LANGUAGE_CODE).toBe("a");
+    expect(DEFAULT_GENDER).toBe("male");
+    expect(defaultSelection(buildVoiceGroups(KOKORO))).toEqual({
+      languageCode: "a",
+      gender: "male",
+      voiceId: "am_adam",
+    });
   });
 
-  it("U-V24: male/female never claim a voice whose gender is not published", () => {
-    // The honesty rule: a filter that mislabels a voice is worse than one that returns
-    // fewer rows. Every OpenAI voice with `unknown` gender must be absent from both.
-    const openai = voicesForModel("openai/gpt-4o-mini-tts");
-    const unknowns = openai.filter((v) => v.gender === "unknown").map((v) => v.id);
-    expect(unknowns.length).toBeGreaterThan(0);
-    for (const chip of ["male", "female"] as const) {
-      const ids = filterVoices(openai, chip, "").map((v) => v.id);
-      for (const u of unknowns) expect(ids, `${chip}/${u}`).not.toContain(u);
+  it("U-V22: the LANGUAGE default falls back when there is no American English", () => {
+    const noAmerican = KOKORO.filter((v) => !v.startsWith("a"));
+    const chosen = defaultSelection(buildVoiceGroups(noAmerican))!;
+    expect(chosen.languageCode).not.toBeNull();
+    expect(noAmerican).toContain(chosen.voiceId);
+  });
+
+  it("U-V23: the GENDER default falls back when that language has no male voice", () => {
+    // French, again: the cascade must land on a real voice rather than an empty bucket.
+    expect(defaultSelection(buildVoiceGroups(["ff_siwis"]))).toEqual({
+      languageCode: "f",
+      gender: "female",
+      voiceId: "ff_siwis",
+    });
+  });
+
+  it("U-V24: voices sort alphabetically inside their bucket", () => {
+    const american = buildVoiceGroups(KOKORO).find((g) => g.languageCode === "a")!;
+    expect(american.genders[0].voiceIds[0]).toBe("am_adam");
+    expect(american.genders[0].voiceIds).toEqual(
+      [...american.genders[0].voiceIds].sort(),
+    );
+  });
+
+  it("U-V25: `selectionFor` locates a persisted id's own language and gender", () => {
+    expect(selectionFor(buildVoiceGroups(KOKORO), "zm_yunxi")).toEqual({
+      languageCode: "z",
+      gender: "male",
+      voiceId: "zm_yunxi",
+    });
+    expect(selectionFor(buildVoiceGroups(KOKORO), "alloy")).toBeNull();
+  });
+});
+
+describe("what is actually sent", () => {
+  it("U-V26: a valid persisted id wins, an invalid one resolves to the derived default", () => {
+    // ONE rule for what the picker reads as selected AND what the request carries. The
+    // shipped `selected = selectedVoiceId ?? recommended` was a control that told the user
+    // a voice was chosen while the request carried nothing — and `recommended` was a voice
+    // the model did not have. Sharing one function makes disagreeing impossible.
+    expect(effectiveVoiceId("zm_yunxi", KOKORO)).toBe("zm_yunxi");
+    expect(effectiveVoiceId("alloy", KOKORO)).toBe("am_adam");
+    expect(effectiveVoiceId(undefined, KOKORO)).toBe("am_adam");
+    expect(effectiveVoiceId("am_adam", null)).toBeNull();
+  });
+
+  it("U-V27: voices come from the CATALOGUE ENTRY for the resolved model, or nowhere", () => {
+    const catalogue = [model("hexgrad/kokoro-82m", [...KOKORO]), model("other/tts", null)];
+    expect(voicesForModelId("hexgrad/kokoro-82m", catalogue)).toEqual([...KOKORO]);
+    expect(voicesForModelId("other/tts", catalogue)).toBeNull();
+    // Not in the catalogue, and the pre-catalogue null state: both are "we have no
+    // vocabulary to offer", never a borrowed one.
+    expect(voicesForModelId("not/listed", catalogue)).toBeNull();
+    expect(voicesForModelId(null, catalogue)).toBeNull();
+    expect(voicesForModelId("hexgrad/kokoro-82m", [])).toBeNull();
+  });
+});
+
+describe("the standing guard", () => {
+  it("U-V28: the module names NO voice id — the vocabulary is the provider's to state", () => {
+    // The whole bug was a curated table asserting which voices a model has. This test is
+    // what stops it coming back in a third form. It scans the SHIPPING source, not this
+    // file: the fixtures above are evidence, and evidence belongs in a test.
+    //
+    // COMMENTS ARE STRIPPED FIRST, and that is the rule rather than a convenience. The
+    // invariant is about what the module ASSERTS at runtime; the header's account of the
+    // deleted `ORPHEUS`/`GROK`/`OPENAI` table — including the two ids whose collision was
+    // the reported symptom — is the documentation that stops the table coming back, so a
+    // guard that forbade naming them would delete its own explanation.
+    const source = readFileSync(resolve(__dirname, "speech-voices.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const offenders: string[] = [];
+    const kokoroShape = source.match(/\b[a-z][fm]_[a-z]{2,}\b/);
+    if (kokoroShape) offenders.push(`kokoro-shaped id "${kokoroShape[0]}"`);
+    for (const id of [
+      "alloy", "onyx", "echo", "fable", "nova", "shimmer", "ash", "sage",
+      "tara", "jess", "zac", "orpheus", "grok",
+    ]) {
+      if (new RegExp(`["'\`]${id}["'\`]`, "i").test(source)) {
+        offenders.push(`curated voice id "${id}"`);
+      }
     }
-  });
-
-  it("U-V25: the search box matches the DESCRIPTOR, not just the name", () => {
-    // "deep", "warm", "female" are the words a user actually types, and they live in the
-    // sub-line rather than in the name.
-    expect(filterVoices(orpheus, "all", "gravelly").map((v) => v.name)).toEqual([
-      "Leo",
-    ]);
-    expect(filterVoices(orpheus, "all", "Zac").map((v) => v.name)).toEqual(["Zac"]);
-  });
-
-  it("U-V26: the chip and the search COMPOSE — 19b draws them as independent controls", () => {
-    const out = filterVoices(orpheus, "female", "bright");
-    expect(out.map((v) => v.name)).toEqual(["Mia"]);
-  });
-
-  it("U-V27: search is case- and whitespace-insensitive, and no match is an empty list", () => {
-    expect(filterVoices(orpheus, "all", "  ZAC  ").map((v) => v.name)).toEqual(["Zac"]);
-    expect(filterVoices(orpheus, "all", "zzzz")).toEqual([]);
+    expect(offenders).toEqual([]);
   });
 });
