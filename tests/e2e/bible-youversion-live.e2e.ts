@@ -214,7 +214,6 @@ describe("YouVersion live contract — catalogue", () => {
 
     // Recorded, not asserted: `0` means the variants have converged and
     // `CATALOGUE_ACCEPT_ENCODING` can be deleted (measured 2026-07-31: 6).
-    // eslint-disable-next-line no-console
     console.log(
       `[E-YV1b] catalogue variant delta: header-free=${headerFree.size} ` +
         `header-carrying=${headerCarrying.size} client=${offered.size}`,

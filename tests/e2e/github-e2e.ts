@@ -1330,20 +1330,19 @@ async function completeCreateRepoCallback(
         `[github-e2e] the create-repo callback page reported data-state="error". ` +
           `That is POST /api/projects/create-repo → POST /v1/projects/create-repo ` +
           `failing.\n` +
-          `  ⚠️ KNOWN AND EXPECTED IN THIS HARNESS (measured 2026-07-31). The api's ` +
-          `\`awaitInstallationVisibility\` gate walks ` +
+          `  HISTORY, so nobody re-diagnoses it: between 2026-07-25 and 2026-07-31 this ` +
+          `failed DETERMINISTICALLY at ~30 s / ~60 s because the api's ` +
+          `\`awaitInstallationVisibility\` gate walked ` +
           `\`GET /user/installations/:id/repositories\`, which GitHub serves ONLY to a ` +
-          `GitHub App USER-TO-SERVER token. Row 66's synthetic exchange cannot mint one — ` +
-          `it hands back \`GITHUB_E2E_EXCHANGE_TOKEN\`, a classic PAT — and GitHub answers ` +
-          `403 to that token type. Verified directly against api.github.com with BOTH the ` +
-          `exchange PAT and \`GITHUB_E2E_PAT_TOKEN\`: 403 for each. The api then burns its ` +
-          `full 60 s visibility budget re-probing and raises RepoNotVisibleError.\n` +
-          `  So this is a TEST-SEAM fidelity gap, not necessarily a product fault: ` +
-          `production's real OAuth hop yields a user-to-server token, which the endpoint ` +
-          `accepts. Confirm which you are looking at BEFORE chasing anything below:\n` +
+          `GitHub App USER-TO-SERVER token — and row 66's synthetic exchange hands back a ` +
+          `classic PAT, which GitHub 403s (verified against api.github.com with BOTH ` +
+          `\`GITHUB_E2E_EXCHANGE_TOKEN\` and \`GITHUB_E2E_PAT_TOKEN\`). The gate now reads ` +
+          `\`GET /installation/repositories\` with the App's own installation token — ` +
+          `dbos's own view — so that class is CLOSED and a 403 here is a real finding, ` +
+          `not the known gap. Look first:\n` +
           `    docker compose -f docker-compose.yml -f docker-compose.test.yml \\\n` +
           `      logs api | grep create-repo\n` +
-          `  A 403 on list-installation-repos ⇒ the gap above. Otherwise:\n` +
+          `  Then:\n` +
           `  • the api container has no GITHUB_E2E_EXCHANGE_TOKEN, so the test-only ` +
           `exchange route refused to register (check \`docker compose logs api\` — it ` +
           `names the variable and refuses to boot);\n` +
