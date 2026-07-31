@@ -410,7 +410,11 @@ describe("Inspector — provider/model selection, faith alignment and cost (gene
     // of the two is a live-catalogue fact (36 of 40 image models published no usable rate
     // on 2026-07-31, including the one the picker lands on), so pinning a single answer
     // here would be pinning today's OpenRouter catalogue rather than our rule.
-    expect(orImageCost).toMatch(/^(—|\$[\d.,<$]+ \/ 1K output image tokens)$/);
+    // `formatUsd` renders a sub-$0.0001 amount as the literal `<$0.0001`, so the money
+    // group has to allow a LEADING `<`. Without it this passes today only because the
+    // stale api publishes no rate at all and every row is `—` — and would start failing
+    // the moment the paired api change ships and a cheap model resolves here.
+    expect(orImageCost).toMatch(/^(—|<?\$[\d.,]+ \/ 1K output image tokens)$/);
     // …and when it IS a rate, it must be a rate — never a bare total masquerading as one.
     if (orImageCost !== "—") {
       expect(orImageCost).toContain("/ 1K output image tokens");
