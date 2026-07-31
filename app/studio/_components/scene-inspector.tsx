@@ -153,6 +153,21 @@ export default function SceneInspector() {
   return (
     <div
       data-testid="scene-inspector"
+      // WHICH scene every seam on this panel — including `script-input` — belongs to.
+      // Bound to `scene.id`, the scene actually RENDERED, never to `selectedSceneId`:
+      // the `?? scenes[0]` fallback above means a selection matching nothing still paints
+      // a panel, and an id naming the selection would then describe a scene the user is
+      // not looking at.
+      //
+      // Added 2026-07-30 after `studio-hydration.e2e.ts` E-SH2 read this panel's script
+      // for scene 2 while asserting an edit committed to scene 1, and reported it as
+      // silent data loss. Nothing was lost; the read was simply un-attributable, because
+      // the studio has two deliberate entry points that disagree about the opening scene
+      // (`STORYBOARD_GENERATED` → `scenes[0]`, `initialStudioState` → `scenes[1]`). A
+      // textarea that cannot say whose script it holds can only ever support a hopeful
+      // assertion. Attribute-only, like the four seams below it, so the mock inspector's
+      // exact-copy anchor stays byte-for-byte.
+      data-scene-id={scene.id}
       data-visual-asset-key={scene.visualAssetKey ?? ""}
       // Task #57: attribute-only test seam exposing the selected scene's PERSISTED
       // scripture (carried on the UI Scene from hydrate / an LLM re-plan). Reflects

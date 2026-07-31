@@ -59,7 +59,24 @@ import {
  * is impossible to satisfy (see its own comment), and vitest counts a silent early return
  * as a pass. So the sentence in the second paragraph above — "that a committed edit
  * survives a fresh re-open (the manifest is re-read from git)" — was an unproven claim
- * every one of those three runs, and this is the first commit at which it is true. */
+ * every one of those three runs, and this is the first commit at which it is true.
+ *
+ * CORRECTED AGAIN, SAME DAY (2026-07-30) — E-SH2's first real execution FAILED, and the
+ * failure was the SPEC's, not the app's. It typed into `script-input`, committed,
+ * re-opened, and read `script-input` again, assuming both reads addressed the same
+ * scene. They do not: a just-generated storyboard leaves `scenes[0]` selected
+ * (`STORYBOARD_GENERATED`), while a fresh open selects `scenes[1]`
+ * (`initialStudioState` — the 5a wireframe's SCENE 02). The re-open therefore returned
+ * scene 2's untouched generated line, which reads exactly like a silently-lost commit.
+ * It was not: the edit is in the repo — fixture
+ * `supagloo-e2e-delete-me-hydrate-edit-ms8kh9fca9d2d735`, branch `v0.0.1`, commit
+ * `71cb0f5`, whose entire `supagloo.project.json` diff is `scenes[0].scriptText`.
+ *
+ * E-SH2 now captures the scene id it edits and selects that scene after the re-open;
+ * the assertion itself is unchanged and is now ATTRIBUTABLE. Held without a stack by
+ * `tests/unit/studio-edit-round-trip.test.ts` (the same round trip, pure) and
+ * `tests/unit/studio-scene-identity.test.tsx` (the `data-scene-id` seam that lets a
+ * `script-input` read say whose script it read). */
 
 const BASE_URL = "http://localhost:3000";
 const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -258,6 +275,24 @@ describe("Edit a scene → real Commit → re-open persists (manifest re-read fr
     await waitForTestId("script-input", 60_000);
     expect(await dataAttr("version-branch-chip", "data-dirty")).toBe("false");
 
+    // WHICH SCENE ARE WE ABOUT TO EDIT? Captured, never assumed — this is the whole
+    // correction of 2026-07-30. `script-input` belongs to whichever scene the inspector
+    // is rendering, and the studio has two deliberate entry points that DISAGREE about
+    // which that is: a just-generated storyboard leaves `scenes[0]` selected
+    // (`STORYBOARD_GENERATED`), while a fresh open selects `scenes[1]` (`initialStudioState`,
+    // matching the 5a wireframe's SCENE 02). This test edits after a generation and then
+    // re-opens, so it crosses exactly that seam.
+    const editedSceneId = await dataAttr("scene-inspector", "data-scene-id");
+    // Fail LOUDLY on an unattributable read rather than carrying `null` into a selector
+    // below, where it would degrade into a "scene never appeared" timeout with no hint
+    // that the id was the problem.
+    if (!editedSceneId) {
+      throw new Error(
+        "scene-inspector reported no data-scene-id — the panel that owns script-input " +
+          "cannot say which scene it is showing, so this assertion cannot be attributed.",
+      );
+    }
+
     const edited = `Persisted edit ${RUN_ID}`;
     await typeIntoScript(edited);
     await waitForDataAttr("version-branch-chip", "data-dirty", "true", 10_000);
@@ -273,19 +308,55 @@ describe("Edit a scene → real Commit → re-open persists (manifest re-read fr
       await fresh.goto(`${BASE_URL}/studio/${slug}?seed=authed-returning&nonce=${RUN_ID}`, {
         waitUntil: "load",
       });
+      // Wait for the editor to mount, then SELECT THE SCENE THAT WAS EDITED. Without this
+      // the read below lands on whatever scene `initialStudioState` opened on — a
+      // different one — and the original generated script it finds there looks exactly
+      // like a lost commit. That is what this test reported on its first-ever execution,
+      // and the edit was in the repo the whole time.
+      const rowSelector = `[data-testid="scene-tree-row"][data-scene-id="${editedSceneId}"]`;
+      const mountDeadline = Date.now() + 60_000;
+      let rows = 0;
+      while (Date.now() < mountDeadline) {
+        rows = await fresh.locator(rowSelector).count();
+        if (rows > 0) break;
+        await fresh.waitForTimeout(300);
+      }
+      // A missing row is its own distinct failure — the re-read manifest does not contain
+      // the scene we edited — and it must not be reported as a click that went nowhere.
+      if (rows === 0) {
+        throw new Error(
+          `the re-opened studio has no scene-tree row for the edited scene ` +
+            `${editedSceneId} within 60000ms (scenes re-read from git do not include it)`,
+        );
+      }
+      await fresh.locator(rowSelector).click();
+
+      // Poll the inspector's OWN id alongside the value: the click is only a request to
+      // select, and a read taken before it lands is a read of the previous scene. Waiting
+      // for the element (rather than for the selection to take effect) is the silent no-op
+      // that fails one level downstream — the same trap the scripture cascade hit.
       const deadline = Date.now() + 60_000;
-      let value = "";
+      let shown: { sceneId: string | null; value: string } = { sceneId: null, value: "" };
       while (Date.now() < deadline) {
-        value = await fresh.evaluate(() => {
+        shown = await fresh.evaluate(() => {
+          const panel = document.querySelector<HTMLElement>(
+            '[data-testid="scene-inspector"]',
+          );
           const ta = document.querySelector<HTMLTextAreaElement>(
             '[data-testid="script-input"]',
           );
-          return ta?.value ?? "";
+          return {
+            sceneId: panel?.getAttribute("data-scene-id") ?? null,
+            value: ta?.value ?? "",
+          };
         });
-        if (value.includes(edited)) break;
+        if (shown.sceneId === editedSceneId && shown.value.includes(edited)) break;
         await fresh.waitForTimeout(300);
       }
-      expect(value).toContain(edited);
+      // Assert the SUBJECT before the content, so a failure says which of the two went
+      // wrong instead of leaving the next reader to guess between them.
+      expect(shown.sceneId).toBe(editedSceneId);
+      expect(shown.value).toContain(edited);
     } finally {
       await fresh.close();
     }

@@ -150,20 +150,30 @@ async function everySceneScripture(): Promise<
   const out: { id: string; reference: string; translation: string; script: string }[] = [];
   for (const id of ids) {
     await page.locator(`[data-testid="scene-tree-row"][data-scene-id="${id}"]`).click();
-    out.push(
-      await page.evaluate((sceneId) => {
-        const el = document.querySelector<HTMLElement>('[data-testid="scene-inspector"]');
-        const script = document.querySelector<HTMLTextAreaElement>(
-          '[data-testid="script-input"]',
-        );
-        return {
-          id: sceneId,
-          reference: el?.getAttribute("data-scene-reference") ?? "",
-          translation: el?.getAttribute("data-scene-translation") ?? "",
-          script: script?.value ?? "",
-        };
-      }, id),
-    );
+    const read = await page.evaluate(() => {
+      const el = document.querySelector<HTMLElement>('[data-testid="scene-inspector"]');
+      const script = document.querySelector<HTMLTextAreaElement>(
+        '[data-testid="script-input"]',
+      );
+      return {
+        // The panel's OWN id, not the id we asked for. Labelling a read with the id we
+        // INTENDED to select assumes the click landed; when it does not, this helper
+        // reports one scene's script under another scene's id and every downstream
+        // failure blames the wrong scene. That mis-attribution is exactly what cost a
+        // 118 s real-lane run on 2026-07-30 (see `studio-hydration.e2e.ts` E-SH2).
+        id: el?.getAttribute("data-scene-id") ?? "",
+        reference: el?.getAttribute("data-scene-reference") ?? "",
+        translation: el?.getAttribute("data-scene-translation") ?? "",
+        script: script?.value ?? "",
+      };
+    });
+    if (read.id !== id) {
+      throw new Error(
+        `selecting scene ${id} left the inspector on ${JSON.stringify(read.id)} — ` +
+          "the click did not take effect, so this scene's scripture was never read",
+      );
+    }
+    out.push(read);
   }
   return out;
 }
