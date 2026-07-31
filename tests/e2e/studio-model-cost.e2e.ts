@@ -330,12 +330,29 @@ describe("Inspector — provider/model selection, faith alignment and cost (gene
     for (const id of offered) expect(narration[0].voices!).toContain(id);
   });
 
-  test("E-MC3: choosing Gloo for images reveals FAITH ALIGNMENT with exactly the four real values", async () => {
-    expect(await dataAttr("ai-settings", "data-faith-visible")).toBe("false");
-    expect(await countTestId("faith-alignment")).toBe(0);
-
-    await clickTestId("ai-provider-image-gloo");
+  test("E-MC3: FAITH ALIGNMENT tracks the image provider, with exactly the four real values", async () => {
+    // ── The precondition was INVERTED on 2026-07-31, and it had been wrong since ──────
+    // ── 2026-07-28 23:15 (`71e32a9`, "cost-row wrap, Gloo image default") ────────────
+    //
+    // This case used to open with `data-faith-visible === "false"`. That encoded a
+    // default that had already moved: `DEFAULT_GENERATION_PROVIDERS.image` became `gloo`
+    // in `71e32a9`, which updated the unit tests and not this one, and the real lane was
+    // not run again until the post-release sweep four days later. It is NOT a consequence
+    // of R4/R6/R8 — the connection-aware resolver leaves `image` on gloo for a user with
+    // BOTH providers connected, which is exactly what this spec's `beforeAll` sets up,
+    // and the pre-R8 resolver answered `gloo` unconditionally.
+    //
+    // So the honest precondition is that it starts VISIBLE, and asserting that is
+    // strictly more than the old version did: it now pins the default provider for
+    // `image` as well as the reveal rule. The transition this case exists to prove — that
+    // the control tracks the provider rather than merely existing — is unchanged and is
+    // still driven in BOTH directions below.
+    expect(await dataAttr("ai-settings", "data-faith-visible")).toBe("true");
     await waitForTestId("faith-alignment", 10_000);
+    // …and it is visible for the RIGHT reason: this deployment resolves `image` to Gloo
+    // for a both-connected user. Without this, the case could not tell "faith alignment
+    // is shown because something runs on Gloo" from "faith alignment is always shown".
+    expect(await dataAttr("ai-provider-image-gloo", "data-selected")).toBe("true");
 
     // The four Gloo actually honours. `protestant` and `orthodox` do NOT exist — Gloo
     // returns 200 for them and silently degrades to neutral, so offering either would be
@@ -348,12 +365,16 @@ describe("Inspector — provider/model selection, faith alignment and cost (gene
     ]);
 
     await selectValue("faith-alignment", "catholic");
-    // Item 2: NOT shown for OpenRouter.
+    // Item 2: NOT shown for OpenRouter. This is the DISAPPEAR half of the transition.
     await clickTestId("ai-provider-image-openrouter");
     expect(await countTestId("faith-alignment")).toBe(0);
-    // …and switching back must not silently restore a setting the user never re-chose.
+    expect(await dataAttr("ai-settings", "data-faith-visible")).toBe("false");
+
+    // …and the REVEAL half — the one the old title named — now runs from a state the user
+    // actually put the panel in, rather than from a default that no longer exists.
     await clickTestId("ai-provider-image-gloo");
     await waitForTestId("faith-alignment", 10_000);
+    // Switching back must not silently restore a setting the user never re-chose.
     expect(
       await page.evaluate(
         () =>
@@ -363,16 +384,41 @@ describe("Inspector — provider/model selection, faith alignment and cost (gene
     ).toBe("");
   });
 
-  test("E-MC4: cost is a REAL number where pricing exists, and honestly unknown for video", async () => {
-    // Item 3, and the one assertion that keeps it honest. OpenRouter publishes a
-    // per-image price, so the image row must show money. It publishes NO video pricing
-    // at all — `/api/v1/videos/models` has no price field — so the video row must say so
-    // rather than invent a plausible number.
+  test("E-MC4: no cost is ever fabricated — a rate where one is published, honest silence otherwise", async () => {
+    // ── This case USED TO DEMAND `measured` MONEY FOR OPENROUTER IMAGES ─────────────
+    //
+    // It asserted `/\$/` and `data-confidence === "measured"`, and it went red in the
+    // 2026-07-31 sweep with `"—"`. The reason is NOT that the estimate broke: it is that
+    // the number it used to assert was never real. The api mapped OpenRouter's
+    // `pricing.image` as "$ per generated image"; that field is the image-INPUT token
+    // rate, byte-identical to `pricing.prompt` on the whole live Gemini family, and the
+    // studio was rendering "$0.0000003 per image × 1 image" — ~5 orders of magnitude
+    // under Nano Banana's real ~$0.039 — with the strongest confidence label it has.
+    //
+    // Re-pointing this case at one of the 4-of-40 models that still publish
+    // `pricing.image` would have made it green while PINNING THAT LIE. The mapper now
+    // reads `image_output` instead, which is per TOKEN, so — exactly like Gloo — there is
+    // a rate to show and no total to compute. This case asserts less money than it used
+    // to, deliberately; what it gains is that every number left on screen is defensible.
     await clickTestId("ai-provider-image-openrouter");
 
-    const imageCost = await testidText("ai-cost-image");
-    expect(imageCost).toMatch(/\$/);
-    expect(await dataAttr("ai-cost-image", "data-confidence")).toBe("measured");
+    // A total is NEVER claimed for an image on either provider any more. That is the
+    // invariant, and it is the one that would have caught the original bug.
+    expect(await dataAttr("ai-cost-image", "data-confidence")).toBe("unpriced");
+    const orImageCost = await testidText("ai-cost-image");
+    // Either the published per-token RATE, or an honest em dash — and nothing else. Which
+    // of the two is a live-catalogue fact (36 of 40 image models published no usable rate
+    // on 2026-07-31, including the one the picker lands on), so pinning a single answer
+    // here would be pinning today's OpenRouter catalogue rather than our rule.
+    // `formatUsd` renders a sub-$0.0001 amount as the literal `<$0.0001`, so the money
+    // group has to allow a LEADING `<`. Without it this passes today only because the
+    // stale api publishes no rate at all and every row is `—` — and would start failing
+    // the moment the paired api change ships and a cheap model resolves here.
+    expect(orImageCost).toMatch(/^(—|<?\$[\d.,]+ \/ 1K output image tokens)$/);
+    // …and when it IS a rate, it must be a rate — never a bare total masquerading as one.
+    if (orImageCost !== "—") {
+      expect(orImageCost).toContain("/ 1K output image tokens");
+    }
 
     expect(await testidText("ai-cost-video")).toBe("—");
     expect(await dataAttr("ai-cost-video", "data-confidence")).toBe("unpriced");
@@ -382,10 +428,19 @@ describe("Inspector — provider/model selection, faith alignment and cost (gene
 
     // Gloo prices per token and an image's token count is not knowable in advance, so
     // that row shows the published RATE and refuses a total. Both halves matter: showing
-    // nothing would hide real information, showing a total would fabricate one.
+    // nothing would hide real information, showing a total would fabricate one. This is
+    // now the SAME shape as OpenRouter above, which is the point — the two providers
+    // stopped being treated differently because they were never actually different.
     await clickTestId("ai-provider-image-gloo");
     expect(await dataAttr("ai-cost-image", "data-confidence")).toBe("unpriced");
     expect(await testidText("ai-cost-image")).toMatch(/per|\/ 1K|—/);
+
+    // The anti-vacuity control: SOMETHING on this panel still shows a real, computed
+    // number, so "unpriced everywhere" cannot be how this suite goes green. Narration is
+    // priced per input token and the script length is known, so it is the one row that
+    // can honestly be totalled.
+    expect(await dataAttr("ai-cost-narration", "data-confidence")).toBe("assumed");
+    expect(await testidText("ai-cost-narration")).toMatch(/\$/);
   });
 
   test("E-MC5: the choices survive Commit + a fresh studio re-open (all four mirrors)", async () => {

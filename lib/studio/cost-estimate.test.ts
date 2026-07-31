@@ -29,12 +29,13 @@ import type { AiModelInfo } from "../api/contracts";
  * one rule that must never bend is that a number we cannot defend is never shown.
  */
 
-const orImage = (perImage?: number): AiModelInfo => ({
+const orImage = (perOutputImageToken?: number): AiModelInfo => ({
   id: "vendor/img",
   provider: "openrouter",
   label: "Vendor Image",
   kinds: ["image"],
-  pricing: perImage === undefined ? null : { perImage },
+  pricing:
+    perOutputImageToken === undefined ? null : { perOutputImageToken },
   voices: null,
 });
 
@@ -89,17 +90,55 @@ describe("formatUsd", () => {
 });
 
 describe("estimateGenerationCost — image", () => {
-  it("U-CE3: OpenRouter image is MEASURED — the per-image price IS the per-run cost", () => {
-    const est = estimateGenerationCost({ kind: "image", model: orImage(0.03) });
-    expect(est.confidence).toBe("measured");
-    expect(est.usdPerRun).toBeCloseTo(0.03, 10);
-    expect(est.basis).toContain("per image");
+  it("U-CE3: OpenRouter image shows the published RATE and refuses a total — same as Gloo", () => {
+    // ── This case USED TO ASSERT A MEASURED TOTAL, and that was wrong (2026-07-31) ──
+    //
+    // It read `pricing.perImage` and asserted `confidence: "measured"`, `usdPerRun`, and
+    // a basis containing "per image". Every one of those was downstream of the api
+    // mapping OpenRouter's `pricing.image` as "$ per generated image". It is not: it is
+    // the rate for an image supplied as INPUT, byte-identical to `pricing.prompt` on the
+    // whole live Gemini family. The studio was rendering "$0.0000003 per image × 1 image"
+    // for Nano Banana — five orders of magnitude under its real ~$0.039 — with the
+    // strongest confidence label the module has.
+    //
+    // The replacement is DELIBERATELY WEAKER, and that is the correction rather than a
+    // concession. The honest field is `image_output`, which is per TOKEN, and an image's
+    // token count depends on the resolution the provider picks at generation time — so
+    // there is no total to compute. This is exactly Gloo's situation (U-CE5), and it now
+    // gets exactly Gloo's answer. Losing the only `measured` image cost is the price of
+    // not inventing one; the module's own rule is that a number we cannot defend is never
+    // shown, and that total could not be defended.
+    const est = estimateGenerationCost({ kind: "image", model: orImage(0.00006) });
+    expect(est.confidence).toBe("unpriced");
+    expect(est.usdPerRun).toBeNull();
+    // The rate SURVIVES — showing nothing would hide real, published information.
+    // Per-token → per-1K is binary floating point, so compare with a tolerance.
+    expect(est.rate?.per).toBe("1K output image tokens");
+    expect(est.rate?.usd).toBeCloseTo(0.06, 10);
+    // …and the basis must say why there is no total, not merely omit one.
+    expect(est.basis.toLowerCase()).toContain("token");
   });
 
-  it("U-CE4: a MISSING per-image price is unpriced, never zero", () => {
-    // The api already drops a zero `pricing.image` (those "free" models 500 in practice)
+  it("U-CE3b: the rate is NEVER multiplied into a per-run total, whatever the workload", () => {
+    // The anti-regression for the bug above, and it has to be workload-bearing: the
+    // narration/music branch legitimately DOES multiply a per-token rate by a measured
+    // character count, so "image, but with a workload attached" is the exact shape a
+    // future refactor would fold into that branch and reintroduce a fabricated total.
+    const est = estimateGenerationCost({
+      kind: "image",
+      model: orImage(0.00006),
+      workload: { characters: 4000 },
+    });
+    expect(est.usdPerRun).toBeNull();
+    expect(est.confidence).toBe("unpriced");
+  });
+
+  it("U-CE4: a MISSING generated-image rate is unpriced, never zero", () => {
+    // The api already drops a zero `image_output` (those "free" models 500 in practice)
     // and a negative one (variable/auto-priced). By the time it reaches here, absent means
     // "we have nothing to say", and saying "$0.00" would be recommending a broken model.
+    // Live on 2026-07-31 this is the COMMON case, not the edge: 36 of 40 OpenRouter image
+    // entries publish no usable generated-image rate at all.
     const est = estimateGenerationCost({ kind: "image", model: orImage(undefined) });
     expect(est.confidence).toBe("unpriced");
     expect(est.usdPerRun).toBeNull();
@@ -169,7 +208,7 @@ describe("estimateGenerationCost — video", () => {
     // The rule is about the KIND, not about what happens to be in the object.
     const est = estimateGenerationCost({
       kind: "video",
-      model: { ...orVideo, pricing: { perImage: 0.5, perInputToken: 0.1 } },
+      model: { ...orVideo, pricing: { perOutputImageToken: 0.5, perInputToken: 0.1 } },
       workload: { characters: 400 },
     });
     expect(est.usdPerRun).toBeNull();

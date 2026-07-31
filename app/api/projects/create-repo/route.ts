@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { forwardToApi } from "@/lib/api/proxy";
+import { forwardToApi, PROVISIONING_UPSTREAM_TIMEOUT_MS } from "@/lib/api/proxy";
 import { SESSION_COOKIE_NAME } from "@/lib/api/cookies";
 
 /**
@@ -18,6 +18,11 @@ export async function POST(request: NextRequest) {
     method: "POST",
     token,
     body,
+    // The api blocks here for up to 60 s waiting for the installation to see the repo it
+    // just created, so the default 30 s backstop would cut its own typed error off — and
+    // would report a 504 for a create that is still on its way to succeeding. See
+    // `PROVISIONING_UPSTREAM_TIMEOUT_MS`.
+    timeoutMs: PROVISIONING_UPSTREAM_TIMEOUT_MS,
   });
   return NextResponse.json(result.body, { status: result.status });
 }

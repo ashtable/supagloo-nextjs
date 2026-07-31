@@ -125,7 +125,7 @@ const CATALOGUE = {
       provider: "openrouter" as const,
       label: "Vendor Image",
       kinds: ["image" as const],
-      pricing: { perImage: 0.03 },
+      pricing: { perOutputImageToken: 0.00006 },
     },
   ],
   providers: { gloo: false, openrouter: true },
@@ -522,7 +522,7 @@ describe("D4: connectivity comes from the CATALOGUE, not the session", () => {
         provider: "openrouter" as const,
         label: "Nano Banana 2",
         kinds: ["image" as const],
-        pricing: { perImage: 0.03 },
+        pricing: { perOutputImageToken: 0.00006 },
       },
       // Gloo's catalogue is read only when a credential exists, so an unconnected Gloo
       // publishes nothing at all.
@@ -533,7 +533,7 @@ describe("D4: connectivity comes from the CATALOGUE, not the session", () => {
               provider: "gloo" as const,
               label: "Gemini 2.5 Flash Image",
               kinds: ["image" as const],
-              pricing: { perImage: 0.03 },
+              pricing: { perOutputImageToken: 0.00006 },
             },
           ]
         : []),

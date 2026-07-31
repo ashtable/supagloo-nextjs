@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CATALOGUE_ACCEPT_ENCODING,
   YouVersionHttpError,
   fetchBooks,
   fetchChapters,
@@ -59,6 +60,65 @@ const deps = { appKey: APP_KEY };
  *  assumed; this is only the abbreviation we look for. */
 const ASV = "ASV";
 
+/**
+ * Every language YouVersion holds a RECORD for — the ~8.5k superset the ~1.2k catalogue is
+ * narrowed down from.
+ *
+ * Fetched here rather than through `lib/youversion/client.ts` because the client
+ * deliberately exposes no such reader: nothing in the product wants the thousands of
+ * languages we cannot offer a Bible in. This suite is the one place allowed to know a raw
+ * route shape (see the header), and this is the only claim that needs the superset.
+ */
+async function allLanguageTags(): Promise<string[]> {
+  const res = await fetch(
+    "https://api.youversion.com/v1/languages?page_size=*&fields%5B%5D=id",
+    { headers: { accept: "application/json", "x-yvp-app-key": APP_KEY } },
+  );
+  if (!res.ok) throw new Error(`/v1/languages answered ${res.status}`);
+  const body = (await res.json()) as { data?: Array<{ id?: string }> };
+  return (body.data ?? []).map((l) => l.id).filter((id): id is string => !!id);
+}
+
+/**
+ * The `language_ranges[]=*` catalogue index, fetched RAW so the two cache variants can be
+ * compared. `extraHeaders` is the whole experiment: sending an explicit `Accept-Encoding`
+ * selects a different — fresher — upstream variant (see `CATALOGUE_ACCEPT_ENCODING`).
+ *
+ * The URL is byte-identical between the two calls on purpose. A comparison whose baseline
+ * changes more than one variable measures the wrong thing.
+ */
+async function rawCatalogueTags(
+  extraHeaders: Record<string, string>,
+): Promise<Set<string>> {
+  const res = await fetch(
+    "https://api.youversion.com/v1/bibles?language_ranges%5B%5D=*&page_size=*" +
+      "&fields%5B%5D=id&fields%5B%5D=abbreviation&fields%5B%5D=language_tag",
+    {
+      headers: {
+        accept: "application/json",
+        "x-yvp-app-key": APP_KEY,
+        ...extraHeaders,
+      },
+    },
+  );
+  if (!res.ok) throw new Error(`/v1/bibles?language_ranges[]=* answered ${res.status}`);
+  const body = (await res.json()) as { data?: Array<{ language_tag?: string }> };
+  return new Set(
+    (body.data ?? []).map((b) => b.language_tag).filter((t): t is string => !!t),
+  );
+}
+
+/** The raw status `fetchTranslations` collapses. `[]` is returned for a 204 AND for a
+ *  200-with-empty-`data`, so only this can hold E-YV4's actual claim — that the live host
+ *  still emits the empty-BODY status `JSON.parse` would throw on. */
+async function translationsStatus(languageTag: string): Promise<number> {
+  const res = await fetch(
+    `https://api.youversion.com/v1/bibles?language_ranges%5B%5D=${encodeURIComponent(languageTag)}&page_size=50`,
+    { headers: { accept: "application/json", "x-yvp-app-key": APP_KEY } },
+  );
+  return res.status;
+}
+
 describe("YouVersion live contract — catalogue", () => {
   it("E-YV1: the language catalogue is non-trivial and every entry actually has a bible", async () => {
     const languages = await fetchLanguageCatalogue(deps);
@@ -72,9 +132,92 @@ describe("YouVersion live contract — catalogue", () => {
       expect(["ltr", "rtl"]).toContain(l.direction);
     }
 
-    // `aab` has a language record AND a non-null default_bible_id, but its bible query
-    // returns 204 — so it must NOT be in a list that claims "languages with bibles".
-    expect(languages.map((l) => l.tag)).not.toContain("aab");
+    // ── The claim: this is "languages WITH BIBLES", not "languages" ──────────────────
+    //
+    // It used to be held by `expect(tags).not.toContain("aab")`, and that line rotted
+    // twice inside four days (2026-07-31): upstream licensed a Bible for `aab` (the Arum
+    // New Testament, id 4443), AND the `language_ranges[]=*` index answers differently
+    // depending on which cached variant the request lands on — the shipped client's own
+    // request gets 1472 rows and no `aab`, while the identical URL with an explicit
+    // `Accept-Encoding` gets 1479 rows and `aab`. So that assertion was green for a
+    // reason that had nothing to do with the rule, and would have gone red the moment the
+    // cache settled. (The variant split itself is now WORKED AROUND in the client and
+    // pinned by `E-YV1b` below — but naming a tag would still be the wrong assertion
+    // here, because which tags are licensed is upstream's decision to change daily.)
+    //
+    // A ratio cannot rot that way, and it fails for exactly the bug the `aab` line
+    // existed to catch: re-deriving this list from `/v1/languages` (every language
+    // YouVersion knows, thousands of which have a non-null `default_bible_id` that lies)
+    // instead of from the bibles index.
+    const allTags = await allLanguageTags();
+    expect(allTags.length).toBeGreaterThan(languages.length);
+    expect(languages.length).toBeLessThan(allTags.length / 2);
+    // …and the narrowing is a SUBSET, not a different list — a re-derivation that
+    // happened to be small would otherwise satisfy the ratio.
+    //
+    // Compared on the PRIMARY subtag, because the bibles index carries script/region
+    // variants that `/v1/languages` has no record for at all. That is documented in
+    // `lib/youversion/client.ts` ("12 catalogue tags (`zh-Hant-TW`, `es-ES`, `pt-PT`, …)
+    // have no `/v1/languages` record at all; those, and only those, fall through to
+    // `Intl`") — and a first draft of this assertion ignored it and went red on
+    // `sus-Arab`, `ur-Deva` and `ur-Latn`. The rule being held is "every language we
+    // offer is a language YouVersion knows, possibly in a particular script", which is
+    // still falsified by the re-derivation this guards against.
+    const all = new Set(allTags);
+    const unknown = languages.filter(
+      (l) => !all.has(l.tag) && !all.has(l.tag.split("-")[0]!),
+    );
+    expect(unknown).toEqual([]);
+  });
+
+  /**
+   * The live half of the stale-cache-variant workaround (`CATALOGUE_ACCEPT_ENCODING`).
+   * `U-YV1b` proves the header is SENT; only a live probe can say whether it still helps.
+   *
+   * The claim is deliberately not "the client returns ≥ 1258 languages". A bare floor rots
+   * the moment upstream adds a language to both variants: 1252 → 1262 would clear a 1258
+   * floor with the workaround deleted. What is held instead:
+   *
+   *   the client's catalogue ⊇ (header-free variant ∪ header-carrying variant)
+   *
+   * — which is red for a REMOVAL for exactly as long as the divergence exists, and which
+   * degrades correctly rather than falsely if the variants converge (then the union is the
+   * same set either way, and this test is simply reporting that the workaround has become
+   * inert and can go).
+   *
+   * The absolute floor below it is an anti-vacuity control, not the claim: three empty
+   * responses would satisfy a superset assertion perfectly.
+   *
+   * ⚠️ If this goes red with `client < headerFree`, the header has stopped selecting the
+   * fresher variant. That is not a reason to weaken the assertion — it is the signal to
+   * re-measure and either repoint or delete the workaround.
+   */
+  it("E-YV1b: the pinned Accept-Encoding still buys the fresher cache variant, and never a smaller one", async () => {
+    const [languages, headerFree, headerCarrying] = await Promise.all([
+      fetchLanguageCatalogue(deps),
+      rawCatalogueTags({}),
+      rawCatalogueTags({ "accept-encoding": CATALOGUE_ACCEPT_ENCODING }),
+    ]);
+    const offered = new Set(languages.map((l) => l.tag));
+
+    // anti-vacuity: all three reads actually returned a catalogue
+    expect(offered.size).toBeGreaterThan(1000);
+    expect(headerFree.size).toBeGreaterThan(1000);
+    expect(headerCarrying.size).toBeGreaterThan(1000);
+
+    // THE CLAIM: nothing any observable variant offers is missing from what we ship.
+    const missing = [...headerFree, ...headerCarrying].filter((t) => !offered.has(t));
+    expect(missing).toEqual([]);
+
+    // …and the count the user's picker sees is never the smaller of the two.
+    expect(offered.size).toBeGreaterThanOrEqual(headerFree.size);
+
+    // Recorded, not asserted: `0` means the variants have converged and
+    // `CATALOGUE_ACCEPT_ENCODING` can be deleted (measured 2026-07-31: 6).
+    console.log(
+      `[E-YV1b] catalogue variant delta: header-free=${headerFree.size} ` +
+        `header-carrying=${headerCarrying.size} client=${offered.size}`,
+    );
   });
 
   it("E-YV2: direction comes from the provider — English ltr, Hebrew/Arabic rtl", async () => {
@@ -103,7 +246,51 @@ describe("YouVersion live contract — catalogue", () => {
   });
 
   it("E-YV4: a language with ZERO bibles answers 204 with an empty body — and yields [], not a parse crash", async () => {
-    await expect(fetchTranslations("aab", deps)).resolves.toEqual([]);
+    // ── The subject is DERIVED, because a hardcoded one rots ────────────────────────
+    //
+    // This used to name `aab`. On 2026-07-31 upstream licensed a Bible for it, the case
+    // went red, and the honest fix is not a different hardcoded tag — it is to stop
+    // asserting a fact about one language that YouVersion may monetise at any time.
+    //
+    // The derivation cannot be trusted blind either, and that is measured rather than
+    // assumed: the catalogue index and the per-language index DISAGREE (`aab` is absent
+    // from the client's view of `language_ranges[]=*` while `language_ranges[]=aab`
+    // returns a Bible). So candidates are PROBED, not assumed — the first one that really
+    // answers 204 is the subject, and if none does within the budget this fails loudly
+    // instead of quietly asserting nothing.
+    const [allTags, catalogue] = await Promise.all([
+      allLanguageTags(),
+      fetchLanguageCatalogue(deps),
+    ]);
+    const listed = new Set(catalogue.map((l) => l.tag));
+    const candidates = allTags.filter((t) => !listed.has(t));
+
+    // Anti-vacuity #1: there must BE languages without bibles. If YouVersion ever
+    // licensed all ~8.5k, this case has no subject and must say so rather than pass.
+    expect(candidates.length).toBeGreaterThan(0);
+
+    let subject: string | null = null;
+    for (const tag of candidates.slice(0, 25)) {
+      if ((await translationsStatus(tag)) === 204) {
+        subject = tag;
+        break;
+      }
+    }
+    // Anti-vacuity #2: a 204 was actually OBSERVED. `fetchTranslations` returns `[]` for a
+    // 204 AND for a 200-with-empty-`data`, so without this the case could go green while
+    // the empty-body status — the only shape that makes `JSON.parse("")` throw, which is
+    // this case's whole title — had disappeared upstream.
+    expect(
+      subject,
+      "no unlisted language answered 204 in 25 probes — the empty-body contract this " +
+        "case exists to pin may have changed; check the live host before editing this test",
+    ).not.toBeNull();
+
+    await expect(fetchTranslations(subject!, deps)).resolves.toEqual([]);
+
+    // Anti-vacuity #3: the probe DISCRIMINATES. A host that answered 204 for everything
+    // would satisfy everything above while proving nothing about "zero bibles".
+    expect(await translationsStatus(DEFAULT_LANGUAGE_TAG)).toBe(200);
   });
 
   it("E-YV4b: a bad app key is a distinguishable 401, not a silent empty list", async () => {
