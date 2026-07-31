@@ -4,7 +4,11 @@ import type {
   AiProvider,
   FaithAlignment,
 } from "../api/contracts";
-import type { ConnectionsState } from "../connections/connections-model";
+import {
+  providersForKind,
+  type GenerationKindName,
+  type ProviderConnectivity,
+} from "../api/ai-matrix";
 
 /**
  * The pure rules behind the Inspector's `GENERATION` section (genesis-1 items 1, 2 and 4).
@@ -77,24 +81,18 @@ export const FAITH_ALIGNMENT_HELP =
   "Applies to scene images generated with Gloo AI. These four are the only values Gloo honours.";
 
 /**
- * The kind→provider compatibility matrix, hand-mirrored from db-lib `AI_PROVIDERS_BY_KIND`
- * (this repo deliberately does not import db-lib; every wire contract here is a hand copy).
+ * The kind→provider compatibility matrix.
  *
- * `image` carries BOTH providers as of 2026-07-28: Gloo's catalogue has 11 image-capable
- * models and a real PNG was generated from one — they simply route through
- * `POST /ai/v2/responses` rather than chat/completions, which is why the capability went
- * unnoticed. The other three stay openrouter-only and that is a measured fact, not
- * caution: Gloo's catalogue has zero audio/video entries and those routes answer 404
- * (absent) rather than 405.
- *
- * The api enforces this at enqueue (422). It is mirrored here so the picker can explain
- * WHY an option is unavailable instead of silently omitting it.
+ * MOVED to `lib/api/ai-matrix.ts` on 2026-07-31. It used to be a local four-kind copy —
+ * the SELECTABLE kinds only — which meant nothing in the repo knew which providers could
+ * serve `storyboard` or `script`. The connection-aware resolver needs all six, and two
+ * partial hand-mirrors of one db-lib constant is one too many.
  */
 const PROVIDERS_BY_KIND: Record<SelectableKind, readonly AiProvider[]> = {
-  image: ["gloo", "openrouter"],
-  narration: ["openrouter"],
-  music: ["openrouter"],
-  video: ["openrouter"],
+  image: providersForKind("image") as readonly AiProvider[],
+  narration: providersForKind("narration") as readonly AiProvider[],
+  music: providersForKind("music") as readonly AiProvider[],
+  video: providersForKind("video") as readonly AiProvider[],
 };
 
 /** Plain-language reasons, in the design's register. Used ONLY when the matrix excludes
@@ -136,19 +134,33 @@ export function modelsFor(
 /**
  * Both providers, always PRESENT, each with whether it can be chosen and why not.
  *
- * `connections === null` means the session bootstrap has not answered yet — NOT
- * "signed out". Rendering an unresolved state as a hard "not connected" with a `Link ▸`
- * would tell a connected user to go and connect. Same trap as `isAuthed === false`.
+ * `connected === null` means we have not been told yet — NOT "not connected". Rendering an
+ * unresolved state as a hard "not connected" with a `Link ▸` would tell a connected user to
+ * go and connect. Same trap as `isAuthed === false`.
+ *
+ * ── The input was RETYPED on 2026-07-31 (decision D4) ───────────────────────────────
+ *
+ * It used to take the client's `ConnectionsState`. That state is wrong for this question in
+ * two independent ways: `applyConnectionsBase` never sets not-linked and the hydrate effect
+ * returns early on a failed read, so it conflates "not connected" with "we could not ask";
+ * and `?seed=authed-returning` pre-marks GitHub + OpenRouter connected regardless of the
+ * database, which has already made a connect helper a silent no-op once.
+ *
+ * `AiModelCatalogueResponse.providers` has neither problem. It is server-derived, it is
+ * documented (api `model-catalogue-service.ts`) to mean "is this user CONNECTED" rather
+ * than "did the catalogue read succeed", and its reader returns `null` on any failure and
+ * never throws — so "we could not ask" is a structurally distinct state here in a way it
+ * never was for `ConnectionsState`.
  */
 export function providerOptionsFor(
   kind: SelectableKind,
-  connections: ConnectionsState | null,
+  connected: ProviderConnectivity | null,
   catalogue: readonly AiModelInfo[],
 ): ProviderOption[] {
   return (["gloo", "openrouter"] as const).map<ProviderOption>((provider) => {
     const label = PROVIDER_LABELS[provider];
 
-    if (!connections) {
+    if (!connected) {
       return { provider, label, available: false, reason: "Checking…" };
     }
     if (!PROVIDERS_BY_KIND[kind].includes(provider)) {
@@ -162,7 +174,7 @@ export function providerOptionsFor(
             : "Not available for this kind",
       };
     }
-    if (connections[provider]?.status !== "connected") {
+    if (!connected[provider]) {
       return {
         provider,
         label,
@@ -178,6 +190,112 @@ export function providerOptionsFor(
     }
     return { provider, label, available: true };
   });
+}
+
+export interface KindAvailability {
+  enabled: boolean;
+  /** Present whenever `enabled` is false. A disabled control with no stated reason reads
+   *  as a bug, which is the dishonesty R5/R7 exist to remove. */
+  reason?: string;
+}
+
+/** Shown when a kind has no connected provider and BOTH would do — "connect OpenRouter"
+ *  would be a half-truth for `image`, where Gloo works equally well. */
+const NO_PROVIDER_REASON = "No model provider connected";
+
+/**
+ * R5 / R7 / D2 / D3 — can this kind be GENERATED at all right now?
+ *
+ * ## Why this is a DIFFERENT question from `providerOptionsFor`
+ *
+ * `providerOptionsFor` answers "which provider TABS can be clicked", and it requires the
+ * live catalogue to hold a model for that provider. This answers "should the `↻` / `▶`
+ * ACTION button be live", and it is deliberately connection-only:
+ *
+ *  · it must work for `storyboard`, which has no selector and therefore no catalogue
+ *    entries at all (the api narrows the catalogue to the selectable kinds) — a
+ *    catalogue-aware rule would report `✦ Generate storyboard` as permanently dead;
+ *  · a momentarily thin catalogue is not a reason to refuse to generate. An unconnected
+ *    provider is, because the api answers `409 provider_not_connected` before creating a
+ *    row.
+ *
+ * They must never CONTRADICT each other in the direction that matters — a clickable
+ * provider tab above a dead action button — which is what `U-KA7` holds.
+ *
+ * ## `connected === null` disables with "Checking…", never with "not connected"
+ *
+ * The consequence is accepted deliberately: while the catalogue read is in flight or has
+ * failed, every AI control is disabled and says "Checking…". That is NOT a regression —
+ * today a failed read already yields `providerOptionsFor(kind, …, [])`, so every provider
+ * was already unavailable. It is simply now honest about WHY.
+ */
+export function kindAvailability(
+  kind: GenerationKindName,
+  connected: ProviderConnectivity | null,
+  // DELIBERATELY UNUSED, and kept in the signature for that reason: this rule must NOT
+  // consult the catalogue (see the docblock — `storyboard` has no catalogue entries at all),
+  // and taking the same arguments as `providerOptionsFor` is what makes the omission visible
+  // at every call site rather than looking like something nobody thought about.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  catalogue: readonly AiModelInfo[],
+): KindAvailability {
+  if (!connected) return { enabled: false, reason: "Checking…" };
+
+  const providers = providersForKind(kind);
+  if (providers.some((p) => connected[p])) return { enabled: true };
+
+  // Nothing viable. When the kind has exactly one possible provider the reason can name it,
+  // which is the actionable form; when it has two, either would do and naming one would be
+  // wrong.
+  if (providers.length === 1) {
+    return {
+      enabled: false,
+      reason: `${PROVIDER_LABELS[providers[0]!]} — not connected`,
+    };
+  }
+  return { enabled: false, reason: NO_PROVIDER_REASON };
+}
+
+/**
+ * The same rule, for a GENERATE BUTTON rather than for a picker — and it differs in exactly
+ * one case: UNKNOWN connectivity leaves the button LIVE.
+ *
+ * ## Why the split exists
+ *
+ * The picker and the button are asking different things of the same fact.
+ *
+ *  · A picker with no catalogue has nothing to offer: choosing a provider whose models we
+ *    do not have would produce a generation with no model id. "Checking…" and disabled is
+ *    the honest state, and it is what has always shipped.
+ *  · A generate button with no catalogue is fine. It runs on the COMMITTED manifest
+ *    settings plus the BFF's own defaults; it does not read the catalogue at all. Three
+ *    standing regression tests (`U-V69`/`U-V70`/`U-V71`) prove exactly that: a project with
+ *    a committed voice id and a committed narration model generates correctly while the
+ *    catalogue is in flight AND after the read has failed. That capability was won by
+ *    fixing a real shipped bug.
+ *
+ * So refusing on `null` here would treat "we could not ask" as "the answer is no" — the
+ * precise mistake this codebase keeps re-learning — and it would take a WORKING capability
+ * away from any user whose `GET /api/ai/models` blipped, for a whole session, with the
+ * button reading "Checking…" forever.
+ *
+ * The permissive direction is bounded and already covered: `POST /v1/ai/generations`
+ * answers `409 provider_not_connected` before creating a row, so an unconnected user whose
+ * catalogue read failed gets a clear, immediate refusal instead of a dead button. Same
+ * shape as R3's guardrail, which allows on an unresolved connections read for the same
+ * reason.
+ *
+ * One rule, one module: the Inspector's four action buttons, the empty-state
+ * `✦ Generate storyboard`, and the studio context's dispatcher guards all call THIS, so
+ * they cannot drift apart.
+ */
+export function generationActionAvailability(
+  kind: GenerationKindName,
+  connected: ProviderConnectivity | null,
+  catalogue: readonly AiModelInfo[],
+): KindAvailability {
+  if (!connected) return { enabled: true };
+  return kindAvailability(kind, connected, catalogue);
 }
 
 /** The BFF-published system defaults (`resolveGenerationTarget(kind)`), keyed by kind. */

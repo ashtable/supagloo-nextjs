@@ -93,14 +93,29 @@ describe("whole-video descriptor fields", () => {
     expect(music.rows).toBeGreaterThan(1);
   });
 
-  it("no longer offers a free-text NARRATOR VOICE box (19b)", async () => {
-    // The removal is the feature, not collateral: a control whose value could not reach
-    // any provider was inviting users to write a sentence that did nothing. What replaced
-    // it is the curated voice list, and the descriptor survives as read-only context.
+  it("U-DSC1: the real narration card carries NO stale voice descriptor (R9c)", async () => {
+    // FLIPPED 2026-07-31. This case used to require `voice-description` to be PRESENT: the
+    // descriptor survived 19b as "read-only context" for the voice choice.
+    //
+    // The user's screenshot showed why that was wrong. `VOICE` read **Michael** while the
+    // box beneath it read *"Warm, wise, and resonant FEMALE voice with a calm pace"* — the
+    // storyboard LLM's sentence, written before any voice existed to choose, sitting under a
+    // control that had since chosen a different one. It is not context; it is a second
+    // answer to the same question, and it contradicts the first. The contradiction needs
+    // both a chosen voice AND a generated sentence, so it can only exist in THIS card.
+    //
+    // `storyboard.voiceDescription` itself is NOT removed and is NOT dead: db-lib's
+    // `VoiceDescriptorSchema.description` is required, `manifest-adapter` round-trips it
+    // both ways, the storyboard workflow produces it, `studio-context` sends it with every
+    // narration request, and the mock (non-`aiEnabled`) card still displays it — which
+    // `U-I11` holds, and which is now the ONLY place it renders.
     const root = await openInspector();
     expect(queryTestId(root, "voice-input")).toBeNull();
     expect(queryTestId(root, "voice-list")).not.toBeNull();
-    expect(queryTestId(root, "voice-description")).not.toBeNull();
+    expect(queryTestId(root, "voice-description")).toBeNull();
+    // The card is still a card — the deletion must not take the regenerate control with it.
+    expect(queryTestId(root, "narration-card")).not.toBeNull();
+    expect(queryTestId(root, "regenerate-narration")).not.toBeNull();
   });
 
   it("holds the full descriptor text, not a truncation", async () => {

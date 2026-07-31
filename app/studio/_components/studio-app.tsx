@@ -17,7 +17,10 @@ import PublishWizard from "./publish-wizard";
 import RenderOverlay from "./render-overlay";
 import StudioLock from "./studio-lock";
 import VideoWarningDialog from "./video-warning-dialog";
-import { resolveChoice } from "@/lib/studio/ai-settings";
+import {
+  generationActionAvailability,
+  resolveChoice,
+} from "@/lib/studio/ai-settings";
 import { estimateGenerationCost } from "@/lib/studio/cost-estimate";
 
 const GRAIN =
@@ -203,6 +206,21 @@ function StudioEmpty() {
   const { state, generateStoryboard, project } = useStudio();
   const status = state.generations[STORYBOARD_SLOT]?.status;
   const canGenerate = Boolean(project.manifest);
+  /**
+   * R5/R7/D3 — the same connection gate the Inspector's action buttons carry, applied to the
+   * FIRST-TIME generation entry point.
+   *
+   * `storyboard` has no selector anywhere, so nothing else in the UI could ever have said
+   * that this button cannot succeed. Without it, a user with neither provider connected
+   * lands on their freshly-scaffolded project, presses the one button on the screen, and
+   * gets a failure with no explanation — the guardrail (R3) blocks CREATION, but an existing
+   * project can still be opened.
+   */
+  const storyboardAvailable = generationActionAvailability(
+    "storyboard",
+    state.modelCatalogue?.providers ?? null,
+    state.modelCatalogue?.models ?? [],
+  );
 
   return (
     <div
@@ -245,7 +263,10 @@ function StudioEmpty() {
               type="button"
               data-testid="generate-storyboard"
               data-state={status ?? "idle"}
-              disabled={status === "running"}
+              disabled={status === "running" || !storyboardAvailable.enabled}
+              title={
+                storyboardAvailable.enabled ? undefined : storyboardAvailable.reason
+              }
               onClick={generateStoryboard}
               style={{
                 padding: "11px 22px",
@@ -259,12 +280,24 @@ function StudioEmpty() {
                 color: "#fff",
                 background: "linear-gradient(150deg,#d4a24c,#c0392b 55%,#6d3b26)",
                 border: "1px solid #e69a5a",
-                cursor: status === "running" ? "default" : "pointer",
-                opacity: status === "running" ? 0.7 : 1,
+                cursor:
+                  status === "running" || !storyboardAvailable.enabled
+                    ? "not-allowed"
+                    : "pointer",
+                opacity:
+                  status === "running" || !storyboardAvailable.enabled ? 0.5 : 1,
               }}
             >
               {status === "running" ? "Generating…" : "✦ Generate storyboard"}
             </button>
+            {storyboardAvailable.enabled ? null : (
+              <div
+                data-testid="generate-storyboard-unavailable"
+                style={{ marginTop: 10, fontSize: 12, color: "var(--ws-dim)" }}
+              >
+                {storyboardAvailable.reason}
+              </div>
+            )}
             {status === "failed" ? (
               <div
                 data-testid="generate-storyboard-error"

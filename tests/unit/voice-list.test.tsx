@@ -25,7 +25,13 @@ import { byTestId, mount, queryTestId, selectOption } from "./support/render";
 
 import VoiceList from "@/app/studio/_components/voice-list";
 
-/** Kokoro's live vocabulary, trimmed to the groups these cases exercise. TEST DATA. */
+/** Kokoro's live vocabulary, trimmed to the groups these cases exercise. TEST DATA.
+ *
+ *  It deliberately carries NO `am_michael`, so every default assertion below pins the
+ *  R9(b) FALLBACK arm — "no preferred name in this bucket ⇒ first-in-bucket, exactly as
+ *  before". `U-V78` brings its own Michael-bearing vocabulary for the other arm. Most live
+ *  speech models are in this state (different naming convention, or no vocabulary at all),
+ *  so it is the common case rather than the exception. */
 const VOICES = [
   "af_alloy", "af_nova", "af_sky",
   "am_adam", "am_echo", "am_onyx",
@@ -193,5 +199,51 @@ describe("VoiceList", () => {
   it("U-V51: the model tag prints the FULL id", async () => {
     const c = await list();
     expect(byTestId(c, "voice-model-tag").textContent).toBe("hexgrad/kokoro-82m");
+  });
+
+  it("U-V77: the first cascade field is labelled ACCENT — for sighted AND screen-reader users", async () => {
+    // R9(a). The provider's facet genuinely IS a language letter, so `languageCode` /
+    // `LANGUAGE_LABELS` / `byLanguage` / `parseVoiceId().languageCode` all keep their
+    // names — renaming the data model to match a UI word would make the code lie about the
+    // provider. What the USER sees is the only thing that moves.
+    //
+    // The `aria-label` moves WITH the visible label. A screen-reader user is a user reading
+    // the label; leaving `"Narrator language"` behind would ship the rename to sighted
+    // users only, and the two would then disagree about what the control is called.
+    const c = await list();
+    const panel = byTestId(c, "voice-list");
+    expect(panel.textContent).toContain("ACCENT");
+    expect(panel.textContent).not.toContain("LANGUAGE");
+    expect(byTestId(c, "voice-language").getAttribute("aria-label")).toBe(
+      "Narrator accent",
+    );
+    // `data-testid="voice-language"` is deliberately UNCHANGED: a testid is a test seam,
+    // not a user surface, and renaming it would break `U-V40`/`U-V43`/`U-V45` for no gain.
+    expect(queryTestId(c, "voice-language")).not.toBeNull();
+  });
+
+  it("U-V78: switching accent away and back lands on the PREFERRED voice, not the first", async () => {
+    // ONE rule, one module. `defaultSelection`, `pickLanguage` and `pickGender` each used to
+    // take `voiceIds[0]` independently. If only the default learned the preference, the very
+    // first accent round-trip would silently drop the user back onto Adam and there would be
+    // no way to get back to Michael except by picking him by hand — the picker would
+    // disagree with its own default.
+    const withMichael = [
+      "af_nova", "am_adam", "am_michael", "bf_alice", "bm_daniel",
+    ];
+    const onSelect = vi.fn();
+    const c = await list({ voices: withMichael, onSelect });
+    expect(valueOf(c, "voice-select")).toBe("am_michael");
+
+    await selectOption(byTestId(c, "voice-language"), "b");
+    expect(onSelect).toHaveBeenLastCalledWith("bm_daniel"); // no Michael here → first
+    await selectOption(byTestId(c, "voice-language"), "a");
+    expect(onSelect).toHaveBeenLastCalledWith("am_michael");
+
+    // …and the gender cascade shares the same rule.
+    await selectOption(byTestId(c, "voice-gender"), "female");
+    expect(onSelect).toHaveBeenLastCalledWith("af_nova");
+    await selectOption(byTestId(c, "voice-gender"), "male");
+    expect(onSelect).toHaveBeenLastCalledWith("am_michael");
   });
 });

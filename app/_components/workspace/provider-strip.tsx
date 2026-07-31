@@ -111,7 +111,11 @@ export default function ProviderStrip() {
             ) : item.linkLabel ? (
               <button
                 type="button"
-                onClick={() => router.push("/profile")}
+                // `item.provider` was in scope and discarded: every one of the three
+                // `Link ▸` buttons dropped the user at the top of /profile and left them
+                // to find the card they had just been told was missing. It now lands on
+                // that card's own anchor.
+                onClick={() => router.push(`/profile#connection-${item.provider}`)}
                 className="cursor-pointer"
                 style={{
                   fontWeight: 700,

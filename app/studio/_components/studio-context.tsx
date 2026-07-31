@@ -87,9 +87,11 @@ import {
 import { refreshStalePresigns } from "@/lib/studio/presign-refresh-driver";
 import { EMPTY_RESIGN_LEDGER } from "@/lib/studio/presign-refresh";
 import {
+  generationActionAvailability,
   resolveChoice,
   type SelectableKind,
 } from "@/lib/studio/ai-settings";
+import type { GenerationKindName } from "@/lib/api/ai-matrix";
 import { effectiveSceneDurationSeconds } from "@/lib/studio/scene-duration";
 import {
   effectiveVoiceId,
@@ -649,6 +651,27 @@ export function StudioProvider({
    * attached for GLOO, because OpenRouter has no such concept and sending it would be
    * meaningless noise in the request body.
    */
+  /**
+   * R5/R7/D3 — DEFENCE IN DEPTH, not the gate.
+   *
+   * The authority is `POST /v1/ai/generations`, which answers 409 `provider_not_connected`
+   * before creating a row; the visible half is the disabled button. This sits between them
+   * so a dispatcher reached any other way — a keyboard shortcut, a stale closure, a future
+   * caller that forgets the button — cannot enqueue against a provider the user has not
+   * connected and burn 25 minutes of polling on a request that was refused.
+   *
+   * It reads the SAME catalogue-derived truth the buttons do, so the three cannot disagree,
+   * and `null` (unknown) is permissive here rather than blocking: the api is the authority
+   * and a client that refused on a failed catalogue read would be making an answer up.
+   */
+  const canGenerate = (kind: GenerationKindName): boolean => {
+    return generationActionAvailability(
+      kind,
+      state.modelCatalogue?.providers ?? null,
+      state.modelCatalogue?.models ?? [],
+    ).enabled;
+  };
+
   const generationTarget = (kind: SelectableKind) => {
     const settings = state.storyboard.aiSettings;
     const choice = resolveChoice(
@@ -672,6 +695,7 @@ export function StudioProvider({
 
   const rerollVisual = (sceneId?: string) => {
     if (!project.manifest) return; // mock catalog: no real generation
+    if (!canGenerate("image")) return;
     const id = sceneId ?? state.selectedSceneId;
     const scene = state.storyboard.scenes.find((s) => s.id === id);
     if (!scene) return;
@@ -711,6 +735,7 @@ export function StudioProvider({
    */
   const generateSceneVideo = (sceneId?: string) => {
     if (!project.manifest) return;
+    if (!canGenerate("video")) return;
     const id = sceneId ?? state.selectedSceneId;
     const scene = state.storyboard.scenes.find((s) => s.id === id);
     if (!scene) return;
@@ -778,6 +803,9 @@ export function StudioProvider({
 
   const requestSceneVideo = (sceneId?: string) => {
     if (!project.manifest) return;
+    // Refuse BEFORE the confirmation dialog: offering to spend money on a generation the
+    // api will refuse is worse than refusing quietly.
+    if (!canGenerate("video")) return;
     const id = sceneId ?? state.selectedSceneId;
     if (!state.storyboard.scenes.some((s) => s.id === id)) return;
     // The per-project preference is read at the moment of the click, never cached: it can
@@ -835,6 +863,7 @@ export function StudioProvider({
 
   const generateStoryboard = () => {
     if (!project.manifest) return;
+    if (!canGenerate("storyboard")) return;
     // THE reported bug lived here: this read `manifest.scenes[0]`, which is `undefined` on a
     // freshly-scaffolded project, so it POSTed a brief with no `scripture` at all — the
     // workflow skipped its presence-gated passage fetch, and a schema that REQUIRES a
@@ -856,6 +885,7 @@ export function StudioProvider({
 
   const regenerateNarration = () => {
     if (!project.manifest) return;
+    if (!canGenerate("narration")) return;
     const scenes = narrationScenesOf(state.storyboard);
     if (scenes.length === 0) return;
     const voice: { description: string; label?: string; voiceId?: string } = {
@@ -927,6 +957,7 @@ export function StudioProvider({
 
   const regenerateMusic = () => {
     if (!project.manifest) return;
+    if (!canGenerate("music")) return;
     const { target: musicTarget } = generationTarget("music");
     runGeneration(
       MUSIC_SLOT,

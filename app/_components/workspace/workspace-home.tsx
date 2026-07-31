@@ -10,8 +10,10 @@ import SetupWizard from "../onboarding/setup-wizard";
 import OctocatIcon from "../octocat-icon";
 import NewProjectWizard from "../project-wizard/new-project-wizard";
 import ImportWizard from "../project-wizard/import-wizard";
+import ConnectionsRequiredModal from "./connections-required-modal";
 import { studioUrl } from "@/lib/studio/project";
 import { fetchProjectCards } from "@/lib/workspace/projects-real";
+import { evaluateConnectionGuardrail } from "@/lib/workspace/connection-guardrail";
 import type { DemoProject } from "@/lib/workspace/projects-model";
 
 type WizardOpen = "none" | "new" | "import";
@@ -25,7 +27,15 @@ type WizardOpen = "none" | "new" | "import";
  * against a direct/hard nav render before the swap settles).
  */
 export default function WorkspaceHome() {
-  const { mounted, session, firstSignIn, isMock, serverUserId } = useSession();
+  const {
+    mounted,
+    session,
+    firstSignIn,
+    isMock,
+    serverUserId,
+    connections,
+    connectionsResolved,
+  } = useSession();
   const router = useRouter();
   const [wizard, setWizard] = useState<WizardOpen>("none");
   const [realProjects, setRealProjects] = useState<DemoProject[] | null>(null);
@@ -71,6 +81,24 @@ export default function WorkspaceHome() {
 
   const firstName = (session.user?.name ?? "").trim().split(/\s+/)[0] ?? "";
   const openProject = (id: string) => router.push(studioUrl(id));
+
+  /**
+   * R3 — the create/import guardrail, DERIVED AT RENDER TIME from the current connection
+   * state. Never decided inside a click handler.
+   *
+   * That is what makes the `/?newproject=blank` deep link work: it sets the intent from a
+   * mount effect, BEFORE `GET /api/connections` has answered, so a handler-time decision
+   * would be made against "nothing is connected" and could never be revisited. Here the
+   * launcher only records WHICH wizard was asked for; what renders is re-decided on every
+   * render, and swaps from the wizard to the modal (or back) the moment the answer arrives.
+   *
+   * `connectionsResolved` is the other half: an unresolved or failed read is not an answer
+   * about the user's data, so it verdicts ALLOWED. The api's 409s remain the backstop for
+   * that window.
+   */
+  const verdict = evaluateConnectionGuardrail(connections, connectionsResolved);
+  const blocked = verdict.kind === "blocked";
+  const wizardRequested = wizard !== "none";
 
   return (
     <div
@@ -161,10 +189,18 @@ export default function WorkspaceHome() {
       </div>
 
       {firstSignIn && <SetupWizard />}
-      {wizard === "new" && (
+      {/* The intent/verdict split. Both wizards need live GitHub data on their FIRST step
+          (owner login, repo lists) and neither has a designed empty state, and R3 mandates
+          a redirect away from this page — which is worse fired from a modal over a modal.
+          So the refusal happens here, at the one point all six entry points converge, and
+          the wizard below simply never mounts while blocked. */}
+      {wizardRequested && blocked && (
+        <ConnectionsRequiredModal open verdict={verdict} />
+      )}
+      {wizard === "new" && !blocked && (
         <NewProjectWizard onClose={() => setWizard("none")} />
       )}
-      {wizard === "import" && (
+      {wizard === "import" && !blocked && (
         <ImportWizard
           onClose={() => setWizard("none")}
           onStartNew={() => setWizard("new")}

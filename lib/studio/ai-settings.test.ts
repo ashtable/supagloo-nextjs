@@ -5,6 +5,8 @@ import {
   FAITH_ALIGNMENT_HELP,
   FAITH_ALIGNMENT_LABELS,
   SELECTABLE_KINDS,
+  generationActionAvailability,
+  kindAvailability,
   modelsFor,
   needsFaithAlignment,
   providerOptionsFor,
@@ -12,7 +14,7 @@ import {
   settingsAfterProviderChange,
 } from "./ai-settings";
 import type { AiGenerationSettings, AiModelInfo } from "../api/contracts";
-import type { ConnectionsState } from "../connections/connections-model";
+import type { ProviderConnectivity } from "../api/ai-matrix";
 
 /**
  * U-AS5..U-AS8 — the pure rules behind the Inspector's provider/model selectors.
@@ -32,20 +34,28 @@ import type { ConnectionsState } from "../connections/connections-model";
  * can do about Gloo not having speech models.
  */
 
+/**
+ * The connection input, RETYPED on 2026-07-31 (R4–R8 decision D4).
+ *
+ * It used to be the client's `ConnectionsState`. That state is a lie in two directions:
+ * `applyConnectionsBase` never sets not-linked and the hydrate effect returns early on a
+ * failed read, so it conflates "not connected" with "we could not ask"; and the
+ * `?seed=authed-returning` mock seed pre-marks GitHub + OpenRouter connected regardless of
+ * the database, which has already made a connect helper a silent no-op once.
+ *
+ * The Studio now reads `AiModelCatalogueResponse.providers` instead — server-derived,
+ * already fetched, Zod-parsed, and explicitly documented (api `model-catalogue-service.ts`)
+ * as answering "is the user CONNECTED", not "did the catalogue read succeed". `null` still
+ * means UNKNOWN, and the reader that produces it (`fetchModelCatalogue`) returns null on
+ * any failure and never throws — so "we could not ask" is structurally distinct here in a
+ * way it never was for `ConnectionsState`.
+ */
 const connected = (
-  overrides: Partial<Record<"gloo" | "openrouter", boolean>> = {},
-): ConnectionsState =>
-  ({
-    github: { provider: "github", status: "connected" },
-    openrouter: {
-      provider: "openrouter",
-      status: overrides.openrouter === false ? "not-linked" : "connected",
-    },
-    gloo: {
-      provider: "gloo",
-      status: overrides.gloo === false ? "not-linked" : "connected",
-    },
-  }) as ConnectionsState;
+  overrides: Partial<ProviderConnectivity> = {},
+): ProviderConnectivity => ({
+  gloo: overrides.gloo !== false,
+  openrouter: overrides.openrouter !== false,
+});
 
 const CATALOGUE: AiModelInfo[] = [
   {
@@ -182,6 +192,165 @@ describe("providerOptionsFor (U-AS7, U-AS8)", () => {
     expect(options.every((o) => o.available)).toBe(false);
     expect(options.every((o) => /loading|checking/i.test(o.reason ?? ""))).toBe(true);
     expect(options.every((o) => o.connectable !== true)).toBe(true);
+  });
+});
+
+/**
+ * R5 / R7 / D2 / D3 — "can this kind be GENERATED at all right now?"
+ *
+ * ## Why this is a different question from `providerOptionsFor`
+ *
+ * `providerOptionsFor` answers "which provider TABS can be clicked", and it requires the
+ * live catalogue to hold a model for that provider. `kindAvailability` answers "should the
+ * ↻ / ▶ ACTION button be live", and it is deliberately connection-only:
+ *
+ *   · it must work for `storyboard`, which has no selector and therefore no catalogue
+ *     entries at all (`narrowToSelectableKinds` drops it in the api) — a catalogue-aware
+ *     rule would report `✦ Generate storyboard` as permanently dead;
+ *   · a momentarily thin catalogue is not a reason to refuse to generate; an unconnected
+ *     provider is, because the api will 409 it.
+ *
+ * They must not CONTRADICT each other, which is what `U-KA7` holds.
+ */
+describe("kindAvailability — R5/R7's honest disable", () => {
+  it("U-KA1: narration is disabled when OpenRouter is not connected, and says so", () => {
+    // R7. Gloo publishes zero speech models, so there is no fallback to reroute onto —
+    // narration is simply unavailable, and the reason must name the provider the user
+    // would have to connect.
+    const v = kindAvailability("narration", connected({ openrouter: false }), CATALOGUE);
+    expect(v.enabled).toBe(false);
+    expect(v.reason).toMatch(/openrouter/i);
+    expect(v.reason).toMatch(/not connected/i);
+  });
+
+  it("U-KA2: VIDEO is disabled on the same axis — R7 omits it, the matrix does not", () => {
+    // THE DECISION THE USER DID NOT SPECIFY. R7 names image + music + narration. But
+    // `AI_PROVIDERS_BY_KIND` makes `video` openrouter-ONLY too, so with no OpenRouter the
+    // per-scene `▶ Generate video` control is exactly as unusable as music and narration.
+    // Leaving it live ships a button that cannot succeed — the precise dishonesty R5/R7
+    // exist to remove.
+    const video = kindAvailability("video", connected({ openrouter: false }), CATALOGUE);
+    const music = kindAvailability("music", connected({ openrouter: false }), CATALOGUE);
+    expect(video.enabled).toBe(false);
+    expect(video.reason).toBe(music.reason); // same axis, same words
+  });
+
+  it("U-KA3: image SURVIVES losing Gloo — R7's 'they can still do image generation'", () => {
+    // The control against over-disabling. Image is the one media kind with two providers,
+    // so losing either one must leave it live.
+    expect(kindAvailability("image", connected({ gloo: false }), CATALOGUE).enabled).toBe(
+      true,
+    );
+    expect(
+      kindAvailability("image", connected({ openrouter: false }), CATALOGUE).enabled,
+    ).toBe(true);
+  });
+
+  it("U-KA4: with NEITHER provider connected every kind is disabled, with a general reason", () => {
+    // D3 — an existing project can still be OPENED with no connections (R3 only blocks
+    // creation). Nothing may be generated, and the reason cannot name one provider,
+    // because either would do.
+    const none: ProviderConnectivity = { gloo: false, openrouter: false };
+    for (const kind of ["storyboard", "script", "image", "narration", "music", "video"] as const) {
+      const v = kindAvailability(kind, none, CATALOGUE);
+      expect(v.enabled, `${kind} must be disabled with nothing connected`).toBe(false);
+      expect(v.reason, `${kind} must state a reason`).toBeTruthy();
+    }
+    expect(kindAvailability("image", none, CATALOGUE).reason).toMatch(
+      /no model provider/i,
+    );
+  });
+
+  it("U-KA5: UNKNOWN connectivity reads 'Checking…', never 'not connected'", () => {
+    // Same trap as `isAuthed === false`: a failed or in-flight read is not an answer about
+    // the user's data. Telling a connected user to go and connect is the bug this prevents,
+    // and it has shipped once already.
+    const v = kindAvailability("narration", null, CATALOGUE);
+    expect(v.enabled).toBe(false);
+    expect(v.reason).toMatch(/checking/i);
+    expect(v.reason).not.toMatch(/not connected/i);
+  });
+
+  it("U-KA6: it answers for STORYBOARD, which has no selector and no catalogue entries", () => {
+    // `✦ Generate storyboard` is the first-time generation entry point and the only path
+    // R8's storyboard flip travels. The catalogue below holds no storyboard model at all —
+    // exactly like production, where the api narrows the catalogue to the selectable kinds.
+    expect(kindAvailability("storyboard", connected(), CATALOGUE).enabled).toBe(true);
+    expect(
+      kindAvailability("storyboard", connected({ gloo: false }), CATALOGUE).enabled,
+    ).toBe(true); // repairs onto OpenRouter
+    expect(
+      kindAvailability("storyboard", { gloo: false, openrouter: false }, CATALOGUE).enabled,
+    ).toBe(false);
+  });
+
+  it("U-KA8: an ACTION button treats UNKNOWN as permissive, while the picker still says 'Checking…'", () => {
+    // The one place the picker rule and the button rule deliberately part company, and it
+    // is a decision rather than an oversight.
+    //
+    // A picker with no catalogue has nothing to offer — choosing a provider whose models we
+    // do not have would create a generation with no model id. A generate button with no
+    // catalogue is FINE: it runs on the committed manifest settings plus the BFF's own
+    // defaults and never reads the catalogue. `U-V69`/`U-V70`/`U-V71` are the standing
+    // proof — a committed voice id and a committed narration model generate correctly both
+    // while the read is in flight and after it has FAILED, which is a capability won by
+    // fixing a real shipped bug.
+    //
+    // Refusing here would treat "we could not ask" as "the answer is no" and would take
+    // that working capability away for a whole session from anyone whose `GET
+    // /api/ai/models` blipped. The api's `409 provider_not_connected` is the backstop, so
+    // being permissive costs a clear error instead of a dead button.
+    for (const kind of ["storyboard", "image", "narration", "music", "video"] as const) {
+      expect(kindAvailability(kind, null, CATALOGUE).enabled, `${kind} picker`).toBe(
+        false,
+      );
+      expect(
+        generationActionAvailability(kind, null, CATALOGUE).enabled,
+        `${kind} action`,
+      ).toBe(true);
+    }
+    // …and with connectivity KNOWN the two answer identically, so this is a null-only
+    // divergence rather than a second rule.
+    const states: ProviderConnectivity[] = [
+      { gloo: true, openrouter: true },
+      { gloo: true, openrouter: false },
+      { gloo: false, openrouter: true },
+      { gloo: false, openrouter: false },
+    ];
+    for (const kind of ["storyboard", "image", "narration", "music", "video"] as const) {
+      for (const state of states) {
+        expect(
+          generationActionAvailability(kind, state, CATALOGUE),
+          `${kind} @ ${JSON.stringify(state)}`,
+        ).toEqual(kindAvailability(kind, state, CATALOGUE));
+      }
+    }
+  });
+
+  it("U-KA7: it never contradicts providerOptionsFor for the four selectable kinds", () => {
+    // The two rules answer different questions, so they may DIFFER — a connected provider
+    // with an empty catalogue is generatable-in-principle but not selectable. What they may
+    // never do is disagree in the direction that matters: if a provider tab is clickable,
+    // the action button must not be dead.
+    const states: Array<ProviderConnectivity | null> = [
+      connected(),
+      connected({ gloo: false }),
+      connected({ openrouter: false }),
+      { gloo: false, openrouter: false },
+      null,
+    ];
+    const contradictions: string[] = [];
+    for (const kind of SELECTABLE_KINDS) {
+      for (const state of states) {
+        const anySelectable = providerOptionsFor(kind, state, CATALOGUE).some(
+          (o) => o.available,
+        );
+        if (anySelectable && !kindAvailability(kind, state, CATALOGUE).enabled) {
+          contradictions.push(`${kind} @ ${JSON.stringify(state)}`);
+        }
+      }
+    }
+    expect(contradictions).toEqual([]);
   });
 });
 

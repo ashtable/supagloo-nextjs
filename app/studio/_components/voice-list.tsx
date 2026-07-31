@@ -4,6 +4,7 @@ import { useState } from "react";
 import {
   buildVoiceGroups,
   effectiveVoiceId,
+  preferredVoiceId,
   selectionFor,
   voiceLabel,
   type VoiceGender,
@@ -160,16 +161,23 @@ export default function VoiceList({
 
   /** Every cascade step reports the voice it RESOLVED to, not just the leaf select — the
    *  parent persists a voice id, so a language change that reported nothing would leave a
-   *  voice from the previous language on the manifest. */
+   *  voice from the previous language on the manifest.
+   *
+   *  Both use `preferredVoiceId`, the SAME rule `defaultSelection` uses, rather than each
+   *  taking `voiceIds[0]`. Otherwise switching accent away and back would silently land on
+   *  a different voice than the one the picker opened with, and the only way back to the
+   *  default would be to know its name. */
   const pickLanguage = (code: string) => {
     const next = groups.find((g) => (g.languageCode ?? "") === code);
     const nextBucket = next && bucketFor(next, bucket?.gender ?? null);
-    if (nextBucket?.voiceIds[0]) report(nextBucket.voiceIds[0]);
+    const voiceId = preferredVoiceId(nextBucket?.voiceIds);
+    if (voiceId) report(voiceId);
   };
 
   const pickGender = (value: string) => {
     const next = group.genders.find((b) => (b.gender ?? "") === value);
-    if (next?.voiceIds[0]) report(next.voiceIds[0]);
+    const voiceId = preferredVoiceId(next?.voiceIds);
+    if (voiceId) report(voiceId);
   };
 
   return (
@@ -178,10 +186,26 @@ export default function VoiceList({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={FIELD_LABEL}>{"LANGUAGE"}</span>
+          {/* R9(a), 2026-07-31 — the LABEL and the FIELD deliberately differ, and this
+              comment is here so the next reader does not "fix" it.
+
+              What the user picks here is an ACCENT: every option is a variety of speech, and
+              two of the three most common ones ("American English", "British English") are
+              the same language. So ACCENT is what the control does.
+              What the PROVIDER publishes is a language letter — `a`/`b`/`e`/`f`/`h`/`i`/`j`/
+              `p`/`z` — so `languageCode`, `LANGUAGE_LABELS`, `byLanguage` and
+              `parseVoiceId().languageCode` all keep that name. Renaming the data model to
+              match a UI word would make the code lie about the provider, which is the whole
+              thing `speech-voices.ts` exists to avoid.
+              `data-testid="voice-language"` also stays: a testid is a test seam, not a user
+              surface, and renaming it would break `U-V40`/`U-V43`/`U-V45` for no gain. */}
+          <span style={FIELD_LABEL}>{"ACCENT"}</span>
           <select
             data-testid="voice-language"
-            aria-label="Narrator language"
+            // The aria-label moves WITH the visible label. A screen-reader user is a user
+            // reading the label; leaving "Narrator language" behind would ship the rename
+            // to sighted users only and make the two disagree about what this control is.
+            aria-label="Narrator accent"
             value={group.languageCode ?? ""}
             onChange={(e) => pickLanguage(e.target.value)}
             style={BOX}

@@ -39,12 +39,33 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(result.body, { status: result.status });
   }
 
+  const body = (result.body ?? {}) as Record<string, unknown>;
+
+  /**
+   * R4/R6/R8 — the published defaults are CONNECTION-AWARE.
+   *
+   * `providers` is already in this response (the api derives it from the same rows
+   * `GET /v1/connections` reads), so this costs ZERO extra fetches. Fixing it here fixes
+   * every consumer at once: all six `resolveChoice` call sites — the picker, the generation
+   * target that is actually POSTed, the voice vocabulary, the busy label, the video cost
+   * estimate and the reducer — read `defaults` out of this response.
+   *
+   * The shape is validated rather than trusted: a body without `providers` (an older api,
+   * or a response the schema has not caught up with) yields `null`, which the resolver
+   * treats as UNKNOWN and answers exactly as it did before connections existed. Coercing a
+   * missing field to `{gloo:false, openrouter:false}` would "repair" every user onto
+   * whichever provider came first in the matrix.
+   */
+  const raw = body.providers as { gloo?: unknown; openrouter?: unknown } | undefined;
+  const providers =
+    raw && typeof raw.gloo === "boolean" && typeof raw.openrouter === "boolean"
+      ? { gloo: raw.gloo, openrouter: raw.openrouter }
+      : null;
+
   const defaults: Record<string, { provider: string; model: string }> = {};
   for (const kind of SELECTABLE_KINDS) {
-    defaults[kind] = resolveGenerationTarget(kind);
+    defaults[kind] = resolveGenerationTarget(kind, process.env, providers);
   }
-
-  const body = (result.body ?? {}) as Record<string, unknown>;
 
   // The narration narrowing (2026-07-30, at the user's direction — see
   // `narrowNarrationModels`). It belongs HERE for the same reason `defaults` does: the

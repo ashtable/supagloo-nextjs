@@ -41,6 +41,24 @@ export default function ProfilePage() {
     }
   }, [mounted, session.isAuthed, firstSignIn, router]);
 
+  /**
+   * Bring the hash's target into view AFTER this island has rendered.
+   *
+   * The browser's own fragment scroll happens on load, when this component has returned
+   * `null` (the guard above) and `#connections` therefore does not exist yet — so a
+   * `/profile#connections` link would land the user at the top of the page with no
+   * indication that they were sent somewhere specific. R3's redirect is INVOLUNTARY, which
+   * makes that worse than a missed anchor on a link they chose to click.
+   *
+   * Keyed on `mounted`/`firstSignIn` because those are what flip the guard.
+   */
+  useEffect(() => {
+    if (!mounted || !session.isAuthed || firstSignIn) return;
+    const id = window.location.hash.replace(/^#/, "");
+    if (!id) return;
+    document.getElementById(id)?.scrollIntoView({ block: "start" });
+  }, [mounted, session.isAuthed, firstSignIn]);
+
   if (!mounted || !session.isAuthed || firstSignIn) return null;
 
   const name = session.user?.name ?? "";
@@ -159,7 +177,14 @@ export default function ProfilePage() {
           </button>
         </div>
 
-        <div style={{ padding: "26px 34px 34px" }}>
+        {/* R3's redirect target. The wireframes give the profile page no URL and no
+            fragment at all, so `#connections` is net-new — a STATIC one this app owns, so
+            the auto-redirect has nothing to guess. `scrollMarginTop` keeps the eyebrow
+            clear of the header once scrolled to. */}
+        <div
+          id="connections"
+          style={{ padding: "26px 34px 34px", scrollMarginTop: 20 }}
+        >
           <div
             style={{
               fontWeight: 700,
