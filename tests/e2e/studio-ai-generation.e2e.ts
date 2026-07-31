@@ -173,20 +173,20 @@ async function commitAndWaitClean() {
   expect(await countTestId("commit-error")).toBe(0);
 }
 
-/** Open a studio that HAS scenes, COMMITTED — i.e. the same starting point in both
- *  branches: a project whose scenes are persisted in git and whose working tree is
- *  clean. Either a provided populated-manifest fixture (`SUPAGLOO_E2E_STUDIO_SLUG`,
- *  fast) or a fresh project whose storyboard is generated via the real `storyboard`
- *  kind from the empty state. Returns the slug. */
+/** Open a studio that HAS scenes, COMMITTED — a project whose scenes are persisted in git
+ *  and whose working tree is clean: a fresh project whose storyboard is generated via the
+ *  real `storyboard` kind from the empty state. Returns the slug.
+ *
+ *  This used to have a second branch that short-circuited on `SUPAGLOO_E2E_STUDIO_SLUG`
+ *  ("a provided populated-manifest fixture, fast"). That branch was DEAD and could never
+ *  have been anything else, so it is gone rather than fixed: every api project read is
+ *  owner-scoped (`where: { id, ownerId: userId }`) and this spec's user is minted fresh by
+ *  `?seed=authed-returning&nonce=<RUN_ID>` with a RUN_ID generated at module load, so a
+ *  fixture from any earlier run belongs to a different owner by construction. Measured:
+ *  pointing it at a real 5-scene fixture 404s, surfacing as
+ *  "script-input never appeared within 60000ms". The path below is the one that has
+ *  actually been running. */
 async function openStudioWithScenes(): Promise<string> {
-  const fixture = process.env.SUPAGLOO_E2E_STUDIO_SLUG;
-  if (fixture) {
-    await page.goto(`${BASE_URL}/studio/${fixture}?seed=authed-returning&nonce=${RUN_ID}`, {
-      waitUntil: "load",
-    });
-    await waitForTestId("script-input", 60_000);
-    return fixture;
-  }
   const slug = await createProjectAndOpenStudio("aigen");
   await waitForTestId("studio-frame");
   // A freshly-scaffolded project is empty → the first-time "Generate storyboard"

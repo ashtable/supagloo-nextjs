@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Stagehand } from "@browserbasehq/stagehand";
 
 import { type StagehandPage } from "./helpers";
-import { completeGithubConnectViaCallback } from "./connect-helpers";
+import {
+  completeGithubConnectViaCallback,
+  connectOpenRouterViaProfile,
+} from "./connect-helpers";
 import {
   createProjectViaExistingEmptyRepo,
   resolveInstallationId,
@@ -39,15 +42,24 @@ import {
  * credentials + `GITHUB_E2E_PAT_TOKEN` (loaded into this worker by
  * `tests/e2e/load-root-env.ts`).
  *
- * Its project is acquired through the shared `createProjectViaExistingEmptyRepo`
+ * Its projects are acquired through the shared `createProjectViaExistingEmptyRepo`
  * helper: a private throwaway repo the harness PAT-creates per run, picked via the
  * wizard's already-shipping "use existing empty repo" tab. Fixture repos are never
  * auto-removed — reclaim them with the root repo's interactive
- * `npm run cleanup:github-e2e`, which archives rather than deletes.
+ * `npm run cleanup:github-e2e`, which archives rather than deletes. This spec now takes
+ * TWO per run: E-SH1 needs a project that is still empty, E-SH2 needs one with committed
+ * scenes, and one project cannot be both.
  *
  * EXECUTION STATUS (updated 2026-07-25, superseding task-62 D21's "deferred"): this
  * lane RUNS and is GREEN — `npm run test:e2e:real`, 21/21, reproduced independently
- * three times. The unit-level proofs named below still stand alongside it. */
+ * three times. The unit-level proofs named below still stand alongside it.
+ *
+ * CORRECTED 2026-07-30 — read the paragraph above with one qualification. Of those 21,
+ * E-SH2 had never actually executed: it opened with a `return` guarded on an env var that
+ * is impossible to satisfy (see its own comment), and vitest counts a silent early return
+ * as a pass. So the sentence in the second paragraph above — "that a committed edit
+ * survives a fresh re-open (the manifest is re-read from git)" — was an unproven claim
+ * every one of those three runs, and this is the first commit at which it is true. */
 
 const BASE_URL = "http://localhost:3000";
 const RUN_ID = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -164,7 +176,16 @@ beforeAll(async () => {
   await completeGithubConnectViaCallback(stagehand.context, {
     installationId: await resolveInstallationId(),
   });
-}, 120_000);
+  // …and OpenRouter, WITHOUT WHICH E-SH2 CANNOT RUN: it needs a project with committed
+  // scenes to edit, and the only way this spec gets one is a real `storyboard` generation
+  // from the empty state. The `?seed=` seam mints a user with no provider connections at
+  // all, so that generation would fail in the worker with `OpenRouterNotConnectedError`,
+  // visible in the browser only as a `script-input` that never appears — a 240 s timeout
+  // with no attribution. The helper connects through the shipping profile card and shims
+  // ONLY OpenRouter's human-only consent hop; the key it stores is the real
+  // OPENROUTER_E2E_TEST_API_KEY. (No Gloo: nothing here generates an image.)
+  await connectOpenRouterViaProfile(stagehand.context, page);
+}, 300_000);
 
 afterAll(async () => {
   await stagehand?.close();
@@ -189,23 +210,51 @@ describe("Studio hydrates from the REAL manifest (not DEMO_STORYBOARD)", () => {
 });
 
 describe("Edit a scene → real Commit → re-open persists (manifest re-read from git)", () => {
-  // Needs a project whose repo manifest already has >=1 scene (release-harness
-  // fixture) — a scaffold is empty. Structure is the task's headline flow.
+  // E-SH2 HAD NEVER EXECUTED ONCE. It opened on
+  // `const slug = process.env.SUPAGLOO_E2E_STUDIO_SLUG; if (!slug) return;` — a silent
+  // skip, reported by vitest as a pass — justified by a comment claiming "the release
+  // harness seeds/imports a populated-manifest project and exposes its slug via a known
+  // fixture". No such harness has ever existed, and the env var could not have worked even
+  // if one did: every api project read is owner-scoped (`where: { id, ownerId: userId }`)
+  // and this spec's user is minted fresh by `?seed=authed-returning&nonce=<RUN_ID>` with a
+  // RUN_ID generated at module load, so a project seeded by any earlier run belongs to a
+  // different owner by construction. Measured: pointing it at a real 5-scene fixture 404s,
+  // surfacing as "script-input never appeared within 60000ms".
+  //
+  // That mattered more than a normally-skipped test would, because this is the ONLY
+  // coverage anywhere of the edit → commit → re-open round trip — the headline flow of
+  // task #27. So it is wired to the same path the sibling specs demonstrably run on
+  // (`studio-model-cost.e2e.ts` / `studio-ai-generation.e2e.ts` `openStudioWithScenes()`,
+  // `studio-replan-scripture.e2e.ts` E-RS1): create a real project, generate a real
+  // storyboard from the empty state, commit it, and start from there.
+  //
+  // COST, stated rather than absorbed: this adds ONE fixture repo and ONE real
+  // `storyboard` generation per run of this spec. It is not reusing E-SH1's project on
+  // purpose — that would couple two tests through a mutation E-SH2's body cannot see, make
+  // `-t E-SH2` unrunnable, and turn any E-SH1 flake into an unattributable E-SH2 failure.
   test("E-SH2: an edited scene script commits and survives a fresh re-open", async () => {
-    // The release harness seeds/imports a populated-manifest project and exposes its
-    // slug via a known fixture; here we resolve the first project whose studio shows a
-    // script-input.
-    const slug = process.env.SUPAGLOO_E2E_STUDIO_SLUG;
-    if (!slug) {
-      // Documented skip: without the populated-manifest fixture there is no scene to
-      // edit. The adapter/effects/reducer units cover the edit→serialize→commit logic;
-      // this asserts the real round trip once the fixture exists.
-      return;
-    }
+    // A committed storyboard is the PRECONDITION, not the subject: this test is about the
+    // edit round trip, so the project has to reach a clean tree with >=1 scene first. A
+    // freshly-scaffolded manifest is empty (that is exactly what E-SH1 asserts).
+    const { projectId: slug } = await createProjectAndOpenStudio("hydrate-edit");
+    expect(slug.length).toBeGreaterThan(0);
+    await waitForTestId("studio-frame");
+    await waitForTestId("generate-storyboard");
+    await clickTestId("generate-storyboard");
+    await waitForTestId("script-input", 240_000);
+    // Commit the generated plan BEFORE editing. A generation writes into the WORKING
+    // manifest, so a just-generated storyboard legitimately leaves the project dirty —
+    // without this the `data-dirty === "false"` precondition below is simply false, and
+    // the post-edit `data-dirty === "true"` assertion would pass vacuously on the
+    // storyboard's dirt rather than on the edit's.
+    await clickTestId("commit-button");
+    await waitForDataAttr("version-branch-chip", "data-dirty", "false", 180_000);
+    expect(await countTestId("commit-error")).toBe(0);
 
-    await page.goto(`${BASE_URL}/studio/${slug}?seed=authed-returning&nonce=${RUN_ID}`, {
-      waitUntil: "load",
-    });
+    // Re-confirm the editor is mounted after the commit's re-render before typing into it.
+    // Not vestigial: `typeIntoScript` SILENTLY RETURNS when the textarea is absent, so a
+    // transient unmount here would surface as the `data-dirty === "true"` wait below
+    // timing out, blaming the dirty-tracking for a race in the setup.
     await waitForTestId("script-input", 60_000);
     expect(await dataAttr("version-branch-chip", "data-dirty")).toBe("false");
 
@@ -240,5 +289,9 @@ describe("Edit a scene → real Commit → re-open persists (manifest re-read fr
     } finally {
       await fresh.close();
     }
-  }, 240_000);
+    // 900 s, up from the 240 s this carried while it was skipping — that budget only ever
+    // had to cover a goto against an already-populated fixture. It now matches
+    // `studio-replan-scripture.e2e.ts` E-RS1, the closest analogue by shape (create +
+    // real generation + commit + a second commit + fresh re-open).
+  }, 900_000);
 });
