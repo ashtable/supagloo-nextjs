@@ -123,7 +123,15 @@ describe("BFF session — first sign-in via the extended seam (real stack)", () 
   test("E-B2: completing the wizard (GitHub-only path) dismisses it and reveals the workspace", async () => {
     await a.clickTestId("wizard-get-started");
     await a.waitForStepLabel("STEP 2 OF 4 · CONNECT GITHUB");
-    expect(await a.countTestId("wizard-skip")).toBe(0); // required gate, no skip
+    // CORRECTED 2026-07-31 (R1). This assertion is unchanged and still true, but its
+    // comment ("required gate, no skip") is not: the GitHub step IS skippable now. What
+    // keeps the count at zero is that R1's skip uses a DISTINCT testid — `wizard-skip` is
+    // already ambiguous between the OpenRouter step and the Gloo form, and a third would
+    // make every `clickTestId("wizard-skip")` in this lane a coin flip. The positive
+    // assertion below is what makes this pair mean what it says; without it, deleting the
+    // skip entirely would still read green here.
+    expect(await a.countTestId("wizard-skip")).toBe(0);
+    expect(await a.countTestId("wizard-skip-github")).toBe(1);
 
     // Task 24: the github step is now REAL in seed mode — Authorize kicks off the
     // §6a round-trip; we simulate GitHub's redirect-back into the real callback,

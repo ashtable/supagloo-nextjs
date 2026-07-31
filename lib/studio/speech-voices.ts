@@ -204,12 +204,59 @@ export function buildVoiceGroups(
  *   > "language (default to English), gender (default to male), voice (default to the
  *   >  alphabetically sorted first american/english male voice)"
  *
+ * …superseded for the VOICE on 2026-07-31 (R9b): *"default the voice to American English ·
+ * Male · Michael"*, honouring this module's own doctrine — prefer what EXISTS. See
+ * {@link PREFERRED_VOICE_NAME}.
+ *
  * The constants below are the provider's own language letter for American English and a
  * facet of its own ids — neither is a voice id, and neither asserts that any particular
- * voice exists. Both fall back to whatever the selected vocabulary actually has.
+ * voice exists. All three fall back to whatever the selected vocabulary actually has.
  */
 export const DEFAULT_LANGUAGE_CODE = "a";
 export const DEFAULT_GENDER: VoiceGender = "male";
+
+/**
+ * The narrator we PREFER, by display NAME — never by id.
+ *
+ * The user asked for the default voice to be American English / male / "Michael". The
+ * obvious implementation is a `DEFAULT_VOICE_ID` constant, and it is exactly the mistake
+ * this module was rewritten to remove: a curated table that ASSERTED which voices a model
+ * has, and was wrong for every model it claimed to cover.
+ *
+ * So this is the `PREFERRED_TRANSLATION_ABBREVIATION = "ASV"` pattern from
+ * `scripture-picker.ts` — a name resolved against whatever the live vocabulary actually
+ * returned, with a documented fallback to what exists. A name is a preference; an id would
+ * be a claim. `U-V76` proves the distinction rather than assuming it: this string is not
+ * shaped like a provider voice id, so the standing `U-V28` guard still passes.
+ *
+ * Most models will not have it — 6 of the 19 live speech models publish no vocabulary at
+ * all and the rest use different naming conventions — so the fallback arm is the common
+ * case, not an edge one.
+ */
+export const PREFERRED_VOICE_NAME = "Michael";
+
+/**
+ * The voice to use from an already-narrowed bucket: the preferred NAME if this vocabulary
+ * has it, else the first — today's exact behaviour, unchanged.
+ *
+ * ONE rule, used by `defaultSelection` AND by the picker's language and gender cascades.
+ * Each of those three used to take `voiceIds[0]` independently; if only the default learned
+ * the preference, the very first accent round-trip would silently drop the user back onto
+ * the alphabetically-first voice and the picker would disagree with its own default.
+ *
+ * Matched through {@link voiceLabel}, case-insensitively, so the rule reads the provider's
+ * own display name rather than assuming an id FORMAT — a model that names the same voice
+ * differently still resolves, and one that does not simply falls through.
+ */
+export function preferredVoiceId(
+  voiceIds: readonly string[] | null | undefined,
+): string | null {
+  if (!voiceIds || voiceIds.length === 0) return null;
+  const preferred = voiceIds.find(
+    (id) => voiceLabel(id).toLowerCase() === PREFERRED_VOICE_NAME.toLowerCase(),
+  );
+  return preferred ?? voiceIds[0]!;
+}
 
 export interface VoiceSelection {
   languageCode: string | null;
@@ -233,7 +280,7 @@ export function defaultSelection(
   if (!group) return null;
   const bucket =
     group.genders.find((b) => b.gender === DEFAULT_GENDER) ?? group.genders[0];
-  const voiceId = bucket?.voiceIds[0];
+  const voiceId = preferredVoiceId(bucket?.voiceIds);
   if (!bucket || !voiceId) return null;
   return { languageCode: group.languageCode, gender: bucket.gender, voiceId };
 }

@@ -1,9 +1,26 @@
 /**
  * The first-time setup wizard's pure state machine (plan §1.2). The mock design
  * has no working stepper — it's a static filmstrip of 5 screens — so this is
- * designed from scratch: step order, progress fill, the GitHub hard gate,
- * skippability, and the Done recap templated from actual connection state (not
- * the wireframe's hardcoded row).
+ * designed from scratch: step order, progress fill, skippability, and the Done
+ * recap templated from actual connection state (not the wireframe's hardcoded row).
+ *
+ * ── R1 (2026-07-31): the GitHub hard gate is GONE ───────────────────────────
+ *
+ * `canAdvance(step, connections)` used to answer `false` for `github` until GitHub
+ * itself was connected. That made the wizard a single point of failure for the
+ * whole product: any bug in the GitHub flow locked every new user out of
+ * everything, because the wizard overlays the only page they can reach.
+ *
+ * Connections are now optional at onboarding and enforced AT THE POINT OF USE —
+ * `lib/workspace/connection-guardrail.ts` refuses project create/import, and the
+ * api answers `409 provider_not_connected` for a generation on an unconnected
+ * provider. This is a deliberate REVERSAL of stated design intent: turn 11's own
+ * subtitle reads "first-time setup (GitHub required · OpenRouter + Gloo optional)".
+ *
+ * The predicate was DELETED rather than made to always return `true`. A gate that
+ * cannot refuse is dead weight that still reads like a gate — and the wizard's
+ * auto-advance effect called it, so an always-true version would have skipped the
+ * GitHub step the instant the wizard mounted.
  */
 
 import type { ConnectionsState, Provider } from "../connections/connections-model";
@@ -44,17 +61,16 @@ export function stepLabel(step: WizardStep): string | null {
 }
 
 /**
- * Can the wizard move past `step`? GitHub is a hard gate — you cannot advance
- * from it until GitHub itself is connected, even if every other provider is
- * connected. Every other step advances freely.
+ * Which steps offer an escape. THE single source the component consults — before R1 this
+ * was exported, unit-tested, and imported by ZERO components: `SetupWizard` hard-coded the
+ * answer by passing `onSkip` to two of the step components and not the third, so the
+ * predicate and the UI could disagree without anything noticing.
+ *
+ * `welcome` has nothing to skip (it is a preamble whose only control moves forward) and
+ * `done` is the exit itself.
  */
-export function canAdvance(step: WizardStep, connections: ConnectionsState): boolean {
-  if (step === "github") return connections.github.status === "connected";
-  return true;
-}
-
 export function isSkippable(step: WizardStep): boolean {
-  return step === "openrouter" || step === "gloo";
+  return step === "github" || step === "openrouter" || step === "gloo";
 }
 
 /** Walk the step order forward one; `null` past the end. */

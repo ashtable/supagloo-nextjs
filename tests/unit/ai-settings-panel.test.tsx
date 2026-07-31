@@ -71,8 +71,33 @@ vi.mock("@/lib/studio/ai-generation-data", () => ({
   presignDownload,
 }));
 
+/**
+ * A session reporting EVERY provider connected, in every test in this file.
+ *
+ * It is the discriminating fixture for `U-INS7` (D4): the catalogue below says Gloo is NOT
+ * connected, so an implementation that read the session would render the Gloo tab as
+ * available. Before this mock existed the panel read `useOptionalSession()`, which returns
+ * `null` outside a provider — so every provider rendered "Checking…" and any claim about
+ * connectivity here was vacuously true.
+ */
+const ALL_CONNECTED_SESSION = {
+  mounted: true,
+  sessionResolved: true,
+  isMock: false,
+  connections: {
+    github: { provider: "github", status: "connected" },
+    openrouter: { provider: "openrouter", status: "connected" },
+    gloo: { provider: "gloo", status: "connected" },
+  },
+};
+vi.mock("@/app/_components/session-provider", () => ({
+  useSession: () => ALL_CONNECTED_SESSION,
+  useOptionalSession: () => ALL_CONNECTED_SESSION,
+}));
+
 import SceneInspector from "@/app/studio/_components/scene-inspector";
 import { StudioProvider, useStudio } from "@/app/studio/_components/studio-context";
+import { resolveGenerationTarget } from "@/lib/api/ai-config";
 import { DEMO_STORYBOARD, type Storyboard } from "@/lib/studio/storyboard";
 import type { StudioProject } from "@/lib/studio/project";
 import type { ProjectManifest } from "@/lib/api/contracts";
@@ -465,5 +490,103 @@ describe("the Inspector GENERATION section", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * D4 (2026-07-31) — WHERE the panel learns what is connected.
+ *
+ * The studio's only connection read was `useOptionalSession().connections`. That state is
+ * unusable for this question in two independent ways:
+ *
+ *  · it conflates "not connected" with "we could not ask" — `applyConnectionsBase` never
+ *    sets not-linked and the hydrate effect returns early on a failed read, so a network
+ *    blip leaves the seeded not-linked object standing and indistinguishable from truth;
+ *  · `?seed=authed-returning` pre-marks GitHub + OpenRouter connected regardless of the
+ *    database, which has already turned a connect helper into a silent no-op once.
+ *
+ * `AiModelCatalogueResponse.providers` has neither problem: it is server-derived, it is
+ * documented (api `model-catalogue-service.ts`) as answering "is the user CONNECTED"
+ * rather than "did the catalogue read succeed", and its reader returns `null` on any
+ * failure and never throws — so "we could not ask" is a structurally distinct state that
+ * already renders as "Checking…".
+ */
+describe("D4: connectivity comes from the CATALOGUE, not the session", () => {
+  /** The catalogue exactly as the BFF publishes it, `defaults` included — from the same
+   *  resolver `app/api/ai/models/route.ts` calls, so these tests exercise the composition
+   *  rather than re-stating a hand-written fixture. */
+  const catalogueFor = (providers: { gloo: boolean; openrouter: boolean }) => ({
+    models: [
+      {
+        id: "google/gemini-3.1-flash-image",
+        provider: "openrouter" as const,
+        label: "Nano Banana 2",
+        kinds: ["image" as const],
+        pricing: { perImage: 0.03 },
+      },
+      // Gloo's catalogue is read only when a credential exists, so an unconnected Gloo
+      // publishes nothing at all.
+      ...(providers.gloo
+        ? [
+            {
+              id: "gloo-google-gemini-2.5-flash-image",
+              provider: "gloo" as const,
+              label: "Gemini 2.5 Flash Image",
+              kinds: ["image" as const],
+              pricing: { perImage: 0.03 },
+            },
+          ]
+        : []),
+    ],
+    providers,
+    defaults: Object.fromEntries(
+      (["image", "narration", "music", "video"] as const).map((kind) => {
+        const t = resolveGenerationTarget(kind, {}, providers);
+        return [kind, { provider: t.provider as "gloo" | "openrouter", model: t.model }];
+      }),
+    ),
+  });
+
+  it("U-INS7: a session claiming Gloo is connected does NOT make the Gloo tab available", async () => {
+    fetchModelCatalogue.mockResolvedValue(
+      catalogueFor({ gloo: false, openrouter: true }),
+    );
+    const root = await open(realProject());
+
+    // The session (mocked at the top of this file) says all three are connected. The
+    // catalogue says Gloo is not. The catalogue wins.
+    expect(byTestId(root, "ai-provider-image-gloo").dataset.available).toBe("false");
+    expect(
+      byTestId(root, "ai-provider-reason-image-gloo").textContent ?? "",
+    ).toMatch(/not connected/i);
+    // …and the control: the provider the catalogue DOES report connected stays live, so
+    // this is not just "everything is off".
+    expect(byTestId(root, "ai-provider-image-openrouter").dataset.available).toBe(
+      "true",
+    );
+  });
+
+  it("U-INS8: FAITH ALIGNMENT disappears when nothing runs on Gloo (R5)", async () => {
+    // `faith-alignment` is a Gloo-only control — `tradition` is a Gloo request field with
+    // no OpenRouter equivalent, and it reaches exactly one call site, behind
+    // `provider === "gloo"`. Offering it to a user with no Gloo connection is a setting
+    // that can never affect anything they generate.
+    fetchModelCatalogue.mockResolvedValue(
+      catalogueFor({ gloo: false, openrouter: true }),
+    );
+    const root = await open(realProject());
+    expect(queryTestId(root, "faith-alignment")).toBeNull();
+    expect(byTestId(root, "ai-settings").dataset.faithVisible).toBe("false");
+
+    mounted?.unmount();
+    mounted = null;
+
+    // The other arm, so this cannot pass for a panel that simply deleted the control:
+    // with Gloo connected the image default IS Gloo, and the alignment comes back.
+    fetchModelCatalogue.mockResolvedValue(
+      catalogueFor({ gloo: true, openrouter: true }),
+    );
+    const withGloo = await open(realProject());
+    expect(byTestId(withGloo, "faith-alignment")).toBeTruthy();
   });
 });

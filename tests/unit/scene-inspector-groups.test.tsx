@@ -225,6 +225,12 @@ describe("THE GUARD — the mock catalogue's inspector is untouched", () => {
   });
 
   it("U-I11: mock keeps the READ-ONLY voice descriptor box, not the curated list", async () => {
+    // LOAD-BEARING as of 2026-07-31 (R9c). The `aiEnabled` narration card no longer renders
+    // `storyboard.voiceDescription` — it contradicted the chosen voice (`VOICE: Michael`
+    // above *"…resonant female voice…"*) — so this assertion is now the ONLY test holding
+    // the one surviving render of the descriptor. Deleting the 13b branch too would leave a
+    // `NARRATOR VOICE` header over an empty box, because that branch has no voice list to
+    // replace it (asserted directly by `U-I10`). Unchanged, deliberately.
     const root = await open(mockProject());
     expect(byTestId(root, "scene-inspector").textContent).toContain(
       DEMO_STORYBOARD.voiceDescription,

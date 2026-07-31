@@ -1,7 +1,6 @@
 "use client";
 
 import { useStudio } from "./studio-context";
-import { useOptionalSession } from "@/app/_components/session-provider";
 import {
   FAITH_ALIGNMENTS,
   FAITH_ALIGNMENT_HELP,
@@ -221,11 +220,6 @@ export default function AiSettingsPanel({
   rootTestId,
 }: AiSettingsPanelProps = {}) {
   const { state, project, setAiProvider, setAiModel, setFaithAlignment } = useStudio();
-  // The NON-throwing read. This panel already models "the session is not known yet" and
-  // renders it as "Checking…" with every provider disabled — and that is the right answer
-  // for "no provider in the tree" too. Crashing the whole editor over a settings panel
-  // would be a worse failure than showing that state.
-  const session = useOptionalSession();
 
   // Same gate as every other AI control: a REAL project only. The mock catalogue keeps
   // the byte-for-byte 13b inspector (mock-lane e2e specs assert its exact textContent),
@@ -237,11 +231,24 @@ export default function AiSettingsPanel({
   const defaults = catalogue?.defaults ?? {};
   const settings = state.storyboard.aiSettings;
 
-  // `isAuthed === false` also means "we have not asked yet"; the same is true of the
-  // connections that ride the session bootstrap. Passing `null` while unresolved makes
-  // every provider read "Checking…" rather than telling a connected user to go connect.
-  const resolvedConnections =
-    session && session.sessionResolved ? session.connections : null;
+  /**
+   * WHO IS CONNECTED — from the catalogue the api built, not from the session (D4).
+   *
+   * The panel used to read `useOptionalSession().connections`. Two things were wrong with
+   * that, and both had already bitten this codebase:
+   *
+   *  · the client's `ConnectionsState` is seeded not-linked, `applyConnectionsBase` never
+   *    sets not-linked, and the hydrate effect returns early on failure — so it cannot tell
+   *    "not connected" from "we could not ask";
+   *  · `?seed=authed-returning` pre-marks GitHub + OpenRouter connected regardless of the
+   *    database.
+   *
+   * `state.modelCatalogue.providers` is server-derived truth for the same question, it is
+   * already fetched and Zod-parsed, and `fetchModelCatalogue` resolves `null` on ANY failure
+   * without throwing — so an unread catalogue is structurally `null` here, which every rule
+   * below renders as "Checking…" rather than as "not connected".
+   */
+  const connected = catalogue?.providers ?? null;
 
   const shownKinds = kinds ?? SELECTABLE_KINDS;
   const showFaith = includeFaithAlignment && needsFaithAlignment(settings, defaults);
@@ -270,7 +277,7 @@ export default function AiSettingsPanel({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {shownKinds.map((kind) => {
-          const options = providerOptionsFor(kind, resolvedConnections, models);
+          const options = providerOptionsFor(kind, connected, models);
           const choice = resolveChoice(kind, settings, defaults, models);
           const available = modelsFor(kind, choice.provider, models);
           const selectedModel =

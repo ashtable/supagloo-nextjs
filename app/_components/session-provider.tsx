@@ -142,6 +142,23 @@ interface SessionContextValue {
    *  seed → the real BFF endpoints + polled job stages (Task #26). */
   isMock: boolean;
   connections: ConnectionsState;
+  /**
+   * Has a `GET /api/connections` actually ANSWERED for this user?
+   *
+   * `connections` alone cannot say. It is seeded not-linked, `applyConnectionsBase` never
+   * sets not-linked, and the hydrate effect below returns early on failure — so the seeded
+   * object is byte-identical to a genuine zero-connection account, and "not connected" is
+   * indistinguishable from "we could not ask". That is the same trap as
+   * `isAuthed === false`, and it has shipped as a real bug in this codebase once.
+   *
+   * Anything that REFUSES on the basis of a missing connection must read this first. R3's
+   * guardrail is exactly that shape: acting on an unresolved read would fire a modal and an
+   * involuntary redirect at users who are already connected.
+   *
+   * True only after a successful read — and immediately in the pure-client `?mock=` mode,
+   * where the seed IS the answer and there is nobody to ask.
+   */
+  connectionsResolved: boolean;
   /** Begin a connect. In real/seed mode github/openrouter/gloo run their real BFF
    *  flows; in mock mode (or as a fallback) it's the `MOCK_OAUTH_DELAY_MS` timer.
    *  Gloo passes its `{clientId, clientSecret}` payload; the others take none. */
@@ -190,6 +207,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     seedNoneLinked(),
   );
   const [connectionsSeeded, setConnectionsSeeded] = useState(false);
+  /** Set ONLY by a successful `GET /api/connections`. See
+   *  `SessionContextValue.connectionsResolved`. */
+  const [connectionsRead, setConnectionsRead] = useState(false);
   const [glooError, setGlooError] = useState<string | null>(null);
   const [disconnectErrors, setDisconnectErrors] = useState<
     Record<Provider, string | null>
@@ -391,6 +411,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         return; // API unreachable → leave the seeded (not-linked) state
       }
       if (!active || !body) return;
+
+      // The read ANSWERED. Set only here — never in the `catch`, never on a non-2xx, and
+      // never before the body is in hand: everything downstream that refuses on a missing
+      // connection (R3's guardrail) treats `false` as "we could not ask" and stays
+      // permissive, so a failure path that flipped this true would turn a network blip
+      // into a modal and a redirect for a fully-connected user.
+      setConnectionsRead(true);
 
       // ── 1. Every provider's CONNECTED state, from the one cheap read ──────────
       //
@@ -700,6 +727,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // sign-in re-seed and re-hydrate rather than sitting on the stale object.
       setConnections(seedNoneLinked());
       setConnectionsSeeded(false);
+      // The ANSWER belonged to that identity too. Leaving it true would let the next
+      // sign-in be judged against the previous user's read for the window before the new
+      // one lands — the same class of leak as the stale connection cards above.
+      setConnectionsRead(false);
     }
     yv.signOut();
   };
@@ -714,6 +745,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     firstSignIn: computeFirstSignIn(session) && onboardingResolved,
     isMock: mounted && parseMockSession(search, DEMO_FLAG) !== null,
     connections,
+    // `?mock=` resolves instantly for the same reason `sessionResolved` does: it asks
+    // nobody, so its seed IS the answer and there is nothing to wait for.
+    connectionsResolved:
+      mounted && (parseMockSession(search, DEMO_FLAG) !== null || connectionsRead),
     connectProvider,
     linkExistingGithub,
     disconnectProvider,

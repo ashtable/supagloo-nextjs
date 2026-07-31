@@ -7,19 +7,17 @@ import {
   WIZARD_STEPS,
   progressFill,
   stepLabel,
-  canAdvance,
   isSkippable,
   nextStep,
   stepAfterSkip,
   doneRecap,
 } from "./wizard-model";
 
-// Connections seeds drive the github gate + the templated recap.
+// Connections seeds drive the templated recap.
 import {
   seedNoneLinked,
   seedAllLinked,
   completeConnect,
-  disconnect,
 } from "../connections/connections-model";
 
 describe("step order + progress", () => {
@@ -52,29 +50,42 @@ describe("stepLabel — the 'STEP n OF 4 · …' eyebrow (Done has no ordinal)",
   });
 });
 
-describe("advancement — the GitHub hard gate + skippability", () => {
-  it("UW-3a: github cannot advance until github is connected (hard gate, ambiguity #3)", () => {
-    // Even with every OTHER provider connected, github blocks until github itself is.
-    const allButGithub = disconnect(seedAllLinked(), "github");
-    expect(canAdvance("github", allButGithub)).toBe(false);
-
-    const githubConnected = completeConnect(seedNoneLinked(), "github");
-    expect(canAdvance("github", githubConnected)).toBe(true);
+describe("advancement — R1: NO step is a hard gate any more", () => {
+  /**
+   * R1 (2026-07-31) DELETES the GitHub hard gate, and this is a deliberate reversal of
+   * stated design intent — TURN 11's own subtitle reads *"first-time setup (GitHub
+   * required · OpenRouter + Gloo optional)"*.
+   *
+   * The reason is that the gate made the wizard a single point of failure for the entire
+   * product: any bug in it locked every new user out of everything. Connections are now
+   * optional at onboarding and enforced AT THE POINT OF USE — R3's create/import guardrail
+   * and the api's `provider_not_connected` 409.
+   *
+   * `canAdvance` is GONE rather than made to always return true. A predicate that cannot
+   * answer anything else is not a gate, it is dead weight that reads like one; and the
+   * wizard's auto-advance effect used to call it, so leaving it returning `true` would have
+   * made the effect skip the GitHub step the instant it mounted.
+   */
+  it("UW-3a: `canAdvance` no longer exists — the gate is gone, not stubbed", async () => {
+    const mod = (await import("./wizard-model")) as Record<string, unknown>;
+    expect(Object.keys(mod)).not.toContain("canAdvance");
   });
 
-  it("UW-3b: every non-github step advances freely (no gate)", () => {
-    const none = seedNoneLinked();
-    expect(canAdvance("welcome", none)).toBe(true);
-    expect(canAdvance("openrouter", none)).toBe(true);
-    expect(canAdvance("gloo", none)).toBe(true);
-  });
-
-  it("UW-3c: openrouter + gloo are skippable; welcome, github, done are not", () => {
+  it("UW-3c: github, openrouter and gloo are ALL skippable; welcome and done are not", () => {
+    // `isSkippable` becomes the SINGLE source of skippability. It was exported and
+    // unit-tested but imported by zero components — the wizard hard-coded the answer by
+    // passing `onSkip` to two step components. R1 makes the component consult the predicate,
+    // so this test now governs what actually renders.
+    expect(isSkippable("github")).toBe(true);
     expect(isSkippable("openrouter")).toBe(true);
     expect(isSkippable("gloo")).toBe(true);
+    // Welcome has nothing to skip (it is a preamble) and Done is the exit itself.
     expect(isSkippable("welcome")).toBe(false);
-    expect(isSkippable("github")).toBe(false);
     expect(isSkippable("done")).toBe(false);
+  });
+
+  it("UW-3e: skipping github lands on openrouter — the chain is unbroken", () => {
+    expect(stepAfterSkip("github")).toBe("openrouter");
   });
 
   it("UW-3d: nextStep walks the chain; stepAfterSkip jumps past a skipped optional step", () => {

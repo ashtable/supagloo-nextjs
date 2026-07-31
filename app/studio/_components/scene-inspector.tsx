@@ -12,7 +12,10 @@ import {
   MUSIC_SLOT,
 } from "@/lib/studio/reducer";
 import { MIN_SCENES, canDeleteScene } from "@/lib/studio/storyboard";
-import { resolveChoice } from "@/lib/studio/ai-settings";
+import {
+  generationActionAvailability,
+  resolveChoice,
+} from "@/lib/studio/ai-settings";
 import { voicesForModelId } from "@/lib/studio/speech-voices";
 
 const SEMI = "var(--font-barlow-semi), 'Barlow Semi Condensed', sans-serif";
@@ -149,6 +152,37 @@ export default function SceneInspector() {
   const narrationStatus = generations[NARRATION_SLOT]?.status;
   const musicStatus = generations[MUSIC_SLOT]?.status;
   const sceneVideoStatus = generations[videoSlot(scene.id)]?.status;
+
+  /**
+   * R5 / R7 / D2 / D3 — can each kind be generated at all with what this user has
+   * connected?
+   *
+   * Server-derived truth, from the same catalogue the pickers read (D4) — never the
+   * session, which cannot tell "not connected" from "we could not ask" and which the
+   * `?seed=authed-returning` mock seed contaminates outright.
+   *
+   * `null` (no catalogue yet, or a failed read) leaves these buttons LIVE and lets the
+   * api's `409 provider_not_connected` answer — see `generationActionAvailability` for why
+   * a button and a picker part company on exactly that case. The PICKERS below still read
+   * "Checking…" and stay disabled, which is what has always shipped.
+   *
+   * This COMPOSES with the existing `status === "running"` busy-lock (TURN 20) rather than
+   * replacing it: a control is live only when the provider can serve it AND nothing is
+   * already generating.
+   *
+   * ⚠️ `video` is included even though R7 names only image + music + narration.
+   * `AI_PROVIDERS_BY_KIND` makes video openrouter-ONLY, so with no OpenRouter the per-scene
+   * `▶ Generate video` button is exactly as unusable as the other two — and the panel's own
+   * `kindAvailable` has ALREADY been greying the video model select in that state, so
+   * leaving the button live meant the UI said "you cannot configure this" while still
+   * offering to spend money on it.
+   */
+  const connectedProviders = state.modelCatalogue?.providers ?? null;
+  const models = state.modelCatalogue?.models ?? [];
+  const imageAvailable = generationActionAvailability("image", connectedProviders, models);
+  const videoAvailable = generationActionAvailability("video", connectedProviders, models);
+  const narrationAvailable = generationActionAvailability("narration", connectedProviders, models);
+  const musicAvailable = generationActionAvailability("music", connectedProviders, models);
 
   return (
     <div
@@ -415,7 +449,11 @@ export default function SceneInspector() {
             type="button"
             data-testid="reroll-visual"
             data-state={visualStatus ?? "idle"}
-            disabled={visualStatus === "running"}
+            disabled={visualStatus === "running" || !imageAvailable.enabled}
+            // A disabled control is a lie if the reason is invisible. The provider tabs
+            // carry their own reason pill, but they sit in a different block from this
+            // button, and a greyed button with no explanation reads as a bug.
+            title={imageAvailable.enabled ? undefined : imageAvailable.reason}
             onClick={() => rerollVisual(scene.id)}
             className={styles.hoverable}
             style={{
@@ -428,10 +466,14 @@ export default function SceneInspector() {
               borderRadius: 8,
               fontWeight: 700,
               fontSize: 12,
-              color: "#f1e7d6",
+              color: imageAvailable.enabled ? "#f1e7d6" : "#6b5a50",
               background: "transparent",
-              opacity: visualStatus === "running" ? 0.6 : 1,
-              cursor: visualStatus === "running" ? "default" : "pointer",
+              opacity:
+                visualStatus === "running" || !imageAvailable.enabled ? 0.5 : 1,
+              cursor:
+                visualStatus === "running" || !imageAvailable.enabled
+                  ? "not-allowed"
+                  : "pointer",
             }}
           >
             {visualStatus === "running" ? "Rerolling…" : "↻ Reroll visual"}
@@ -446,7 +488,8 @@ export default function SceneInspector() {
               type="button"
               data-testid="generate-scene-video"
               data-state={sceneVideoStatus ?? "idle"}
-              disabled={sceneVideoStatus === "running"}
+              disabled={sceneVideoStatus === "running" || !videoAvailable.enabled}
+              title={videoAvailable.enabled ? undefined : videoAvailable.reason}
               // 20b: this now OPENS the cost/time confirmation rather than spending.
               // The availability gate (`71e32a9`, "can this run at all?") is upstream and
               // still applies — the two compose, and this only ever fires when video is
@@ -464,10 +507,14 @@ export default function SceneInspector() {
                 borderRadius: 8,
                 fontWeight: 700,
                 fontSize: 12,
-                color: "#f1e7d6",
+                color: videoAvailable.enabled ? "#f1e7d6" : "#6b5a50",
                 background: "transparent",
-                opacity: sceneVideoStatus === "running" ? 0.6 : 1,
-                cursor: sceneVideoStatus === "running" ? "default" : "pointer",
+                opacity:
+                  sceneVideoStatus === "running" || !videoAvailable.enabled ? 0.5 : 1,
+                cursor:
+                  sceneVideoStatus === "running" || !videoAvailable.enabled
+                    ? "not-allowed"
+                    : "pointer",
               }}
             >
               {sceneVideoStatus === "running" ? "Generating clip…" : "▶ Generate video"}
@@ -554,36 +601,40 @@ export default function SceneInspector() {
                   carefully the sentence was written. A control that cannot affect its
                   output is worse than no control.
 
-                  The descriptor itself is NOT deleted: `VoiceDescriptorSchema.description`
-                  is required, the storyboard LLM produces it, and a re-plan is now told to
-                  keep it. It is shown read-only below, as context for the choice. */}
+                  R9(c), 2026-07-31: the read-only `voice-description` box that used to sit
+                  under this list is GONE. It was shown as "context for the choice" and it
+                  was instead a SECOND answer to the same question, generated before any
+                  voice existed to choose — the reported screenshot has `VOICE: Michael`
+                  directly above *"Warm, wise, and resonant FEMALE voice with a calm pace"*.
+                  The contradiction needs a chosen voice next to a generated sentence, so it
+                  can only exist in this card.
+
+                  `storyboard.voiceDescription` itself is NOT dead and is NOT removed:
+                  db-lib's `VoiceDescriptorSchema.description` is REQUIRED, `manifest-adapter`
+                  round-trips it both ways, `storyboard.ts` reads it out of a generation
+                  result, `studio-context` sends it with every narration request, and the
+                  non-`aiEnabled` branch below still displays it (`U-I11`, now the only test
+                  holding that one surviving render). Removing it end to end would be a
+                  required→optional db-lib migration across all five manifest mirrors for
+                  zero user benefit. */}
               <VoiceList
                 modelId={narrationModelId}
                 voices={narrationVoices}
                 selectedVoiceId={storyboard.voiceId}
                 onSelect={setVoiceId}
               />
-              <div
-                data-testid="voice-description"
-                style={{
-                  marginTop: 9,
-                  border: "1px solid rgba(230,180,120,.14)",
-                  borderRadius: 10,
-                  background: "#0f0b07",
-                  padding: "9px 11px",
-                  fontFamily: MONO,
-                  fontSize: 11,
-                  lineHeight: 1.5,
-                  color: "#a99b85",
-                }}
-              >
-                {storyboard.voiceDescription}
-              </div>
               <button
                 type="button"
                 data-testid="regenerate-narration"
                 data-state={narrationStatus ?? "idle"}
-                disabled={narrationStatus === "running" || storyboard.scenes.length === 0}
+                disabled={
+                  narrationStatus === "running" ||
+                  storyboard.scenes.length === 0 ||
+                  !narrationAvailable.enabled
+                }
+                title={
+                  narrationAvailable.enabled ? undefined : narrationAvailable.reason
+                }
                 onClick={regenerateNarration}
                 className={styles.hoverable}
                 style={{
@@ -596,9 +647,13 @@ export default function SceneInspector() {
                   borderRadius: 8,
                   fontWeight: 700,
                   fontSize: 12,
-                  color: "#f1e7d6",
+                  color: narrationAvailable.enabled ? "#f1e7d6" : "#6b5a50",
                   background: "transparent",
-                  opacity: narrationStatus === "running" ? 0.6 : 1,
+                  opacity:
+                    narrationStatus === "running" || !narrationAvailable.enabled
+                      ? 0.5
+                      : 1,
+                  cursor: narrationAvailable.enabled ? "pointer" : "not-allowed",
                 }}
               >
                 {narrationStatus === "running" ? "Generating…" : "↻ Regenerate narration"}
@@ -671,7 +726,8 @@ export default function SceneInspector() {
               type="button"
               data-testid="regenerate-music"
               data-state={musicStatus ?? "idle"}
-              disabled={musicStatus === "running"}
+              disabled={musicStatus === "running" || !musicAvailable.enabled}
+              title={musicAvailable.enabled ? undefined : musicAvailable.reason}
               onClick={regenerateMusic}
               className={styles.hoverable}
               style={{
@@ -684,9 +740,11 @@ export default function SceneInspector() {
                 borderRadius: 8,
                 fontWeight: 700,
                 fontSize: 12,
-                color: "#f1e7d6",
+                color: musicAvailable.enabled ? "#f1e7d6" : "#6b5a50",
                 background: "transparent",
-                opacity: musicStatus === "running" ? 0.6 : 1,
+                opacity:
+                  musicStatus === "running" || !musicAvailable.enabled ? 0.5 : 1,
+                cursor: musicAvailable.enabled ? "pointer" : "not-allowed",
               }}
             >
               {musicStatus === "running" ? "Generating…" : "↻ Regenerate music"}

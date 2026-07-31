@@ -63,6 +63,13 @@ export default defineConfig({
       "tests/e2e/gallery-watch.e2e.ts",
       "tests/e2e/github-connect.e2e.ts",
       "tests/e2e/openrouter-gloo-connect.e2e.ts",
+      // 2026-07-31 — R1/R2/R3: optional connections at onboarding + the create/import
+      // guardrail. Needs Compose + the api with SUPAGLOO_ENABLE_TEST_SEED=1, and NOTHING
+      // else: every case drives a user who has connected nothing, so it makes zero provider
+      // and zero GitHub egress and creates no repos. It lives in this lane rather than
+      // nowhere because all three claims are about SERVER state (a genuinely unconnected
+      // account, a persisted `onboardingCompletedAt` read by a fresh browser context).
+      "tests/e2e/optional-connections.e2e.ts",
       "tests/e2e/project-wizards-real.e2e.ts",
       "tests/e2e/studio-ai-generation.e2e.ts",
       // Genesis-1 — the Inspector's provider/model selectors, faith alignment and cost

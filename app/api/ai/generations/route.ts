@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { forwardToApi } from "@/lib/api/proxy";
 import { SESSION_COOKIE_NAME } from "@/lib/api/cookies";
 import { resolveGenerationTarget, type GenerationKind } from "@/lib/api/ai-config";
+import { readProviderConnectivity } from "@/lib/api/connectivity";
 
 /**
  * `POST /api/ai/generations` — start an AI generation, proxied to
@@ -39,7 +40,6 @@ export async function POST(request: NextRequest) {
   if (!kind) {
     return NextResponse.json({ error: "kind_required" }, { status: 400 });
   }
-  const fallback = resolveGenerationTarget(kind);
   // Both must be present to override: a provider without a model would send this
   // deployment's default model for a DIFFERENT provider, which the upstream would reject
   // as an unknown model — an error that would look like a broken provider rather than a
@@ -49,8 +49,23 @@ export async function POST(request: NextRequest) {
     body.provider.length > 0 &&
     typeof body.model === "string" &&
     body.model.length > 0;
-  const provider = overridden ? (body.provider as string) : fallback.provider;
-  const model = overridden ? (body.model as string) : fallback.model;
+
+  let provider: string;
+  let model: string;
+  if (overridden) {
+    provider = body.provider as string;
+    model = body.model as string;
+  } else {
+    // R4/R6/R8 — the FALLBACK path is connection-aware, and this is the only path that is
+    // ever reached for `storyboard` and `script` (neither is a selectable kind, so neither
+    // appears in the catalogue's published `defaults` and the client cannot override them).
+    // Reading connections only here keeps the extra round-trip off the request the
+    // Inspector actually makes, which always carries an explicit target.
+    const connectivity = await readProviderConnectivity(token);
+    const fallback = resolveGenerationTarget(kind, process.env, connectivity);
+    provider = fallback.provider;
+    model = fallback.model;
+  }
 
   const result = await forwardToApi({
     path: "ai/generations",

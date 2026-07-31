@@ -96,6 +96,10 @@ export default function ConnectionCard({
 
   return (
     <div
+      // A per-provider anchor, so a "Link ▸" for ONE missing provider can land on that
+      // card rather than on the section. The section anchor (`#connections`) stays the
+      // target for R3's guardrail, which is about the set rather than about one of them.
+      id={`connection-${provider}`}
       data-testid={`connection-card-${provider}`}
       data-status={conn.status}
       className="flex items-start"
@@ -103,6 +107,7 @@ export default function ConnectionCard({
         gap: 16,
         padding: 20,
         borderRadius: 14,
+        scrollMarginTop: 20,
         border: notLinked
           ? "1px solid rgba(192,57,43,.32)"
           : "1px solid var(--sg-line2)",

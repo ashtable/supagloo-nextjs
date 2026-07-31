@@ -101,13 +101,17 @@ afterAll(async () => {
 });
 
 describe("GitHub connect (real) — wizard step 2/4", () => {
-  test("E-G1: the required GitHub step renders with no skip", async () => {
+  test("E-G1: the GitHub step renders its connect affordance (and an escape, since R1)", async () => {
+    // CORRECTED 2026-07-31 (R1). This case used to be titled "the REQUIRED GitHub step
+    // renders with no skip" and anchored the literal `REQUIRED` pill. R1 deletes the hard
+    // gate — connections are optional at onboarding and enforced at the point of use — so
+    // both the pill and the claim are falsified. What this case is actually for, and keeps
+    // asserting, is that the CONNECT path is intact for the user who does want it.
     await clickTestId("wizard-get-started");
     await waitForStepLabel("STEP 2 OF 4 · CONNECT GITHUB");
 
     const text = await h.bodyText();
     for (const a of [
-      "REQUIRED",
       "CONNECT YOUR GITHUB",
       "SUPAGLOO WILL BE ABLE TO",
       "Authorize with GitHub",
@@ -115,7 +119,9 @@ describe("GitHub connect (real) — wizard step 2/4", () => {
     ]) {
       expect(text, `github-step anchor missing: ${a}`).toContain(a);
     }
-    // Hard gate — the required GitHub step offers no skip.
+    // The escape exists and carries its own DISTINCT testid — `wizard-skip` stays
+    // unambiguous for the two steps that already own it.
+    expect(await countTestId("wizard-skip-github")).toBe(1);
     expect(await countTestId("wizard-skip")).toBe(0);
   });
 

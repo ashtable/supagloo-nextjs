@@ -12,12 +12,15 @@ import { resolveGenerationTarget, DEFAULT_GENERATION_MODELS } from "./ai-config"
  * everywhere except `image`, which defaults to gloo — and the model comes from
  * `SUPAGLOO_AI_MODEL_<KIND>` with a documented last-known-good fallback.
  */
-/** The intended default provider per kind. `image` is gloo (faith-aligned generation is
- *  the product's reason to exist, and Gloo has image-capable models since 2026-07-28);
- *  narration/music/video are openrouter-ONLY in the matrix; text kinds allow gloo but
- *  stay on openrouter. */
+/** The intended default provider per kind — the R8 baseline (2026-07-31).
+ *
+ *  `image` and `storyboard` are gloo: faith-aligned generation is the product's reason to
+ *  exist, so the two kinds that decide what the video LOOKS like and what it SAYS run on
+ *  the aligned provider. `storyboard` MOVED here from openrouter under R8; `image` has been
+ *  gloo since 2026-07-28. `narration`/`music`/`video` are openrouter-ONLY in the matrix.
+ *  `script` stays on openrouter ("everything else"). */
 const EXPECTED_DEFAULT_PROVIDER = {
-  storyboard: "openrouter",
+  storyboard: "gloo",
   script: "openrouter",
   image: "gloo",
   narration: "openrouter",
@@ -87,6 +90,350 @@ describe("resolveGenerationTarget", () => {
     });
     expect(t.provider).toBe("openrouter");
     expect(t.model).toBe(DEFAULT_GENERATION_MODELS.script);
+  });
+});
+
+// ── R4 / R6 / R8 (2026-07-31): the ONE connection-aware resolver ───────────────
+//
+// R4 ("no Gloo ⇒ image on OpenRouter's newest Nano Banana"), R6 ("no OpenRouter ⇒ image
+// stays on Gloo") and R8 ("both connected ⇒ Gloo for image + storyboard, OpenRouter for
+// everything else") are NOT three special cases. They are one function of
+// `(kind, env, connections)` with a documented precedence:
+//
+//   explicit manifest choice   (client-side, `resolveChoice` — not this module)
+//   → connection-aware repair  (a provider we KNOW is unconnected is never chosen when a
+//                               matrix-compatible connected one exists — a VETO, which is
+//                               why it outranks the env override: an operator default that
+//                               cannot run is not a default, it is a guaranteed error)
+//   → deployment env override  (chooses among the VIABLE options)
+//   → hard fallback            (the R8 baseline maps below)
+//
+// The table is written as literal ids ON PURPOSE. Reading the expectation out of the
+// implementation's own constant would make this test agree with any value the constant
+// happens to hold; every id below was re-verified against the live catalogues on
+// 2026-07-31 (`GET openrouter.ai/api/v1/models`, `GET platform.ai.gloo.com/platform/v2/models`).
+
+type Connectivity = { gloo: boolean; openrouter: boolean };
+
+const BOTH: Connectivity = { gloo: true, openrouter: true };
+const GLOO_ONLY: Connectivity = { gloo: true, openrouter: false };
+const OR_ONLY: Connectivity = { gloo: false, openrouter: true };
+const NEITHER: Connectivity = { gloo: false, openrouter: false };
+
+/** Live-verified 2026-07-31. */
+const GLOO_TEXT = "gloo-google-gemini-2.5-flash";
+const GLOO_IMAGE = "gloo-google-gemini-2.5-flash-image";
+const OR_TEXT = "google/gemma-4-26b-a4b-it:free";
+/** "Google: Nano Banana 2 (Gemini 3.1 Flash Image)" — R4's target, per user direction. */
+const OR_IMAGE = "google/gemini-3.1-flash-image";
+const OR_NARRATION = "hexgrad/kokoro-82m";
+const OR_MUSIC = "google/lyria-3-clip-preview";
+const OR_VIDEO = "x-ai/grok-imagine-video";
+
+const g = (model: string) => ({ provider: "gloo", model });
+const o = (model: string) => ({ provider: "openrouter", model });
+
+/**
+ * THE TABLE. Six kinds × four connectivity states, with `env = {}`.
+ *
+ * Reading it: the `both` column IS R8. The `orOnly` column is R4 (image flips to
+ * OpenRouter). The `glooOnly` column is R6 (image does NOT flip away from Gloo) plus the
+ * text kinds repairing onto Gloo. The `neither` column is the both-missing decision — keep
+ * the PREFERRED provider rather than inventing one, and let the api's 409 refuse honestly.
+ */
+const TARGET_TABLE = {
+  storyboard: {
+    both: g(GLOO_TEXT), // ← R8's only behavioural change: was openrouter
+    glooOnly: g(GLOO_TEXT),
+    orOnly: o(OR_TEXT),
+    neither: g(GLOO_TEXT),
+  },
+  script: {
+    both: o(OR_TEXT),
+    glooOnly: g(GLOO_TEXT),
+    orOnly: o(OR_TEXT),
+    neither: o(OR_TEXT),
+  },
+  image: {
+    both: g(GLOO_IMAGE), // R8
+    glooOnly: g(GLOO_IMAGE), // R6
+    orOnly: o(OR_IMAGE), // R4
+    neither: g(GLOO_IMAGE),
+  },
+  // The three openrouter-ONLY kinds in `AI_PROVIDERS_BY_KIND`: there is no second provider
+  // to repair onto, so connectivity cannot move them. What connectivity DOES do for them is
+  // handled entirely by the UI disable (R7) and the api's 409.
+  narration: {
+    both: o(OR_NARRATION),
+    glooOnly: o(OR_NARRATION),
+    orOnly: o(OR_NARRATION),
+    neither: o(OR_NARRATION),
+  },
+  music: {
+    both: o(OR_MUSIC),
+    glooOnly: o(OR_MUSIC),
+    orOnly: o(OR_MUSIC),
+    neither: o(OR_MUSIC),
+  },
+  video: {
+    both: o(OR_VIDEO),
+    glooOnly: o(OR_VIDEO),
+    orOnly: o(OR_VIDEO),
+    neither: o(OR_VIDEO),
+  },
+} as const;
+
+const CONNECTIVITY_COLUMNS = [
+  ["both", BOTH],
+  ["glooOnly", GLOO_ONLY],
+  ["orOnly", OR_ONLY],
+  ["neither", NEITHER],
+] as const;
+
+/**
+ * The compatibility matrix, hand-written HERE rather than imported from `ai-matrix.ts`.
+ * Reading the expectation out of the module under test would make these assertions agree
+ * with whatever the matrix happens to hold. `ai-matrix.test.ts` is what pins the matrix
+ * itself against db-lib's measured truth; this copy is what pins the RESOLVER against the
+ * matrix. Shared by `U-DT8` and `U-DT18`, which both need it — one copy, not two.
+ */
+const MATRIX: Record<(typeof ALL_KINDS)[number], readonly string[]> = {
+  storyboard: ["gloo", "openrouter"],
+  script: ["gloo", "openrouter"],
+  image: ["gloo", "openrouter"],
+  narration: ["openrouter"],
+  music: ["openrouter"],
+  video: ["openrouter"],
+};
+
+describe("resolveGenerationTarget — the connection-aware resolver (R4/R6/R8)", () => {
+  it("U-DT1: resolves the whole (kind × connectivity) table", () => {
+    const actual: Record<string, Record<string, unknown>> = {};
+    const expected: Record<string, Record<string, unknown>> = {};
+    for (const kind of ALL_KINDS) {
+      actual[kind] = {};
+      expected[kind] = {};
+      for (const [column, connected] of CONNECTIVITY_COLUMNS) {
+        actual[kind][column] = resolveGenerationTarget(kind, {}, connected);
+        expected[kind][column] = TARGET_TABLE[kind][column];
+      }
+    }
+    // One assertion over the whole grid so a failure names every cell that moved, not the
+    // first one.
+    expect(actual).toEqual(expected);
+  });
+
+  it("U-DT2: the table covers EXACTLY the six generation kinds", () => {
+    // The point of the table is that a seventh kind cannot be added without someone making
+    // a connection-aware decision for it. This is the assertion that forces that.
+    expect(Object.keys(TARGET_TABLE).sort()).toEqual([...ALL_KINDS].sort());
+  });
+
+  it("U-DT3: UNKNOWN connectivity resolves exactly like the connection-blind default", () => {
+    // `null` means "we could not ask" — a failed `/api/connections` read, or the pre-answer
+    // window. It must never be read as "not connected": doing so would silently move a
+    // connected user's defaults on every network blip. It must also never blank the answer.
+    for (const kind of ALL_KINDS) {
+      const unknown = resolveGenerationTarget(kind, {}, null);
+      const blind = resolveGenerationTarget(kind, {});
+      expect(`${kind}:${JSON.stringify(unknown)}`).toBe(
+        `${kind}:${JSON.stringify(blind)}`,
+      );
+      expect(unknown.model.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("U-DT4: R8 — both connected puts image + storyboard on Gloo and the rest on OpenRouter", () => {
+    const byKind = Object.fromEntries(
+      ALL_KINDS.map((k) => [k, resolveGenerationTarget(k, {}, BOTH).provider]),
+    );
+    expect(byKind).toEqual({
+      storyboard: "gloo",
+      image: "gloo",
+      script: "openrouter",
+      narration: "openrouter",
+      music: "openrouter",
+      video: "openrouter",
+    });
+  });
+
+  it("U-DT5: R4 — no Gloo puts image on OpenRouter's newest Nano Banana", () => {
+    expect(resolveGenerationTarget("image", {}, OR_ONLY)).toEqual({
+      provider: "openrouter",
+      model: OR_IMAGE,
+    });
+  });
+
+  it("U-DT6: R6 — no OpenRouter keeps image on Gloo's default image model", () => {
+    expect(resolveGenerationTarget("image", {}, GLOO_ONLY)).toEqual({
+      provider: "gloo",
+      model: GLOO_IMAGE,
+    });
+  });
+
+  it("U-DT7: neither connected keeps the PREFERRED provider (the api refuses, we do not guess)", () => {
+    // The both-missing decision. Inventing a provider here would send a generation to a
+    // service the user has never connected and fail deep inside DBOS; keeping the preferred
+    // one means the UI shows a coherent selection and `POST /v1/ai/generations` answers a
+    // 409 the user can act on.
+    expect(resolveGenerationTarget("image", {}, NEITHER).provider).toBe("gloo");
+    expect(resolveGenerationTarget("storyboard", {}, NEITHER).provider).toBe("gloo");
+    expect(resolveGenerationTarget("script", {}, NEITHER).provider).toBe("openrouter");
+  });
+
+  it("U-DT8: every resolved provider is matrix-compatible for its kind, in every state", () => {
+    // The repair must never route a kind onto a provider the api's 422 would reject.
+    //
+    // The `model` half was ADDED 2026-07-31 (revision R2). This sweep destructured only
+    // `provider`, so it swept every kind × every connectivity column and still could not
+    // see `model: undefined` — the field it never looked at. It passes `{}` for env, so it
+    // cannot see the override-driven cause either; `U-DT18` covers that dimension.
+    const bad: string[] = [];
+    for (const kind of ALL_KINDS) {
+      const check = (label: string, t: { provider: string; model: string }) => {
+        if (!MATRIX[kind].includes(t.provider)) bad.push(`${label} → ${t.provider}`);
+        if (typeof t.model !== "string" || t.model.length === 0) {
+          bad.push(`${label} → model ${JSON.stringify(t.model)}`);
+        }
+      };
+      for (const [column, connected] of CONNECTIVITY_COLUMNS) {
+        check(`${kind}/${column}`, resolveGenerationTarget(kind, {}, connected));
+      }
+      check(`${kind}/unknown`, resolveGenerationTarget(kind, {}, null));
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("U-DT9: SUPAGLOO_AI_PROVIDER_<KIND> sets the preference — and is still repaired when unconnected", () => {
+    const env = { SUPAGLOO_AI_PROVIDER_SCRIPT: "gloo" };
+    // Viable: the operator's choice stands.
+    expect(resolveGenerationTarget("script", env, BOTH).provider).toBe("gloo");
+    // Not viable: the veto wins. An operator default that cannot run is not a default.
+    expect(resolveGenerationTarget("script", env, OR_ONLY).provider).toBe("openrouter");
+    // Nothing connected: nothing to repair onto, so the operator's preference is kept.
+    expect(resolveGenerationTarget("script", env, NEITHER).provider).toBe("gloo");
+  });
+
+  it("U-DT10: SUPAGLOO_AI_MODEL_<KIND> binds to the PREFERRED provider — it never leaks across a repair", () => {
+    // The failure this exists to prevent: an operator pins the image model to a Gloo id, a
+    // user with no Gloo connection gets repaired onto OpenRouter, and we post a `gloo-…` id
+    // to OpenRouter. That is an unknown-model 400 that reads like a broken provider —
+    // exactly what `app/api/ai/generations/route.ts` already warns about for the
+    // half-specified client override.
+    const env = { SUPAGLOO_AI_MODEL_IMAGE: "gloo-operator-pinned-image" };
+    expect(resolveGenerationTarget("image", env, BOTH)).toEqual({
+      provider: "gloo",
+      model: "gloo-operator-pinned-image",
+    });
+    expect(resolveGenerationTarget("image", env, OR_ONLY)).toEqual({
+      provider: "openrouter",
+      model: OR_IMAGE,
+    });
+  });
+
+  it("U-DT11: SUPAGLOO_AI_MODEL_<KIND>_<PROVIDER> overrides exactly one slot", () => {
+    const env = {
+      SUPAGLOO_AI_MODEL_IMAGE_OPENROUTER: "vendor/custom-image",
+      SUPAGLOO_AI_MODEL_IMAGE_GLOO: "gloo-custom-image",
+    };
+    expect(resolveGenerationTarget("image", env, OR_ONLY).model).toBe(
+      "vendor/custom-image",
+    );
+    expect(resolveGenerationTarget("image", env, GLOO_ONLY).model).toBe(
+      "gloo-custom-image",
+    );
+    // A slot override for another kind does not leak.
+    expect(resolveGenerationTarget("video", env, BOTH).model).toBe(OR_VIDEO);
+  });
+
+  // ── Revision R2 (2026-07-31): the out-of-matrix provider override ──────────────
+  //
+  // `SUPAGLOO_AI_PROVIDER_<KIND>` is an unvalidated operator string cast to
+  // `AiProviderName`. Naming a provider the kind cannot serve — `…_NARRATION=gloo`, or a
+  // typo — used to be returned unrepaired, and the caller's
+  // `DEFAULT_MODEL_BY_KIND_PROVIDER[kind][provider]!` then non-null-asserted a slot
+  // `U-DT17` guarantees is ABSENT. The observed result was `{provider: "gloo", model:
+  // undefined}` on a `GenerationTarget.model: string`.
+  //
+  // The blast radius is why this is a sweep and not a one-liner: `model: undefined` fails
+  // `AiModelCatalogueResponseSchema`'s `defaults[kind].model.min(1)`, `fetchModelCatalogue`
+  // returns `null`, and the ENTIRE Studio AI surface goes permanently "Checking…" —
+  // every kind, not the misconfigured one.
+  it("U-DT18: an out-of-matrix SUPAGLOO_AI_PROVIDER_<KIND> never yields an undefined model", () => {
+    // Two flavours of bad value: a REAL provider the matrix forbids for that kind (the
+    // reported case), and a value that is not a provider at all (the typo case).
+    const BAD_VALUES = ["gloo", "openrouter", "not-a-provider", "OpenRouter"];
+    const bad: string[] = [];
+    for (const kind of ALL_KINDS) {
+      const envKey = `SUPAGLOO_AI_PROVIDER_${kind.toUpperCase()}`;
+      for (const value of BAD_VALUES) {
+        const env = { [envKey]: value };
+        for (const [column, connected] of [
+          ...CONNECTIVITY_COLUMNS,
+          ["unknown", null],
+        ] as const) {
+          const t = resolveGenerationTarget(kind, env, connected);
+          const label = `${kind}/${value}/${column}`;
+          // `model` is the assertion U-DT8 could not make — it destructures only
+          // `provider`, which is why a sweep of every kind × every column still missed this.
+          if (typeof t.model !== "string" || t.model.length === 0) {
+            bad.push(`${label} → model ${JSON.stringify(t.model)}`);
+          }
+          if (!MATRIX[kind].includes(t.provider)) {
+            bad.push(`${label} → provider ${t.provider}`);
+          }
+        }
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("U-DT19: D3 — an unusable provider override degrades to AS IF UNSET, not to the matrix's first entry", () => {
+    // THE DECISION, pinned. The obvious clamp is `providersForKind(kind)[0]`, and it is
+    // wrong: the matrix row states COMPATIBILITY, not preference. `script`'s row is
+    // `["gloo","openrouter"]` while its default provider is `openrouter`, so `allowed[0]`
+    // would answer `gloo` — a typo in an env var would not be ignored, it would migrate
+    // `script` onto the other provider by the matrix literal's LINE ORDER. `script` is the
+    // one kind where the two candidate clamps disagree, which is exactly why it is asserted
+    // by name here and not left to the sweep above.
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "nonsense" }, null)
+        .provider,
+    ).toBe("openrouter");
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "nonsense" }, NEITHER)
+        .provider,
+    ).toBe("openrouter");
+
+    // Stated generally: with an unusable override the answer equals the no-override answer,
+    // for every kind and every connectivity state.
+    for (const kind of ALL_KINDS) {
+      const env = { [`SUPAGLOO_AI_PROVIDER_${kind.toUpperCase()}`]: "nonsense" };
+      for (const [column, connected] of [
+        ...CONNECTIVITY_COLUMNS,
+        ["unknown", null],
+      ] as const) {
+        expect(`${kind}/${column}:${JSON.stringify(resolveGenerationTarget(kind, env, connected))}`)
+          .toBe(`${kind}/${column}:${JSON.stringify(resolveGenerationTarget(kind, {}, connected))}`);
+      }
+    }
+  });
+
+  it("U-DT20: an IN-matrix provider override is still honoured — the clamp is not a blanket ignore", () => {
+    // The anti-vacuity control for U-DT19. Without it, `repairProvider` could ignore the
+    // override entirely and both U-DT18 and U-DT19 would stay green while
+    // `SUPAGLOO_AI_PROVIDER_<KIND>` had silently stopped working.
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "gloo" }, NEITHER)
+        .provider,
+    ).toBe("gloo");
+    expect(
+      resolveGenerationTarget("script", { SUPAGLOO_AI_PROVIDER_SCRIPT: "gloo" }, null)
+        .provider,
+    ).toBe("gloo");
+    expect(
+      resolveGenerationTarget("image", { SUPAGLOO_AI_PROVIDER_IMAGE: "openrouter" }, BOTH),
+    ).toEqual({ provider: "openrouter", model: OR_IMAGE });
   });
 });
 

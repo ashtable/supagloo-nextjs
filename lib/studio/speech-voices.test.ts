@@ -5,11 +5,13 @@ import type { AiModelInfo } from "../api/contracts";
 import {
   DEFAULT_GENDER,
   DEFAULT_LANGUAGE_CODE,
+  PREFERRED_VOICE_NAME,
   buildVoiceGroups,
   defaultSelection,
   effectiveVoiceId,
   languageLabel,
   parseVoiceId,
+  preferredVoiceId,
   remapVoice,
   selectionFor,
   voiceLabel,
@@ -247,13 +249,18 @@ describe("the three cascading dropdowns", () => {
     expect(american.genders[1].voiceIds).toHaveLength(11);
   });
 
-  it("U-V21: the defaults are English, male, alphabetically first", () => {
+  it("U-V21: the defaults are English, male, and the PREFERRED name when it exists", () => {
+    // REWRITTEN 2026-07-31 (R9b). The claim used to be "alphabetically first", which for
+    // Kokoro is `am_adam`. The user asked for Michael, and the module's own doctrine —
+    // "every fallback is to what EXISTS rather than to a constant" — is honoured by
+    // resolving a NAME against the live vocabulary rather than naming an id. `U-V72`/`U-V73`
+    // hold both arms of that rule; this case holds the composed default.
     expect(DEFAULT_LANGUAGE_CODE).toBe("a");
     expect(DEFAULT_GENDER).toBe("male");
     expect(defaultSelection(buildVoiceGroups(KOKORO))).toEqual({
       languageCode: "a",
       gender: "male",
-      voiceId: "am_adam",
+      voiceId: "am_michael",
     });
   });
 
@@ -298,8 +305,11 @@ describe("what is actually sent", () => {
     // a voice was chosen while the request carried nothing — and `recommended` was a voice
     // the model did not have. Sharing one function makes disagreeing impossible.
     expect(effectiveVoiceId("zm_yunxi", KOKORO)).toBe("zm_yunxi");
-    expect(effectiveVoiceId("alloy", KOKORO)).toBe("am_adam");
-    expect(effectiveVoiceId(undefined, KOKORO)).toBe("am_adam");
+    // The DERIVED default moved to Michael under R9b — and it moved HERE too, which is the
+    // point: the picker's display and the outgoing request share one function, so they
+    // cannot disagree about which voice "no explicit choice" means.
+    expect(effectiveVoiceId("alloy", KOKORO)).toBe("am_michael");
+    expect(effectiveVoiceId(undefined, KOKORO)).toBe("am_michael");
     expect(effectiveVoiceId("am_adam", null)).toBeNull();
   });
 
@@ -312,6 +322,85 @@ describe("what is actually sent", () => {
     expect(voicesForModelId("not/listed", catalogue)).toBeNull();
     expect(voicesForModelId(null, catalogue)).toBeNull();
     expect(voicesForModelId("hexgrad/kokoro-82m", [])).toBeNull();
+  });
+});
+
+/**
+ * R9(b) — "default the voice to American English · Male · Michael".
+ *
+ * ## Why this is a NAME and not an id
+ *
+ * The obvious implementation is `DEFAULT_VOICE_ID = "am_michael"`. That is the exact shape
+ * of the bug this module was rewritten to remove: a curated table that ASSERTED which
+ * voices a model has, and was wrong for every model it covered. The module's own doctrine
+ * is quoted in its docblock — *"Every fallback is to what EXISTS rather than to a
+ * constant"* — and `U-V28` is the standing guard that keeps it true.
+ *
+ * So the preference is expressed the way `PREFERRED_TRANSLATION_ABBREVIATION = "ASV"`
+ * already is in `scripture-picker.ts`: a name looked up in whatever the live vocabulary
+ * returned, with a documented fallback to today's behaviour when it is absent. Six of the
+ * nineteen live speech models publish no vocabulary at all and most of the rest use a
+ * different naming convention entirely, so "Michael is absent" is the COMMON case, not an
+ * edge one.
+ */
+describe("the preferred voice NAME (R9b)", () => {
+  it("U-V72: with the live Kokoro vocabulary, the American male default is Michael", () => {
+    // The user's screenshot showed `VOICE: Michael` — which is what they had picked by
+    // hand, because the derived default was `am_adam` (alphabetically first).
+    const american = buildVoiceGroups(KOKORO).find((g) => g.languageCode === "a")!;
+    const male = american.genders.find((b) => b.gender === "male")!;
+    expect(preferredVoiceId(male.voiceIds)).toBe("am_michael");
+    // …and it is genuinely NOT the alphabetically-first one, so the assertion above cannot
+    // be satisfied by leaving the old rule in place.
+    expect(male.voiceIds[0]).toBe("am_adam");
+  });
+
+  it("U-V73: a bucket with no Michael keeps today's first-in-bucket behaviour", () => {
+    // The other arm, and the one that matters most in production. `bm_*` (British male) has
+    // no Michael; neither does any non-Kokoro model. The rule must degrade to what exists,
+    // never invent an id and never crash.
+    const british = buildVoiceGroups(KOKORO).find((g) => g.languageCode === "b")!;
+    const male = british.genders.find((b) => b.gender === "male")!;
+    expect(male.voiceIds).not.toContain("bm_michael");
+    expect(preferredVoiceId(male.voiceIds)).toBe(male.voiceIds[0]);
+  });
+
+  it("U-V74: the match is on the DISPLAY NAME, case-insensitively — never on a literal id", () => {
+    // The same voice under three plausible provider conventions. If the rule were an id
+    // comparison, only the first would resolve; the module would then be asserting a
+    // provider's id format, which is the class of claim it exists to avoid making.
+    expect(preferredVoiceId(["am_adam", "am_michael"])).toBe("am_michael");
+    expect(preferredVoiceId(["xm_aaron", "xm_MICHAEL"])).toBe("xm_MICHAEL");
+    expect(preferredVoiceId(["am_adam", "am_michaela"])).toBe("am_adam"); // prefix ≠ match
+    // And `voiceLabel` is the seam it goes through, so the two cannot drift apart.
+    expect(voiceLabel("am_michael")).toBe(PREFERRED_VOICE_NAME);
+  });
+
+  it("U-V75: an empty or opaque vocabulary is completely unchanged", () => {
+    // Opaque ids (`tara`, `leah`, …) do not parse, so they all collect in one unparsed
+    // bucket whose first entry is the answer — exactly as before this rule existed.
+    expect(preferredVoiceId([])).toBeNull();
+    expect(preferredVoiceId(OPAQUE)).toBe(OPAQUE[0]);
+    for (const empty of [null, undefined, []]) {
+      expect(defaultSelection(buildVoiceGroups(empty))).toBeNull();
+    }
+    const opaque = defaultSelection(buildVoiceGroups(OPAQUE))!;
+    expect(opaque.voiceId).toBe([...OPAQUE].sort()[0]);
+  });
+
+  it("U-V76: the preference survives U-V28 — it is a NAME, and the module still names no id", () => {
+    // The exception is PROVEN rather than assumed. `U-V28` scans the shipping source for
+    // kokoro-shaped ids and for the deleted table's curated names; this asserts that the new
+    // constant is neither, and that it really is present in the source (so the guard is
+    // being tested against something rather than against nothing).
+    expect(PREFERRED_VOICE_NAME).not.toMatch(/\b[a-z][fm]_[a-z]{2,}\b/);
+    expect(
+      ["alloy", "onyx", "echo", "fable", "nova", "shimmer", "ash", "sage",
+       "tara", "jess", "zac", "orpheus", "grok"],
+    ).not.toContain(PREFERRED_VOICE_NAME.toLowerCase());
+
+    const source = readFileSync(resolve(__dirname, "speech-voices.ts"), "utf8");
+    expect(source).toContain(`"${PREFERRED_VOICE_NAME}"`);
   });
 });
 
