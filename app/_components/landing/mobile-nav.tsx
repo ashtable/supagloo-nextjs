@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
+import GithubSourceLink from "../github-source-link";
 import SignInButton from "../sign-in-button";
 import HolyBibleGlyph from "../holy-bible-glyph";
 import { useSession } from "../session-provider";
@@ -117,15 +118,11 @@ export default function MobileNav() {
             boxShadow: "0 20px 44px rgba(0,0,0,.35)",
           }}
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className="text-left cursor-pointer"
+          <GithubSourceLink
+            variant="menu"
             style={menuItem}
-          >
-            {"How it works"}
-          </button>
+            onNavigate={() => setOpen(false)}
+          />
           <Link
             href="/gallery"
             role="menuitem"

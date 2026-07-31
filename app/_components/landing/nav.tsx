@@ -1,4 +1,5 @@
 import Link from "next/link";
+import GithubSourceLink from "../github-source-link";
 import LogoMark from "../logo-mark";
 import NavAuth from "../nav-auth";
 import NavYourVideos from "./nav-your-videos";
@@ -11,12 +12,15 @@ import MobileNav from "./mobile-nav";
  * "Your videos" + the auth control (`NavAuth`). Mobile (<md): brand + a hamburger
  * (`MobileNav`) that collapses the links + auth control into a dismissible sheet.
  * `active` marks the current section so the gallery page's own nav item reads as
- * selected. The rendered TEXT is unchanged from row 41, which is what keeps the mock-lane
- * landing specs green: their `textIsVisible` helper queries `button, a, span, div`, so an
- * anchor still matches.
+ * selected.
+ *
+ * 2026-07-30: the inert "How it works" `<button>` became {@link GithubSourceLink}.
+ * The old note here said the rendered text was held unchanged "to keep the mock-lane
+ * landing specs green" — that lane was deleted on 2026-07-29, and a grep of `tests/`
+ * and `lib/` finds nothing anchoring the string, so the constraint no longer exists.
  *
  * **`watch`** (Turn 16a §1.1): a back link, a CENTRED logo lockup, and the user pill.
- * **No `Gallery` / `How it works` / `Your videos` links at all** — the back link replaces
+ * **No `Gallery` / `GitHub` / `Your videos` links at all** — the back link replaces
  * them, because the watch page is a place you arrive at from somewhere and leave back to.
  *
  * ── WHY THIS IS A `variant`, NOT A THIRD `active` VALUE ─────────────────────────
@@ -121,19 +125,7 @@ export default function Nav({
         className="hidden md:flex items-center ml-auto mr-2"
         style={{ gap: 28 }}
       >
-        <button
-          type="button"
-          className="cursor-pointer"
-          style={{
-            fontWeight: 600,
-            fontSize: 14,
-            color: "var(--sg-dim)",
-            background: "transparent",
-            border: "none",
-          }}
-        >
-          {"How it works"}
-        </button>
+        <GithubSourceLink />
         <Link
           href="/gallery"
           data-testid="nav-gallery"
