@@ -141,8 +141,13 @@ async function connectGlooViaProfile(): Promise<void> {
   await waitForTestId("menu-account-settings");
   await clickTestId("menu-account-settings");
   await waitForTestId("profile-page");
-  await waitForTestId("card-connect-gloo");
-  await clickTestId("card-connect-gloo");
+  // Gloo's card has NO connect button to click: `cardModel` gives every unconnected
+  // gloo state `body: "gloo-form"` (`lib/connections/connections-model.ts` — the
+  // not-linked branch hardcodes it, the pending branch ternaries to it), so the
+  // credential fields are already on screen and `card-connect-gloo` is rendered in
+  // no gloo state at all. This spec used to wait 60s for that testid and fail its
+  // whole suite in setup. `opensModal: null` in UC-4a is the same fact from the
+  // model's side: gloo connects inline, github/openrouter open a modal first.
   await waitForTestId("gloo-client-id");
 
   await page.locator('[data-testid="gloo-client-id"]').fill(GLOO_CLIENT_ID);
