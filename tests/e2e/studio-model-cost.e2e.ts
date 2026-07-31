@@ -167,17 +167,18 @@ async function connectGlooViaProfile(): Promise<void> {
   throw new Error("Gloo never became connected within 60s");
 }
 
-/** A real project with a committed storyboard, opened in the studio. */
+/** A real project with a committed storyboard, opened in the studio.
+ *
+ *  This used to short-circuit on `SUPAGLOO_E2E_STUDIO_SLUG` — "reuse a pre-seeded
+ *  populated-manifest project instead of building one". That branch was DEAD and could
+ *  never have been anything else, so it is gone rather than fixed: every api project read
+ *  is owner-scoped (`where: { id, ownerId: userId }`) and this spec's user is minted fresh
+ *  by `?seed=authed-returning&nonce=<RUN_ID>` with a RUN_ID generated at module load, so a
+ *  fixture from any earlier run belongs to a different owner by construction. Measured:
+ *  pointing it at a real 5-scene fixture 404s, surfacing as
+ *  "script-input never appeared within 60000ms". The path below is the one that has
+ *  actually been running. */
 async function openStudioWithScenes(): Promise<void> {
-  const fixture = process.env.SUPAGLOO_E2E_STUDIO_SLUG;
-  if (fixture) {
-    await page.goto(
-      `${BASE_URL}/studio/${fixture}?seed=authed-returning&nonce=${RUN_ID}`,
-      { waitUntil: "load" },
-    );
-    await waitForTestId("script-input", 60_000);
-    return;
-  }
   await createProjectViaExistingEmptyRepo(page, { slug: "modelcost", seedUrl: SEED_URL });
   await waitForTestId("studio-frame");
   await waitForTestId("generate-storyboard");
