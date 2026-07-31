@@ -58,3 +58,28 @@ body {
   color: var(--sg-fg);
   font-family: var(--font-barlow);
 }
+
+/* Muted control that resolves to full foreground on hover, over a faint panel wash.
+   Both tokens are redefined under `prefers-color-scheme: dark` above, so this reads
+   correctly in either theme without a second rule. Declared here rather than as a
+   Tailwind `hover:` utility because every other control in this app styles itself
+   inline, and a lone utility class would be a second idiom for one element. */
+.sg-ghost-link {
+  color: var(--sg-dim);
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.sg-ghost-link:hover {
+  color: var(--sg-fg);
+  background-color: var(--sg-panel);
+}
+
+/* Pointer-only: on touch, :hover sticks after a tap until something else is tapped. */
+@media (hover: none) {
+  .sg-ghost-link:hover {
+    color: var(--sg-dim);
+    background-color: transparent;
+  }
+}

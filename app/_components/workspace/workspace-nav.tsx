@@ -1,4 +1,5 @@
 import Link from "next/link";
+import GithubSourceLink from "../github-source-link";
 import LogoMark from "../logo-mark";
 import ProfileMenu from "../profile-menu";
 
@@ -6,10 +7,12 @@ import ProfileMenu from "../profile-menu";
  * 10a's top nav — brand, section links, and the shared profile pill + dropdown
  * (plan D-NAV).
  *
- * Row 41: "Gallery" became a real link to `/gallery` ("How it works" is still an inert
- * placeholder, matching the landing nav). The rendered text is unchanged, so
- * `workspace-profile.e2e.ts`'s exact-copy anchor still matches — its `textIsVisible`
- * helper queries `button, a, span, div`.
+ * Row 41: "Gallery" became a real link to `/gallery`.
+ *
+ * 2026-07-30: the inert "How it works" `<span>` became {@link GithubSourceLink} —
+ * a real link to the public source repo, matching the landing nav. Nothing in
+ * `tests/` or `lib/` anchored the old string (checked), so no exact-copy anchor
+ * moved; `workspace-profile.e2e.ts` keys off the profile pill, not this cell.
  */
 export default function WorkspaceNav() {
   return (
@@ -49,9 +52,7 @@ export default function WorkspaceNav() {
         >
           {"Gallery"}
         </Link>
-        <span style={{ fontWeight: 600, fontSize: 14, color: "var(--sg-dim)" }}>
-          {"How it works"}
-        </span>
+        <GithubSourceLink testId="workspace-nav-github" />
       </div>
 
       <ProfileMenu pillTestId="workspace-profile-pill" />
